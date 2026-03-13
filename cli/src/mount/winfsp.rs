@@ -39,7 +39,14 @@ pub async fn mount_winfsp(
     tracing::debug!("Configuring volume parameters...");
     let mut volume_params = winfsp::host::VolumeParams::default();
     volume_params.case_sensitive_search(true);
+    volume_params.case_preserved_names(true);
+    volume_params.unicode_on_disk(true);
     volume_params.filesystem_name(&opts.fsname);
+    volume_params.reparse_points(true);
+    volume_params.reparse_points_access_check(true);
+    volume_params.no_reparse_points_dir_check(true);
+    volume_params.supports_posix_unlink_rename(true);
+    volume_params.post_disposition_only_when_necessary(false);
 
     // Create the filesystem host
     tracing::debug!("Creating FileSystemHost...");

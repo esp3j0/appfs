@@ -37,6 +37,10 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
 const FILE_DIRECTORY_FILE: u32 = 0x00000001;
 const FILE_DELETE_ON_CLOSE: u32 = 0x00001000;
 
+// Reparse tag/constants for symbolic links
+const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
+const SYMLINK_FLAG_RELATIVE: u32 = 0x00000001;
+
 // NTSTATUS error codes (these are negative values when interpreted as i32)
 const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034u32 as i32;
 const STATUS_OBJECT_NAME_COLLISION: i32 = 0xC000_0035u32 as i32;
@@ -47,6 +51,9 @@ const STATUS_DIRECTORY_NOT_EMPTY: i32 = 0xC000_0101u32 as i32;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 const STATUS_DISK_FULL: i32 = 0xC000_007Fu32 as i32;
 const STATUS_OBJECT_NAME_INVALID: i32 = 0xC000_0033u32 as i32;
+const STATUS_NOT_A_REPARSE_POINT: i32 = 0xC000_0275u32 as i32;
+const STATUS_IO_REPARSE_DATA_INVALID: i32 = 0xC000_0278u32 as i32;
+const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 
 /// Convert an SDK error to a WinFsp error code.
 fn error_to_ntstatus(e: &SdkError) -> i32 {
@@ -123,7 +130,11 @@ fn mode_to_attributes(mode: u32) -> u32 {
 /// Convert Stats to FileInfo for WinFsp.
 fn fill_file_info(stats: &Stats, file_info: &mut FileInfo) {
     file_info.file_attributes = mode_to_attributes(stats.mode);
-    file_info.reparse_tag = if stats.is_symlink() { 1 } else { 0 };
+    file_info.reparse_tag = if stats.is_symlink() {
+        IO_REPARSE_TAG_SYMLINK
+    } else {
+        0
+    };
     file_info.allocation_size = (((stats.size + 4095) / 4096) * 4096) as u64;
     file_info.file_size = stats.size as u64;
     // Convert Unix timestamps to Windows FILETIME
@@ -145,6 +156,8 @@ struct OpenFile {
     ino: i64,
     /// Whether this is a directory
     is_dir: bool,
+    /// Whether this is a symbolic link (reparse point)
+    is_symlink: bool,
     /// Pending delete flag - file should be deleted on close
     delete_on_close: std::sync::atomic::AtomicBool,
     /// Path to the file (for deletion on close)
@@ -266,6 +279,177 @@ impl AgentFSWinFsp {
         })?;
         Ok(())
     }
+
+    fn readlink_by_ino(&self, ino: i64) -> Result<String> {
+        let fs = self.fs.clone();
+        let target = self.block_on(async move {
+            fs.lock().readlink(ino).await
+        })?;
+        target.ok_or_else(|| anyhow::anyhow!("Not a symlink"))
+    }
+
+    fn is_relative_symlink_target(target: &str) -> bool {
+        let bytes = target.as_bytes();
+        if target.starts_with(r"\??\") || target.starts_with(r"\\") {
+            return false;
+        }
+        if bytes.len() >= 2 && bytes[1] == b':' {
+            return false;
+        }
+        if target.starts_with('\\') || target.starts_with('/') {
+            return false;
+        }
+        true
+    }
+
+    fn to_substitute_symlink_target(print_target: &str) -> String {
+        if print_target.starts_with(r"\??\") {
+            return print_target.to_string();
+        }
+        if let Some(rest) = print_target.strip_prefix(r"\\") {
+            return format!(r"\??\UNC\{}", rest);
+        }
+        format!(r"\??\{}", print_target)
+    }
+
+    fn build_symlink_reparse_buffer(target: &str) -> Result<Vec<u8>> {
+        let print_name = target.replace('/', "\\");
+        let is_relative = Self::is_relative_symlink_target(&print_name);
+        let substitute_name = if is_relative {
+            print_name.clone()
+        } else {
+            Self::to_substitute_symlink_target(&print_name)
+        };
+        let flags = if is_relative { SYMLINK_FLAG_RELATIVE } else { 0 };
+
+        let substitute_u16: Vec<u16> = substitute_name.encode_utf16().collect();
+        let print_u16: Vec<u16> = print_name.encode_utf16().collect();
+
+        let substitute_len = substitute_u16.len() * 2;
+        let print_len = print_u16.len() * 2;
+        let data_len = 12usize
+            .checked_add(substitute_len)
+            .and_then(|v| v.checked_add(print_len))
+            .ok_or_else(|| anyhow::anyhow!("Reparse buffer length overflow"))?;
+
+        if substitute_len > u16::MAX as usize
+            || print_len > u16::MAX as usize
+            || data_len > u16::MAX as usize
+        {
+            return Err(anyhow::anyhow!("Symlink target is too long"));
+        }
+
+        let total_len = 8 + data_len;
+        let mut out = vec![0u8; total_len];
+
+        out[0..4].copy_from_slice(&IO_REPARSE_TAG_SYMLINK.to_le_bytes());
+        out[4..6].copy_from_slice(&(data_len as u16).to_le_bytes());
+        out[6..8].copy_from_slice(&0u16.to_le_bytes()); // reserved
+
+        out[8..10].copy_from_slice(&0u16.to_le_bytes()); // SubstituteNameOffset
+        out[10..12].copy_from_slice(&(substitute_len as u16).to_le_bytes());
+        out[12..14].copy_from_slice(&(substitute_len as u16).to_le_bytes()); // PrintNameOffset
+        out[14..16].copy_from_slice(&(print_len as u16).to_le_bytes());
+        out[16..20].copy_from_slice(&flags.to_le_bytes());
+
+        let mut cursor = 20usize;
+        for u in substitute_u16 {
+            out[cursor..cursor + 2].copy_from_slice(&u.to_le_bytes());
+            cursor += 2;
+        }
+        for u in print_u16 {
+            out[cursor..cursor + 2].copy_from_slice(&u.to_le_bytes());
+            cursor += 2;
+        }
+
+        Ok(out)
+    }
+
+    fn parse_symlink_reparse_buffer(buffer: &[u8]) -> Result<String> {
+        if buffer.len() < 20 {
+            return Err(anyhow::anyhow!("Reparse buffer too small"));
+        }
+
+        let tag = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+        if tag != IO_REPARSE_TAG_SYMLINK {
+            return Err(anyhow::anyhow!("Unsupported reparse tag: 0x{tag:08x}"));
+        }
+
+        let data_len = u16::from_le_bytes(buffer[4..6].try_into().unwrap()) as usize;
+        let expected_len = 8usize
+            .checked_add(data_len)
+            .ok_or_else(|| anyhow::anyhow!("Invalid reparse length"))?;
+        if buffer.len() < expected_len || expected_len < 20 {
+            return Err(anyhow::anyhow!("Invalid reparse payload length"));
+        }
+
+        let substitute_off = u16::from_le_bytes(buffer[8..10].try_into().unwrap()) as usize;
+        let substitute_len = u16::from_le_bytes(buffer[10..12].try_into().unwrap()) as usize;
+        let print_off = u16::from_le_bytes(buffer[12..14].try_into().unwrap()) as usize;
+        let print_len = u16::from_le_bytes(buffer[14..16].try_into().unwrap()) as usize;
+        let flags = u32::from_le_bytes(buffer[16..20].try_into().unwrap());
+
+        let path_start = 20usize;
+        let data_end = expected_len;
+
+        let read_utf16 = |off: usize, len: usize| -> Result<String> {
+            if len == 0 {
+                return Ok(String::new());
+            }
+            if len % 2 != 0 {
+                return Err(anyhow::anyhow!("Invalid UTF-16 byte length"));
+            }
+            let start = path_start
+                .checked_add(off)
+                .ok_or_else(|| anyhow::anyhow!("Reparse offset overflow"))?;
+            let end = start
+                .checked_add(len)
+                .ok_or_else(|| anyhow::anyhow!("Reparse length overflow"))?;
+            if end > data_end {
+                return Err(anyhow::anyhow!("Reparse name out of bounds"));
+            }
+
+            let mut utf16 = Vec::with_capacity(len / 2);
+            let mut idx = start;
+            while idx < end {
+                utf16.push(u16::from_le_bytes([buffer[idx], buffer[idx + 1]]));
+                idx += 2;
+            }
+            Ok(String::from_utf16(&utf16)?)
+        };
+
+        let substitute_name = read_utf16(substitute_off, substitute_len)?;
+        let print_name = read_utf16(print_off, print_len)?;
+
+        let mut target = if !print_name.is_empty() {
+            print_name
+        } else {
+            substitute_name
+        };
+
+        if (flags & SYMLINK_FLAG_RELATIVE) == 0 {
+            if let Some(rest) = target.strip_prefix(r"\??\UNC\") {
+                target = format!(r"\\{}", rest);
+            } else if let Some(rest) = target.strip_prefix(r"\??\") {
+                target = rest.to_string();
+            }
+        }
+
+        Ok(target)
+    }
+
+    fn write_symlink_reparse_to_buffer(&self, ino: i64, buffer: &mut [u8]) -> winfsp::Result<u64> {
+        let target = self.readlink_by_ino(ino)
+            .map_err(|e| FspError::NTSTATUS(anyhow_to_ntstatus(&e)))?;
+        let encoded = Self::build_symlink_reparse_buffer(&target)
+            .map_err(|_| FspError::NTSTATUS(STATUS_IO_REPARSE_DATA_INVALID))?;
+
+        if buffer.len() < encoded.len() {
+            return Err(FspError::NTSTATUS(STATUS_BUFFER_TOO_SMALL));
+        }
+        buffer[..encoded.len()].copy_from_slice(&encoded);
+        Ok(encoded.len() as u64)
+    }
 }
 
 /// File context for WinFsp - represents an open file handle.
@@ -280,7 +464,7 @@ impl FileSystemContext for AgentFSWinFsp {
         &self,
         file_name: &U16CStr,
         _security_descriptor: Option<&mut [c_void]>,
-        _reparse_point_resolver: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
+        reparse_point_resolver: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
     ) -> winfsp::Result<FileSecurity> {
         let path = Self::win_path_to_unix(file_name);
 
@@ -288,16 +472,26 @@ impl FileSystemContext for AgentFSWinFsp {
 
         match self.path_lookup(&path) {
             Ok(Some(stats)) => {
-                let is_symlink = stats.is_symlink();
                 Ok(FileSecurity {
-                    // Set reparse=true for symlinks so Windows knows to follow them
-                    reparse: is_symlink,
+                    // Important: reparse=true is for paths that contain reparse points
+                    // in intermediate components. For a successfully looked-up final
+                    // component (including a symlink itself), return normal attributes.
+                    reparse: false,
                     attributes: mode_to_attributes(stats.mode),
                     sz_security_descriptor: 0,
                 })
             }
             Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
-            Err(e) => Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e))),
+            Err(e) => {
+                // Fallback to resolver for paths that may contain intermediate reparse points
+                // (e.g. dir symlink component). Avoid resolver-first to keep create-path
+                // lookups (where final component does not exist) stable.
+                if let Some(security) = reparse_point_resolver(file_name) {
+                    Ok(security)
+                } else {
+                    Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e)))
+                }
+            }
         }
     }
 
@@ -333,6 +527,17 @@ impl FileSystemContext for AgentFSWinFsp {
                         file: None,
                         ino: stats.ino,
                         is_dir: true,
+                        is_symlink: false,
+                        delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                        path: path_owned,
+                    });
+                    Ok(FileContext { fh })
+                } else if stats.is_symlink() {
+                    self.open_files.lock().insert(fh, OpenFile {
+                        file: None,
+                        ino: stats.ino,
+                        is_dir: false,
+                        is_symlink: true,
                         delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                         path: path_owned,
                     });
@@ -351,6 +556,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                 file: Some(file),
                                 ino: stats.ino,
                                 is_dir: false,
+                                is_symlink: false,
                                 delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                                 path: path_owned,
                             });
@@ -373,15 +579,20 @@ impl FileSystemContext for AgentFSWinFsp {
         _file_attributes: u32,
         _security_descriptor: Option<&[c_void]>,
         _allocation_size: u64,
-        _extra_buffer: Option<&[u8]>,
-        _extra_buffer_is_reparse_point: bool,
+        extra_buffer: Option<&[u8]>,
+        extra_buffer_is_reparse_point: bool,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
         let path = Self::win_path_to_unix(file_name);
         let is_dir = (create_options & FILE_DIRECTORY_FILE) != 0;
         let delete_on_close = (create_options & FILE_DELETE_ON_CLOSE) != 0;
 
-        tracing::debug!("WinFsp::create: {} (is_dir={})", path, is_dir);
+        tracing::debug!(
+            "WinFsp::create: {} (is_dir={} extra_buffer_is_reparse_point={})",
+            path,
+            is_dir,
+            extra_buffer_is_reparse_point
+        );
 
         // Parse path to get parent_ino and name
         let (parent_ino, name) = self.parse_path(&path)
@@ -406,11 +617,22 @@ impl FileSystemContext for AgentFSWinFsp {
                 let fh = self.alloc_fh();
                 let path_owned = path.clone();
 
-                if is_dir {
+                if stats.is_directory() {
                     self.open_files.lock().insert(fh, OpenFile {
                         file: None,
                         ino: stats.ino,
                         is_dir: true,
+                        is_symlink: false,
+                        delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                        path: path_owned,
+                    });
+                    Ok(FileContext { fh })
+                } else if stats.is_symlink() {
+                    self.open_files.lock().insert(fh, OpenFile {
+                        file: None,
+                        ino: stats.ino,
+                        is_dir: false,
+                        is_symlink: true,
                         delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                         path: path_owned,
                     });
@@ -428,6 +650,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                 file: Some(file),
                                 ino: stats.ino,
                                 is_dir: false,
+                                is_symlink: false,
                                 delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                                 path: path_owned,
                             });
@@ -449,7 +672,16 @@ impl FileSystemContext for AgentFSWinFsp {
                 let uid = 0u32;
                 let gid = 0u32;
 
-                let result = if is_dir {
+                let result = if extra_buffer_is_reparse_point {
+                    let reparse_buffer = extra_buffer
+                        .ok_or(FspError::NTSTATUS(STATUS_IO_REPARSE_DATA_INVALID))?;
+                    let target = Self::parse_symlink_reparse_buffer(reparse_buffer)
+                        .map_err(|_| FspError::NTSTATUS(STATUS_IO_REPARSE_DATA_INVALID))?;
+                    let target_owned = target.clone();
+                    self.block_on(async move {
+                        fs.lock().symlink(parent_ino, &name_owned, &target_owned, uid, gid).await
+                    })
+                } else if is_dir {
                     // Create directory with mode 0755 (rwxr-xr-x)
                     self.block_on(async move {
                         fs.lock().mkdir(parent_ino, &name_owned, 0o755, uid, gid).await
@@ -468,12 +700,23 @@ impl FileSystemContext for AgentFSWinFsp {
                         let fh = self.alloc_fh();
                         let path_owned = path.clone();
 
-                        if is_dir {
+                        if stats.is_directory() {
                             // For directories, we don't need a file handle
                             self.open_files.lock().insert(fh, OpenFile {
                                 file: None,
                                 ino: stats.ino,
                                 is_dir: true,
+                                is_symlink: false,
+                                delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                                path: path_owned,
+                            });
+                            Ok(FileContext { fh })
+                        } else if stats.is_symlink() {
+                            self.open_files.lock().insert(fh, OpenFile {
+                                file: None,
+                                ino: stats.ino,
+                                is_dir: false,
+                                is_symlink: true,
                                 delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                                 path: path_owned,
                             });
@@ -492,6 +735,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                         file: Some(file),
                                         ino: stats.ino,
                                         is_dir: false,
+                                        is_symlink: false,
                                         delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                                         path: path_owned,
                                     });
@@ -880,12 +1124,22 @@ impl FileSystemContext for AgentFSWinFsp {
         if let Some(open_file) = open_files.get(&context.fh) {
             let file = open_file.file.clone();
             let buf_len = buffer.len();
+            let is_dir = open_file.is_dir;
+            let is_symlink = open_file.is_symlink;
             drop(open_files);
 
             // file is Option<BoxedFile>, need to handle None case
             let file = match file {
                 Some(f) => f,
-                None => return Err(FspError::NTSTATUS(STATUS_FILE_IS_A_DIRECTORY)),
+                None => {
+                    if is_symlink {
+                        return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+                    }
+                    if is_dir {
+                        return Err(FspError::NTSTATUS(STATUS_FILE_IS_A_DIRECTORY));
+                    }
+                    return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+                }
             };
 
             let result = self.block_on(async move {
@@ -918,6 +1172,8 @@ impl FileSystemContext for AgentFSWinFsp {
         if let Some(open_file) = open_files.get(&context.fh) {
             let file = open_file.file.clone();
             let ino = open_file.ino;
+            let is_dir = open_file.is_dir;
+            let is_symlink = open_file.is_symlink;
             tracing::debug!(
                 "WinFsp::write: fh={} ino={} len={} offset={} write_to_eof={}",
                 context.fh,
@@ -931,7 +1187,15 @@ impl FileSystemContext for AgentFSWinFsp {
             // file is Option<BoxedFile>, need to handle None case
             let file = match file {
                 Some(f) => f,
-                None => return Err(FspError::NTSTATUS(STATUS_FILE_IS_A_DIRECTORY)),
+                None => {
+                    if is_symlink {
+                        return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+                    }
+                    if is_dir {
+                        return Err(FspError::NTSTATUS(STATUS_FILE_IS_A_DIRECTORY));
+                    }
+                    return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+                }
             };
 
             let write_offset = if write_to_eof {
@@ -987,7 +1251,7 @@ impl FileSystemContext for AgentFSWinFsp {
                 open_file.is_dir
             );
             // For directories, just return success (no-op)
-            if open_file.is_dir {
+            if open_file.is_dir || open_file.is_symlink {
                 return Ok(());
             }
 
@@ -1037,12 +1301,13 @@ impl FileSystemContext for AgentFSWinFsp {
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             tracing::debug!(
-                "WinFsp::overwrite: fh={} ino={} is_dir={}",
+                "WinFsp::overwrite: fh={} ino={} is_dir={} is_symlink={}",
                 context.fh,
                 open_file.ino,
-                open_file.is_dir
+                open_file.is_dir,
+                open_file.is_symlink
             );
-            if open_file.is_dir {
+            if open_file.is_dir || open_file.is_symlink {
                 return Ok(());
             }
 
@@ -1134,6 +1399,139 @@ impl FileSystemContext for AgentFSWinFsp {
             Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
         }
     }
+
+    fn get_reparse_point_by_name(
+        &self,
+        file_name: &U16CStr,
+        _is_directory: bool,
+        buffer: &mut [u8],
+    ) -> winfsp::Result<u64> {
+        let path = Self::win_path_to_unix(file_name);
+        tracing::debug!("WinFsp::get_reparse_point_by_name path={}", path);
+        let stats = self.path_lookup(&path)
+            .map_err(|e| FspError::NTSTATUS(anyhow_to_ntstatus(&e)))?;
+        let Some(stats) = stats else {
+            return Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND));
+        };
+        if !stats.is_symlink() {
+            return Err(FspError::NTSTATUS(STATUS_NOT_A_REPARSE_POINT));
+        }
+
+        self.write_symlink_reparse_to_buffer(stats.ino, buffer)
+    }
+
+    fn get_reparse_point(
+        &self,
+        context: &Self::FileContext,
+        _file_name: &U16CStr,
+        buffer: &mut [u8],
+    ) -> winfsp::Result<u64> {
+        let ino = {
+            let open_files = self.open_files.lock();
+            let Some(open_file) = open_files.get(&context.fh) else {
+                return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+            };
+            if !open_file.is_symlink {
+                return Err(FspError::NTSTATUS(STATUS_NOT_A_REPARSE_POINT));
+            }
+            tracing::debug!(
+                "WinFsp::get_reparse_point fh={} ino={} path={}",
+                context.fh,
+                open_file.ino,
+                open_file.path
+            );
+            open_file.ino
+        };
+
+        self.write_symlink_reparse_to_buffer(ino, buffer)
+    }
+
+    fn set_reparse_point(
+        &self,
+        context: &Self::FileContext,
+        file_name: &U16CStr,
+        buffer: &[u8],
+    ) -> winfsp::Result<()> {
+        let path = Self::win_path_to_unix(file_name);
+        tracing::debug!(
+            "WinFsp::set_reparse_point fh={} path={} buffer_len={}",
+            context.fh,
+            path,
+            buffer.len()
+        );
+        let target = Self::parse_symlink_reparse_buffer(buffer)
+            .map_err(|_| FspError::NTSTATUS(STATUS_IO_REPARSE_DATA_INVALID))?;
+        tracing::debug!(
+            "WinFsp::set_reparse_point parsed target={} path={}",
+            target,
+            path
+        );
+        let (parent_ino, name) = self.parse_path(&path)
+            .map_err(|e| FspError::NTSTATUS(anyhow_to_ntstatus(&e)))?;
+
+        let current_is_dir = {
+            let open_files = self.open_files.lock();
+            let Some(open_file) = open_files.get(&context.fh) else {
+                return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+            };
+            open_file.is_dir
+        };
+
+        if let Err(e) = self.delete_path(&path, current_is_dir) {
+            tracing::warn!("WinFsp::set_reparse_point delete placeholder failed path={} err={}", path, e);
+            return Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e)));
+        }
+
+        let fs = self.fs.clone();
+        let target_owned = target.clone();
+        let stats = self.block_on(async move {
+            fs.lock().symlink(parent_ino, &name, &target_owned, 0, 0).await
+        });
+        let stats = match stats {
+            Ok(stats) => stats,
+            Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+        };
+        tracing::debug!(
+            "WinFsp::set_reparse_point created symlink path={} ino={}",
+            path,
+            stats.ino
+        );
+
+        let mut open_files = self.open_files.lock();
+        if let Some(open_file) = open_files.get_mut(&context.fh) {
+            open_file.file = None;
+            open_file.ino = stats.ino;
+            open_file.is_dir = false;
+            open_file.is_symlink = true;
+            open_file.path = path;
+            Ok(())
+        } else {
+            Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER))
+        }
+    }
+
+    fn delete_reparse_point(
+        &self,
+        context: &Self::FileContext,
+        _file_name: &U16CStr,
+        _buffer: &[u8],
+    ) -> winfsp::Result<()> {
+        let open_files = self.open_files.lock();
+        let Some(open_file) = open_files.get(&context.fh) else {
+            return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+        };
+        tracing::debug!(
+            "WinFsp::delete_reparse_point fh={} ino={} path={} is_symlink={}",
+            context.fh,
+            open_file.ino,
+            open_file.path,
+            open_file.is_symlink
+        );
+        if !open_file.is_symlink {
+            return Err(FspError::NTSTATUS(STATUS_NOT_A_REPARSE_POINT));
+        }
+        Ok(())
+    }
 }
 
 /// Mount options for WinFsp.
@@ -1162,7 +1560,13 @@ pub fn mount(
 
     let mut volume_params = winfsp::host::VolumeParams::default();
     volume_params.case_sensitive_search(true);
+    volume_params.case_preserved_names(true);
+    volume_params.unicode_on_disk(true);
     volume_params.filesystem_name(&opts.fsname);
+    volume_params.reparse_points(true);
+    volume_params.reparse_points_access_check(true);
+    // Allow opening reparse points without strict dir/non-dir create option checks.
+    volume_params.no_reparse_points_dir_check(true);
     volume_params.supports_posix_unlink_rename(true);
     // Always post disposition requests to user mode so delete semantics are
     // handled by set_delete/cleanup instead of kernel prechecks.

@@ -304,63 +304,93 @@ function Test-DirectoryOperations {
 function Test-SymbolicLinks {
     Write-TestHeader "Module D: Symbolic Links"
 
-    # WinFsp does not support symbolic links (IRP_MJ_SET_REPARSE_POINT not implemented)
-    Write-Warning "WinFsp does not support symbolic links. Skipping all symlink tests..."
-    Write-Info "This is a known limitation of the WinFsp driver, not a bug in AgentFS."
-    $script:TestSkipped += 6
-    return $true
-
-    <#
-    # Check if running as administrator
-    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-    if (!$isAdmin) {
-        Write-Warning "Symbolic link tests require Administrator privileges. Skipping..."
-        $script:TestSkipped += 6
-        return $true
-    }
-
-    # Test 1: Create file symlink
     $targetFile = Join-Path $MountPoint "target.txt"
     $linkFile = Join-Path $MountPoint "link.txt"
-    Set-Content -Path $targetFile -Value "target content"
-
-    New-Item -Path $linkFile -ItemType SymbolicLink -Value $targetFile | Out-Null
-    Test-Assert (Test-FileExists $linkFile) "Create file symbolic link"
-
-    # Test 2: Read through symlink
-    $linkContent = Get-Content -Path $linkFile
-    Test-Assert ($linkContent -eq "target content") "Read through file symlink"
-
-    # Test 3: Directory symlink
     $targetDir = Join-Path $MountPoint "targetdir"
     $linkDir = Join-Path $MountPoint "linkdir"
-    New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
-    Set-Content -Path (Join-Path $targetDir "file.txt") -Value "dir content"
-
-    New-Item -Path $linkDir -ItemType SymbolicLink -Value $targetDir | Out-Null
-    Test-Assert (Test-DirExists $linkDir) "Create directory symbolic link"
-
-    # Test 4: Access file through directory symlink
     $linkedFile = Join-Path $linkDir "file.txt"
-    $content = Get-Content -Path $linkedFile
-    Test-Assert ($content -eq "dir content") "Read file through directory symlink"
+    $createdFileLink = $false
+    $isSymlinkPrivilegeError = {
+        param($err)
+        $msg = $err.Exception.Message
+        $win32Code = ($err.Exception.HResult -band 0xFFFF)
+        return (
+            ($msg -match "required privilege is not held") -or
+            ($msg -match "A required privilege is not held") -or
+            ($msg -match "Administrator privilege required") -or
+            ($msg -match "Developer Mode") -or
+            ($msg -match "Access is denied") -or
+            ($win32Code -eq 1314)
+        )
+    }
 
-    # Test 5: Delete symlink (not target)
-    Remove-Item -Path $linkFile -Force
-    Test-Assert (!(Test-FileExists $linkFile) -and (Test-FileExists $targetFile)) "Delete symlink without affecting target"
+    try {
+        Set-Content -Path $targetFile -Value "target content" -NoNewline
+        try {
+            New-Item -Path $linkFile -ItemType SymbolicLink -Value $targetFile -ErrorAction Stop | Out-Null
+            $createdFileLink = $true
+        } catch {
+            if (& $isSymlinkPrivilegeError $_) {
+                Write-Warning "Symbolic link creation is blocked by current Windows privilege settings. Skipping symlink tests..."
+                Write-Info "Enable Developer Mode or run elevated to execute Module D."
+                $script:TestSkipped += 6
+                return $true
+            }
+            throw
+        }
 
-    # Test 6: Symlink attributes
-    $linkInfo = Get-Item $linkDir
-    Test-Assert ($linkInfo.LinkType -eq "SymbolicLink") "Symlink attributes are correct"
+        # Test 1: Create file symlink
+        $fileLinkExists = Test-Path $linkFile
+        Test-Assert $fileLinkExists "Create file symbolic link"
 
-    # Cleanup
-    Remove-Item $targetFile -Force -ErrorAction SilentlyContinue
-    Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $linkDir -Force -ErrorAction SilentlyContinue
+        # Test 2: Read through symlink
+        $linkContent = Get-Content -Path $linkFile -Raw
+        Test-Assert ($linkContent -eq "target content") "Read through file symlink" "target content" $linkContent
+
+        # Test 3: Directory symlink
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+        Set-Content -Path (Join-Path $targetDir "file.txt") -Value "dir content" -NoNewline
+        New-Item -Path $linkDir -ItemType SymbolicLink -Value $targetDir -ErrorAction Stop | Out-Null
+        $dirLinkExists = Test-Path $linkDir
+        Test-Assert $dirLinkExists "Create directory symbolic link"
+
+        # Test 4: Access file through directory symlink
+        $content = Get-Content -Path $linkedFile -Raw
+        Test-Assert ($content -eq "dir content") "Read file through directory symlink" "dir content" $content
+
+        # Test 5: Delete symlink (not target)
+        Remove-TestPath -Path $linkFile | Out-Null
+        Test-Assert (!(Test-FileExists $linkFile) -and (Test-FileExists $targetFile)) "Delete symlink without affecting target"
+
+        # Test 6: Symlink attributes
+        if (Test-Path $linkDir) {
+            $linkInfo = Get-Item $linkDir
+            $linkType = $linkInfo.LinkType
+            $isReparse = $linkInfo.Attributes.ToString().Contains("ReparsePoint")
+            Test-Assert (($linkType -eq "SymbolicLink") -or $isReparse) "Symlink attributes are correct"
+        } else {
+            Test-Assert $false "Symlink attributes are correct" "Existing symlink path" "Path not found"
+        }
+    } catch {
+        $script:TestFailed++
+        Write-Fail "Module SymbolicLinks failed with error: $_"
+        try {
+            $hr = ('0x{0:X8}' -f $_.Exception.HResult)
+            $w32 = ($_.Exception.HResult -band 0xFFFF)
+            Write-Host "  HResult: $hr" -ForegroundColor Gray
+            Write-Host "  Win32:   $w32" -ForegroundColor Gray
+        } catch {
+            # best-effort diagnostics
+        }
+        return $false
+    } finally {
+        if ($createdFileLink) { Remove-TestPath -Path $linkFile | Out-Null }
+        Remove-TestPath -Path $targetFile | Out-Null
+        Remove-TestPath -Path $linkDir | Out-Null
+        Remove-TestPath -Path $targetDir -Recurse | Out-Null
+    }
 
     return $true
-    #>
 }
 
 # ============================================================
