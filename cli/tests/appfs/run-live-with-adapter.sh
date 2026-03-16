@@ -10,6 +10,7 @@ APPFS_LIVE_AGENT_ID="${APPFS_LIVE_AGENT_ID:-appfs-live-$$}"
 APPFS_LIVE_MOUNTPOINT="${APPFS_LIVE_MOUNTPOINT:-/tmp/agentfs-appfs-live-$$}"
 APPFS_APP_ID="${APPFS_APP_ID:-aiim}"
 APPFS_ADAPTER_POLL_MS="${APPFS_ADAPTER_POLL_MS:-100}"
+APPFS_ADAPTER_RECONCILE_POLL_MS="${APPFS_ADAPTER_RECONCILE_POLL_MS:-1000}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
@@ -28,8 +29,9 @@ fail() {
 }
 
 start_adapter() {
+    poll_ms="${1:-$APPFS_ADAPTER_POLL_MS}"
     say "Starting AppFS adapter runtime..."
-    "$AGENTFS_BIN" serve appfs --root "$APPFS_LIVE_MOUNTPOINT" --app-id "$APPFS_APP_ID" --poll-ms "$APPFS_ADAPTER_POLL_MS" >"$APPFS_ADAPTER_LOG" 2>&1 &
+    "$AGENTFS_BIN" serve appfs --root "$APPFS_LIVE_MOUNTPOINT" --app-id "$APPFS_APP_ID" --poll-ms "$poll_ms" >"$APPFS_ADAPTER_LOG" 2>&1 &
     ADAPTER_PID=$!
     sleep 1
     if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
@@ -55,6 +57,45 @@ wait_token_in_events() {
         count="$(grep -c "$token" "$file" 2>/dev/null || true)"
         [ -n "$count" ] || count=0
         if [ "$count" -ge 1 ]; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+wait_token_type_count() {
+    token="$1"
+    event_type="$2"
+    min_count="$3"
+    file="$4"
+    timeout="${5:-20}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        count="$(grep "$token" "$file" 2>/dev/null | grep -c "\"type\":\"$event_type\"" || true)"
+        [ -n "$count" ] || count=0
+        if [ "$count" -ge "$min_count" ]; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+token_terminal_count() {
+    token="$1"
+    file="$2"
+    grep "$token" "$file" 2>/dev/null | grep -E -c '"type":"action\.(completed|failed|canceled)"' || true
+}
+
+wait_writable() {
+    path="$1"
+    timeout="${2:-20}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if [ -w "$path" ]; then
             return 0
         fi
         i=$((i + 1))
@@ -161,5 +202,24 @@ mkdir -p "$(dirname "$probe_action")"
 printf 'token:%s\nrestart-ok\n' "$probe_token" > "$probe_action" || fail "lifecycle probe submit failed"
 wait_token_in_events "$probe_token" "$events_file" "$APPFS_TIMEOUT_SEC" || fail "lifecycle probe event not observed after adapter restart"
 say "Lifecycle probe passed."
+
+say "CT-016: restart reconciliation for accepted-but-not-terminal streaming request..."
+stop_adapter
+start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
+reconcile_action="${APPFS_STREAMING_ACTION:-$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/files/file-001/download.act}"
+reconcile_token="ct-reconcile-$$"
+wait_writable "$reconcile_action" "$APPFS_TIMEOUT_SEC" || fail "reconcile action sink not writable: $reconcile_action"
+printf '{"target":"/tmp/reconcile.bin","client_token":"%s"}\n' "$reconcile_token" > "$reconcile_action" || fail "reconcile submit failed"
+wait_token_type_count "$reconcile_token" "action.accepted" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile accepted event missing before restart"
+terminal_before="$(token_terminal_count "$reconcile_token" "$events_file")"
+[ "$terminal_before" -eq 0 ] || fail "reconcile terminal emitted too early before restart"
+
+stop_adapter
+start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
+wait_token_type_count "$reconcile_token" "action.progress" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile progress missing after restart"
+wait_token_type_count "$reconcile_token" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile terminal missing after restart"
+terminal_after="$(token_terminal_count "$reconcile_token" "$events_file")"
+[ "$terminal_after" -eq 1 ] || fail "reconcile request emitted unexpected terminal count: $terminal_after"
+say "CT-016 passed."
 
 say "LIVE AppFS contract tests passed."

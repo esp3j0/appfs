@@ -7,6 +7,7 @@ APPFS_APP_DIR="${APPFS_ROOT%/}/${APPFS_APP_ID}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-10}"
 APPFS_TEST_ACTION="${APPFS_TEST_ACTION:-${APPFS_APP_DIR}/contacts/zhangsan/send_message.act}"
 APPFS_PAGEABLE_RESOURCE="${APPFS_PAGEABLE_RESOURCE:-${APPFS_APP_DIR}/chats/chat-001/messages.res.json}"
+APPFS_LONG_HANDLE_RESOURCE="${APPFS_LONG_HANDLE_RESOURCE:-${APPFS_APP_DIR}/chats/chat-long/messages.res.json}"
 
 say() {
     printf '%s\n' "$*"

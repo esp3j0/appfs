@@ -23,6 +23,7 @@ const ERR_PAGER_HANDLE_CLOSED: &str = "PAGER_HANDLE_CLOSED";
 const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
+const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-~";
@@ -141,6 +142,16 @@ struct PagingRequest {
     session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StreamingJob {
+    request_id: String,
+    path: String,
+    #[serde(default)]
+    client_token: Option<String>,
+    terminal: JsonValue,
+    stage: u8,
+}
+
 struct AppfsAdapter {
     app_id: String,
     session_id: String,
@@ -149,12 +160,15 @@ struct AppfsAdapter {
     events_path: PathBuf,
     cursor_path: PathBuf,
     replay_dir: PathBuf,
+    jobs_path: PathBuf,
     cursor: CursorState,
     next_seq: i64,
     last_fingerprint_by_action: HashMap<PathBuf, ActionFingerprint>,
     pending_submit_by_action: HashMap<PathBuf, PendingSubmit>,
     blocked_actions: HashMap<PathBuf, Instant>,
     handles: HashMap<String, PagingHandle>,
+    handle_aliases: HashMap<String, String>,
+    streaming_jobs: Vec<StreamingJob>,
 }
 
 impl AppfsAdapter {
@@ -164,6 +178,7 @@ impl AppfsAdapter {
         let events_path = app_dir.join("_stream").join("events.evt.jsonl");
         let cursor_path = app_dir.join("_stream").join("cursor.res.json");
         let replay_dir = app_dir.join("_stream").join("from-seq");
+        let jobs_path = app_dir.join("_stream").join("inflight.jobs.res.json");
 
         if !app_dir.exists() {
             anyhow::bail!("App directory not found: {}", app_dir.display());
@@ -193,12 +208,15 @@ impl AppfsAdapter {
             events_path,
             cursor_path,
             replay_dir,
+            jobs_path: jobs_path.clone(),
             cursor,
             next_seq,
             last_fingerprint_by_action: HashMap::new(),
             pending_submit_by_action: HashMap::new(),
             blocked_actions: HashMap::new(),
             handles: HashMap::new(),
+            handle_aliases: HashMap::new(),
+            streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
         };
         adapter.load_known_handles()?;
         Ok(adapter)
@@ -226,6 +244,7 @@ impl AppfsAdapter {
 
     fn poll_once(&mut self) -> Result<()> {
         self.restore_blocked_actions();
+        self.drain_streaming_jobs()?;
 
         let mut actions = self.collect_action_files()?;
         actions.sort();
@@ -400,7 +419,7 @@ impl AppfsAdapter {
                 )?;
             }
             ExecutionMode::Streaming => {
-                self.emit_streaming_events(&normalized_path, &request_id, client_token, payload)?;
+                self.enqueue_streaming_job(&normalized_path, &request_id, client_token, payload)?;
             }
         }
         Ok(ProcessOutcome::Submitted)
@@ -424,7 +443,8 @@ impl AppfsAdapter {
             );
         }
 
-        let (owner_session, expires_at_ts, closed) = match self.handles.get(handle_id) {
+        let handle_key = self.resolve_handle_key(handle_id);
+        let (owner_session, expires_at_ts, closed) = match self.handles.get(&handle_key) {
             Some(h) => (h.owner_session.clone(), h.expires_at_ts, h.closed),
             None => {
                 return self.emit_failed(
@@ -470,7 +490,7 @@ impl AppfsAdapter {
 
         let handle = self
             .handles
-            .get_mut(handle_id)
+            .get_mut(&handle_key)
             .expect("paging handle should exist after precheck");
         handle.page_no += 1;
         let page_no = handle.page_no;
@@ -482,7 +502,7 @@ impl AppfsAdapter {
                 }
             ],
             "page": {
-                "handle_id": handle_id,
+                "handle_id": handle_key,
                 "page_no": page_no,
                 "has_more": page_no < 3,
                 "mode": "snapshot"
@@ -517,7 +537,8 @@ impl AppfsAdapter {
             );
         }
 
-        let (owner_session, expires_at_ts, closed) = match self.handles.get(handle_id) {
+        let handle_key = self.resolve_handle_key(handle_id);
+        let (owner_session, expires_at_ts, closed) = match self.handles.get(&handle_key) {
             Some(h) => (h.owner_session.clone(), h.expires_at_ts, h.closed),
             None => {
                 return self.emit_failed(
@@ -563,43 +584,26 @@ impl AppfsAdapter {
 
         let handle = self
             .handles
-            .get_mut(handle_id)
+            .get_mut(&handle_key)
             .expect("paging handle should exist after precheck");
         handle.closed = true;
         self.emit_event(
             action_path,
             request_id,
             "action.completed",
-            Some(json!({ "closed": true, "handle_id": handle_id })),
+            Some(json!({ "closed": true, "handle_id": handle_key })),
             None,
             client_token,
         )
     }
 
-    fn emit_streaming_events(
+    fn enqueue_streaming_job(
         &mut self,
         action_path: &str,
         request_id: &str,
         client_token: Option<String>,
         payload: &str,
     ) -> Result<()> {
-        self.emit_event(
-            action_path,
-            request_id,
-            "action.accepted",
-            Some(json!("accepted")),
-            None,
-            client_token.clone(),
-        )?;
-        self.emit_event(
-            action_path,
-            request_id,
-            "action.progress",
-            Some(json!({ "percent": 50 })),
-            None,
-            client_token.clone(),
-        )?;
-
         let terminal = if action_path.ends_with("/download.act") {
             if let Ok(json) = serde_json::from_str::<JsonValue>(payload) {
                 if let Some(target) = json.get("target").and_then(|v| v.as_str()) {
@@ -613,14 +617,64 @@ impl AppfsAdapter {
         } else {
             json!("action completed")
         };
-        self.emit_event(
-            action_path,
-            request_id,
-            "action.completed",
-            Some(terminal),
-            None,
+
+        self.streaming_jobs.push(StreamingJob {
+            request_id: request_id.to_string(),
+            path: action_path.to_string(),
             client_token,
-        )
+            terminal,
+            stage: 0,
+        });
+        self.save_streaming_jobs()
+    }
+
+    fn drain_streaming_jobs(&mut self) -> Result<()> {
+        if self.streaming_jobs.is_empty() {
+            return Ok(());
+        }
+
+        let jobs = std::mem::take(&mut self.streaming_jobs);
+        let mut next_jobs = Vec::with_capacity(jobs.len());
+        for mut job in jobs {
+            match job.stage {
+                0 => {
+                    self.emit_event(
+                        &job.path,
+                        &job.request_id,
+                        "action.accepted",
+                        Some(json!("accepted")),
+                        None,
+                        job.client_token.clone(),
+                    )?;
+                    job.stage = 1;
+                    next_jobs.push(job);
+                }
+                1 => {
+                    self.emit_event(
+                        &job.path,
+                        &job.request_id,
+                        "action.progress",
+                        Some(json!({ "percent": 50 })),
+                        None,
+                        job.client_token.clone(),
+                    )?;
+                    job.stage = 2;
+                    next_jobs.push(job);
+                }
+                _ => {
+                    self.emit_event(
+                        &job.path,
+                        &job.request_id,
+                        "action.completed",
+                        Some(job.terminal),
+                        None,
+                        job.client_token,
+                    )?;
+                }
+            }
+        }
+        self.streaming_jobs = next_jobs;
+        self.save_streaming_jobs()
     }
 
     fn restore_blocked_actions(&mut self) {
@@ -870,6 +924,40 @@ impl AppfsAdapter {
         Ok(cursor)
     }
 
+    fn load_streaming_jobs(path: &Path) -> Result<Vec<StreamingJob>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let jobs: Vec<StreamingJob> = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(jobs)
+    }
+
+    fn save_streaming_jobs(&self) -> Result<()> {
+        let tmp_path = self.jobs_path.with_extension("res.json.tmp");
+        let bytes = serde_json::to_vec_pretty(&self.streaming_jobs)?;
+        fs::write(&tmp_path, bytes)
+            .with_context(|| format!("Failed to write jobs temp file {}", tmp_path.display()))?;
+        if self.jobs_path.exists() {
+            fs::remove_file(&self.jobs_path).with_context(|| {
+                format!(
+                    "Failed to remove old jobs file {}",
+                    self.jobs_path.display()
+                )
+            })?;
+        }
+        fs::rename(&tmp_path, &self.jobs_path).with_context(|| {
+            format!(
+                "Failed to move jobs temp file {} to {}",
+                tmp_path.display(),
+                self.jobs_path.display()
+            )
+        })?;
+        Ok(())
+    }
+
     fn collect_action_files(&self) -> Result<Vec<PathBuf>> {
         let mut out = Vec::new();
         collect_files_with_suffix(&self.app_dir, ".act", &mut out)?;
@@ -897,8 +985,13 @@ impl AppfsAdapter {
                 .and_then(|p| p.get("handle_id"))
                 .and_then(|h| h.as_str())
             {
+                let normalized_handle = normalize_runtime_handle_id(handle_id);
+                if normalized_handle != handle_id {
+                    self.handle_aliases
+                        .insert(handle_id.to_string(), normalized_handle.clone());
+                }
                 self.handles.insert(
-                    handle_id.to_string(),
+                    normalized_handle,
                     PagingHandle {
                         page_no: 0,
                         closed: false,
@@ -920,6 +1013,17 @@ impl AppfsAdapter {
             }
         }
         Ok(())
+    }
+
+    fn resolve_handle_key(&self, requested: &str) -> String {
+        if let Some(alias) = self.handle_aliases.get(requested) {
+            return alias.clone();
+        }
+        let normalized = normalize_runtime_handle_id(requested);
+        if self.handles.contains_key(&normalized) {
+            return normalized;
+        }
+        requested.to_string()
     }
 
     fn new_request_id() -> String {
@@ -1051,7 +1155,7 @@ fn is_safe_segment(segment: &str) -> bool {
     if is_windows_reserved_name(segment) {
         return false;
     }
-    if segment.as_bytes().len() > 255 {
+    if segment.as_bytes().len() > MAX_SEGMENT_BYTES {
         return false;
     }
 
@@ -1145,6 +1249,50 @@ fn parse_rfc3339_timestamp(value: &str) -> Option<i64> {
         .map(|dt| dt.timestamp())
 }
 
+fn normalize_runtime_handle_id(handle_id: &str) -> String {
+    deterministic_shorten_segment(handle_id, MAX_SEGMENT_BYTES)
+}
+
+fn deterministic_shorten_segment(segment: &str, max_bytes: usize) -> String {
+    if segment.as_bytes().len() <= max_bytes {
+        return segment.to_string();
+    }
+
+    let hash = format!("{:016x}", fnv1a_64(segment.as_bytes()));
+    let suffix = format!("_{}", hash);
+    let prefix_budget = max_bytes.saturating_sub(suffix.len());
+
+    let mut prefix = String::new();
+    let mut used = 0usize;
+    for ch in segment.chars() {
+        let ch_len = ch.len_utf8();
+        if used + ch_len > prefix_budget {
+            break;
+        }
+        prefix.push(ch);
+        used += ch_len;
+    }
+
+    if prefix.is_empty() {
+        return hash;
+    }
+
+    prefix.push_str(&suffix);
+    prefix
+}
+
+fn fnv1a_64(input: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+
+    let mut hash = OFFSET_BASIS;
+    for byte in input {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 fn is_handle_format_valid(handle_id: &str) -> bool {
     if !handle_id.starts_with("ph_") {
         return false;
@@ -1156,7 +1304,10 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_client_token, is_handle_format_valid, parse_paging_request};
+    use super::{
+        deterministic_shorten_segment, extract_client_token, is_handle_format_valid,
+        normalize_runtime_handle_id, parse_paging_request, MAX_SEGMENT_BYTES,
+    };
 
     #[test]
     fn parse_handle_text_mode() {
@@ -1196,5 +1347,22 @@ mod tests {
     fn handle_format_validation() {
         assert!(is_handle_format_valid("ph_7f2c"));
         assert!(!is_handle_format_valid("bad/handle"));
+    }
+
+    #[test]
+    fn normalize_runtime_handle_id_keeps_short_value() {
+        let handle = "ph_short_handle";
+        assert_eq!(normalize_runtime_handle_id(handle), handle);
+    }
+
+    #[test]
+    fn deterministic_shorten_is_bounded_and_stable() {
+        let long_handle = format!("ph_{}", "a".repeat(500));
+        let shortened_a = deterministic_shorten_segment(&long_handle, MAX_SEGMENT_BYTES);
+        let shortened_b = deterministic_shorten_segment(&long_handle, MAX_SEGMENT_BYTES);
+
+        assert_eq!(shortened_a, shortened_b);
+        assert!(shortened_a.starts_with("ph_"));
+        assert!(shortened_a.as_bytes().len() <= MAX_SEGMENT_BYTES);
     }
 }

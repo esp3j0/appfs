@@ -33,6 +33,7 @@ else
     $DIR/appfs/test-path-safety.sh
     $DIR/appfs/test-duplicate-consumption.sh
     $DIR/appfs/test-concurrent-submit-stress.sh
+    $DIR/appfs/test-long-handle-portability.sh
     "
 fi
 
