@@ -1,3 +1,7 @@
+use agentfs_sdk::{
+    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterStreamingPlanV1,
+    AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -23,6 +27,7 @@ const ERR_PAGER_HANDLE_CLOSED: &str = "PAGER_HANDLE_CLOSED";
 const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
+const ERR_INTERNAL: &str = "INTERNAL";
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
@@ -148,8 +153,71 @@ struct StreamingJob {
     path: String,
     #[serde(default)]
     client_token: Option<String>,
+    #[serde(default)]
+    accepted: Option<JsonValue>,
+    #[serde(default)]
+    progress: Option<JsonValue>,
     terminal: JsonValue,
     stage: u8,
+}
+
+struct DemoAppAdapterV1 {
+    app_id: String,
+}
+
+impl DemoAppAdapterV1 {
+    fn new(app_id: String) -> Self {
+        Self { app_id }
+    }
+}
+
+impl AppAdapterV1 for DemoAppAdapterV1 {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    fn submit_action(
+        &mut self,
+        path: &str,
+        payload: &str,
+        _input_mode: AdapterInputModeV1,
+        execution_mode: AdapterExecutionModeV1,
+        _ctx: &RequestContextV1,
+    ) -> std::result::Result<AdapterSubmitOutcomeV1, AdapterErrorV1> {
+        match execution_mode {
+            AdapterExecutionModeV1::Inline => {
+                let content = if path.ends_with("/send_message.act") {
+                    json!("send success")
+                } else {
+                    json!("action completed")
+                };
+                Ok(AdapterSubmitOutcomeV1::Completed { content })
+            }
+            AdapterExecutionModeV1::Streaming => {
+                let terminal = if path.ends_with("/download.act") {
+                    if let Ok(json) = serde_json::from_str::<JsonValue>(payload) {
+                        if let Some(target) = json.get("target").and_then(|v| v.as_str()) {
+                            json!({ "saved_to": target })
+                        } else {
+                            json!({ "saved_to": "unknown" })
+                        }
+                    } else {
+                        json!({ "saved_to": "unknown" })
+                    }
+                } else {
+                    json!("action completed")
+                };
+
+                Ok(AdapterSubmitOutcomeV1::Streaming {
+                    plan: AdapterStreamingPlanV1 {
+                        accepted_content: Some(json!("accepted")),
+                        progress_content: Some(json!({ "percent": 50 })),
+                        terminal_content: terminal,
+                    },
+                })
+            }
+        }
+    }
 }
 
 struct AppfsAdapter {
@@ -169,6 +237,7 @@ struct AppfsAdapter {
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
     streaming_jobs: Vec<StreamingJob>,
+    business_adapter: Box<dyn AppAdapterV1>,
 }
 
 impl AppfsAdapter {
@@ -199,6 +268,15 @@ impl AppfsAdapter {
         let cursor = Self::load_cursor(&cursor_path)?;
         let next_seq = cursor.max_seq + 1;
         let action_specs = Self::load_action_specs(&manifest_path)?;
+        let business_adapter: Box<dyn AppAdapterV1> =
+            Box::new(DemoAppAdapterV1::new(app_id.clone()));
+        if business_adapter.app_id() != app_id {
+            anyhow::bail!(
+                "Adapter app_id mismatch: adapter={} runtime={}",
+                business_adapter.app_id(),
+                app_id
+            );
+        }
 
         let mut adapter = Self {
             app_id,
@@ -217,6 +295,7 @@ impl AppfsAdapter {
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
+            business_adapter,
         };
         adapter.load_known_handles()?;
         Ok(adapter)
@@ -402,13 +481,30 @@ impl AppfsAdapter {
             };
         }
 
-        match spec.execution_mode {
-            ExecutionMode::Inline => {
-                let content = if normalized_path.ends_with("/send_message.act") {
-                    json!("send success")
-                } else {
-                    json!("action completed")
-                };
+        let request_ctx = RequestContextV1 {
+            app_id: self.app_id.clone(),
+            session_id: self.session_id.clone(),
+            request_id: request_id.clone(),
+            client_token: client_token.clone(),
+        };
+        let adapter_input_mode = match spec.input_mode {
+            InputMode::Text => AdapterInputModeV1::Text,
+            InputMode::Json => AdapterInputModeV1::Json,
+            InputMode::TextOrJson => AdapterInputModeV1::TextOrJson,
+        };
+        let adapter_execution_mode = match spec.execution_mode {
+            ExecutionMode::Inline => AdapterExecutionModeV1::Inline,
+            ExecutionMode::Streaming => AdapterExecutionModeV1::Streaming,
+        };
+
+        match self.business_adapter.submit_action(
+            &normalized_path,
+            payload,
+            adapter_input_mode,
+            adapter_execution_mode,
+            &request_ctx,
+        ) {
+            Ok(AdapterSubmitOutcomeV1::Completed { content }) => {
                 self.emit_event(
                     &normalized_path,
                     &request_id,
@@ -418,8 +514,32 @@ impl AppfsAdapter {
                     client_token,
                 )?;
             }
-            ExecutionMode::Streaming => {
-                self.enqueue_streaming_job(&normalized_path, &request_id, client_token, payload)?;
+            Ok(AdapterSubmitOutcomeV1::Streaming { plan }) => {
+                self.enqueue_streaming_job(&normalized_path, &request_id, client_token, plan)?;
+            }
+            Err(AdapterErrorV1::Rejected {
+                code,
+                message,
+                retryable,
+            }) => {
+                self.emit_failed_with_retryable(
+                    &normalized_path,
+                    &request_id,
+                    &code,
+                    &message,
+                    retryable,
+                    client_token,
+                )?;
+            }
+            Err(AdapterErrorV1::Internal { message }) => {
+                self.emit_failed_with_retryable(
+                    &normalized_path,
+                    &request_id,
+                    ERR_INTERNAL,
+                    &message,
+                    true,
+                    client_token,
+                )?;
             }
         }
         Ok(ProcessOutcome::Submitted)
@@ -602,27 +722,15 @@ impl AppfsAdapter {
         action_path: &str,
         request_id: &str,
         client_token: Option<String>,
-        payload: &str,
+        plan: AdapterStreamingPlanV1,
     ) -> Result<()> {
-        let terminal = if action_path.ends_with("/download.act") {
-            if let Ok(json) = serde_json::from_str::<JsonValue>(payload) {
-                if let Some(target) = json.get("target").and_then(|v| v.as_str()) {
-                    json!({ "saved_to": target })
-                } else {
-                    json!({ "saved_to": "unknown" })
-                }
-            } else {
-                json!({ "saved_to": "unknown" })
-            }
-        } else {
-            json!("action completed")
-        };
-
         self.streaming_jobs.push(StreamingJob {
             request_id: request_id.to_string(),
             path: action_path.to_string(),
             client_token,
-            terminal,
+            accepted: plan.accepted_content,
+            progress: plan.progress_content,
+            terminal: plan.terminal_content,
             stage: 0,
         });
         self.save_streaming_jobs()
@@ -642,7 +750,7 @@ impl AppfsAdapter {
                         &job.path,
                         &job.request_id,
                         "action.accepted",
-                        Some(json!("accepted")),
+                        Some(job.accepted.clone().unwrap_or_else(|| json!("accepted"))),
                         None,
                         job.client_token.clone(),
                     )?;
@@ -654,7 +762,11 @@ impl AppfsAdapter {
                         &job.path,
                         &job.request_id,
                         "action.progress",
-                        Some(json!({ "percent": 50 })),
+                        Some(
+                            job.progress
+                                .clone()
+                                .unwrap_or_else(|| json!({ "percent": 50 })),
+                        ),
                         None,
                         job.client_token.clone(),
                     )?;
@@ -783,36 +895,26 @@ impl AppfsAdapter {
         message: &str,
         client_token: Option<String>,
     ) -> Result<()> {
-        if error_code == ERR_PERMISSION_DENIED {
-            return self.emit_event(
-                action_path,
-                request_id,
-                "action.failed",
-                None,
-                Some(json!({
-                    "code": ERR_PERMISSION_DENIED,
-                    "message": message,
-                    "retryable": false,
-                })),
-                client_token,
-            );
-        }
+        let retryable = error_code == ERR_PAGER_HANDLE_EXPIRED;
+        self.emit_failed_with_retryable(
+            action_path,
+            request_id,
+            error_code,
+            message,
+            retryable,
+            client_token,
+        )
+    }
 
-        if error_code == ERR_PAGER_HANDLE_EXPIRED {
-            return self.emit_event(
-                action_path,
-                request_id,
-                "action.failed",
-                None,
-                Some(json!({
-                    "code": ERR_PAGER_HANDLE_EXPIRED,
-                    "message": message,
-                    "retryable": true,
-                })),
-                client_token,
-            );
-        }
-
+    fn emit_failed_with_retryable(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        error_code: &str,
+        message: &str,
+        retryable: bool,
+        client_token: Option<String>,
+    ) -> Result<()> {
         self.emit_event(
             action_path,
             request_id,
@@ -821,7 +923,7 @@ impl AppfsAdapter {
             Some(json!({
                 "code": error_code,
                 "message": message,
-                "retryable": false,
+                "retryable": retryable,
             })),
             client_token,
         )

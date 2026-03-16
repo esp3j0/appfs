@@ -1,3 +1,4 @@
+pub mod appfs_adapter;
 pub mod connection_pool;
 pub mod error;
 pub mod filesystem;
@@ -16,6 +17,10 @@ use turso::{Builder, EncryptionOpts, Value};
 pub use turso::sync::{DatabaseSyncStats, PartialBootstrapStrategy, PartialSyncOpts};
 
 // Re-export filesystem types
+pub use appfs_adapter::{
+    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterStreamingPlanV1,
+    AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
