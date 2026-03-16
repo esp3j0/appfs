@@ -14,16 +14,16 @@
 //! drop(handle); // auto-unmounts
 //! ```
 
-use crate::opts::MountBackend;
+pub use crate::opts::MountBackend;
 
 #[cfg(target_os = "windows")]
 pub mod winfsp;
 
 #[cfg(target_os = "linux")]
 mod fuse;
-
 #[cfg(unix)]
-use super::nfs;
+mod nfs;
+
 #[cfg(unix)]
 use tokio::sync::Mutex;
 #[cfg(unix)]
@@ -178,10 +178,12 @@ pub fn unmount(mountpoint: &Path, backend: MountBackend, lazy: bool) -> Result<(
         MountBackend::Fuse => fuse::unmount_fuse(mountpoint, lazy),
         #[cfg(not(target_os = "linux"))]
         MountBackend::Fuse => anyhow::bail!("FUSE is not supported on this platform"),
-        #[cfg(target_os = "windows")]
-        MountBackend::Nfs => anyhow::bail!("NFS mounting is not supported on Windows. Use --backend winfsp instead."),
-        #[cfg(all(unix, not(target_os = "linux")))]
+        #[cfg(unix)]
         MountBackend::Nfs => nfs::unmount_nfs(mountpoint, lazy),
+        #[cfg(not(unix))]
+        MountBackend::Nfs => anyhow::bail!(
+            "NFS mounting is not supported on this platform."
+        ),
         #[cfg(target_os = "windows")]
         MountBackend::Winfsp => {
             // WinFsp unmounting is handled by dropping the MountHandle
@@ -191,6 +193,10 @@ pub fn unmount(mountpoint: &Path, backend: MountBackend, lazy: bool) -> Result<(
                  Drop the MountHandle to unmount the filesystem."
             );
         }
+        #[cfg(not(target_os = "windows"))]
+        MountBackend::Winfsp => anyhow::bail!(
+            "WinFsp is only supported on Windows."
+        ),
         #[cfg(not(any(unix, target_os = "windows")))]
         _ => anyhow::bail!("Unsupported mount backend for this platform"),
     }
@@ -208,6 +214,9 @@ pub async fn mount_fs(
     match opts.backend {
         MountBackend::Fuse => fuse::mount_fuse(fs, opts),
         MountBackend::Nfs => nfs::mount_nfs(fs, opts).await,
+        MountBackend::Winfsp => anyhow::bail!(
+            "WinFsp mounting is only supported on Windows."
+        ),
     }
 }
 
@@ -225,6 +234,11 @@ pub async fn mount_fs(
             );
         }
         MountBackend::Nfs => nfs::mount_nfs(fs, opts).await,
+        MountBackend::Winfsp => {
+            anyhow::bail!(
+                "WinFsp mounting is only supported on Windows."
+            );
+        }
     }
 }
 

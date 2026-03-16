@@ -75,6 +75,10 @@ pub fn mount(args: MountArgs) -> Result<()> {
             let rt = crate::get_runtime();
             rt.block_on(mount_nfs_backend(args))
         }
+        MountBackend::Winfsp => anyhow::bail!(
+            "WinFsp mounting is only supported on Windows.\n\
+             Use --backend fuse or --backend nfs on Linux."
+        ),
     }
 }
 
@@ -91,6 +95,12 @@ pub fn mount(args: MountArgs) -> Result<()> {
         MountBackend::Nfs => {
             let rt = crate::get_runtime();
             rt.block_on(mount_nfs_backend(args))
+        }
+        MountBackend::Winfsp => {
+            anyhow::bail!(
+                "WinFsp mounting is only supported on Windows.\n\
+                 Use --backend nfs on macOS."
+            );
         }
     }
 }
