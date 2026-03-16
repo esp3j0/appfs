@@ -278,7 +278,7 @@ Evidence sources used:
 1. Build + static + live run log: `/home/yxy/rep/agentfs/cli/appfs-phase1-validation.log`
 2. Live harness script: `cli/tests/appfs/run-live-with-adapter.sh`
 3. Runtime implementation: `cli/src/cmd/appfs.rs`
-4. Live contract additions: `cli/tests/appfs/test-streaming-lifecycle.sh`, `cli/tests/appfs/test-submit-reject.sh`, `cli/tests/appfs/test-submit-order.sh`, `cli/tests/appfs/test-paging-errors.sh`
+4. Live contract additions: `cli/tests/appfs/test-streaming-lifecycle.sh`, `cli/tests/appfs/test-submit-reject.sh`, `cli/tests/appfs/test-submit-order.sh`, `cli/tests/appfs/test-paging-errors.sh`, `cli/tests/appfs/test-submit-atomicity.sh`
 
 | Item | Status | Evidence | Note |
 |---|---|---|---|
@@ -293,7 +293,7 @@ Evidence sources used:
 | 9 | FAIL | `cli/src/cmd/appfs.rs` | Deterministic overlong-segment shortening not implemented |
 | 10 | FAIL | No dedicated integration case yet | Duplicate-consumption behavior not validated by test suite |
 | 11 | PASS | `CT-009` in validation log + `cli/src/cmd/appfs.rs` | malformed/unknown/expired/closed/cross-session paging errors are mapped and asserted |
-| 12 | FAIL | No interrupted-write integration case yet | Submit atomicity under interrupted writes not verified |
+| 12 | PARTIAL | `CT-010` in validation log + `cli/src/cmd/appfs.rs` stable-submit gate | In-progress multi-chunk write avoids premature side effects; abrupt process-kill atomicity still needs dedicated stress case |
 | 13 | PARTIAL | `CT-008` in validation log | Same-path ordered multi-submit + single terminal validated; high-concurrency stress still missing |
 | 14 | PASS | `CT-003` + publish sequence in code | `events/cursor/from-seq` consistency validated for normal publish path |
 | 15 | PASS | `CT-002/CT-003` + seq-based `event_id` | `event_id` present and replay-stable |

@@ -15,6 +15,7 @@ const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
 #[cfg(unix)]
 const ACTION_COOLDOWN_MS: u64 = 1500;
+const SUBMIT_STABLE_MS: u64 = 1100;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -88,6 +89,12 @@ struct ActionFingerprint {
     modified_ns: u128,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingSubmit {
+    fingerprint: ActionFingerprint,
+    first_seen: Instant,
+}
+
 #[derive(Debug, Clone)]
 struct ActionSpec {
     template: String,
@@ -145,6 +152,7 @@ struct AppfsAdapter {
     cursor: CursorState,
     next_seq: i64,
     last_fingerprint_by_action: HashMap<PathBuf, ActionFingerprint>,
+    pending_submit_by_action: HashMap<PathBuf, PendingSubmit>,
     blocked_actions: HashMap<PathBuf, Instant>,
     handles: HashMap<String, PagingHandle>,
 }
@@ -188,6 +196,7 @@ impl AppfsAdapter {
             cursor,
             next_seq,
             last_fingerprint_by_action: HashMap::new(),
+            pending_submit_by_action: HashMap::new(),
             blocked_actions: HashMap::new(),
             handles: HashMap::new(),
         };
@@ -233,8 +242,31 @@ impl AppfsAdapter {
                 .get(&action_path)
                 .is_some_and(|last| *last == fingerprint)
             {
+                self.pending_submit_by_action.remove(&action_path);
                 continue;
             }
+
+            let now = Instant::now();
+            match self.pending_submit_by_action.get(&action_path) {
+                Some(pending)
+                    if pending.fingerprint == fingerprint
+                        && now.duration_since(pending.first_seen)
+                            >= Duration::from_millis(SUBMIT_STABLE_MS) => {}
+                Some(pending) if pending.fingerprint == fingerprint => {
+                    continue;
+                }
+                _ => {
+                    self.pending_submit_by_action.insert(
+                        action_path.clone(),
+                        PendingSubmit {
+                            fingerprint,
+                            first_seen: now,
+                        },
+                    );
+                    continue;
+                }
+            }
+            self.pending_submit_by_action.remove(&action_path);
 
             let payload = match fs::read_to_string(&action_path) {
                 Ok(p) => p,
@@ -256,6 +288,8 @@ impl AppfsAdapter {
         }
 
         self.last_fingerprint_by_action
+            .retain(|path, _| seen.contains(path));
+        self.pending_submit_by_action
             .retain(|path, _| seen.contains(path));
 
         Ok(())

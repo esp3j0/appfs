@@ -63,5 +63,5 @@ cd cli
 2. Some checks require `jq`; if missing, JSON field-level assertions are skipped.
 3. `APPFS_STATIC_FIXTURE=1` runs only static contract checks (layout/replay/manifest policy).
 4. `run-live-with-adapter.sh` is Linux/FUSE oriented and expects `fusermount` + `mountpoint`.
-5. Live suite also validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), and ordered multi-submit behavior (`CT-008`).
+5. Live suite also validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), and in-progress write atomicity (`CT-010`).
 6. This is a skeleton focused on protocol gates, not full adapter business behavior.
