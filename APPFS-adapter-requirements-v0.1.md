@@ -291,14 +291,14 @@ Evidence sources used:
 | 6 | PASS | `CT-002` + token extraction logic | `request_id` always present; `client_token` echo supported |
 | 7 | PASS | `CT-003` in validation log | Replay via `from-seq` works |
 | 8 | PASS | `CT-012` in validation log + `cli/src/cmd/appfs.rs` (`is_safe_action_rel_path`) | drive-letter/reserved/backslash unsafe paths are rejected without stream side effects |
-| 9 | FAIL | `cli/src/cmd/appfs.rs` | Deterministic overlong-segment shortening not implemented |
+| 9 | PASS | `CT-015` in validation log + `cli/src/cmd/appfs.rs` (`normalize_runtime_handle_id`) | Overlong paging handles are deterministically shortened to portable <=255-byte runtime IDs while preserving alias lookup |
 | 10 | PASS | `CT-013` in validation log | Same event is consumable from both live stream and replay surface; consumer dedupe is required |
 | 11 | PASS | `CT-009` in validation log + `cli/src/cmd/appfs.rs` | malformed/unknown/expired/closed/cross-session paging errors are mapped and asserted |
 | 12 | PASS | `CT-010/CT-011` in validation log + `cli/src/cmd/appfs.rs` stable-submit gate | In-progress and interrupted write scenarios are covered; no side effect before valid completed submit |
 | 13 | PASS | `CT-014` in validation log | Concurrent submit stress validates single terminal per submit and distinct request ids |
 | 14 | PASS | `CT-003` + publish sequence in code | `events/cursor/from-seq` consistency validated for normal publish path |
 | 15 | PASS | `CT-002/CT-003` + seq-based `event_id` | `event_id` present and replay-stable |
-| 16 | PARTIAL | lifecycle probe in `run-live-with-adapter.sh` + validation log | start/alive/graceful-stop/restart-post-submit validated; accepted-but-not-terminal reconciliation still pending |
+| 16 | PASS | `CT-016` in `run-live-with-adapter.sh` validation log + `cli/src/cmd/appfs.rs` (`inflight.jobs.res.json`) | graceful stop/restart and accepted-but-not-terminal streaming reconciliation are validated end-to-end |
 
 ## 9. Delivery Plan
 
