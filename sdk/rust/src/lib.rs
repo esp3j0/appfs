@@ -18,8 +18,9 @@ pub use turso::sync::{DatabaseSyncStats, PartialBootstrapStrategy, PartialSyncOp
 
 // Re-export filesystem types
 pub use appfs_adapter::{
-    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterStreamingPlanV1,
-    AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+    AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
+    AdapterInputModeV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1,
+    RequestContextV1,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use filesystem::HostFS;
