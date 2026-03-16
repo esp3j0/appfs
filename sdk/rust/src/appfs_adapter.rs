@@ -125,9 +125,9 @@ mod tests {
     };
     use serde_json::json;
 
-    struct SmokeAdapter;
+    struct RequiredMatrixAdapterA;
 
-    impl AppAdapterV1 for SmokeAdapter {
+    impl AppAdapterV1 for RequiredMatrixAdapterA {
         fn app_id(&self) -> &str {
             "aiim"
         }
@@ -142,12 +142,12 @@ mod tests {
         ) -> std::result::Result<AdapterSubmitOutcomeV1, AdapterErrorV1> {
             if execution_mode == AdapterExecutionModeV1::Inline {
                 return Ok(AdapterSubmitOutcomeV1::Completed {
-                    content: json!({ "path": path }),
+                    content: json!({ "path": path, "status": "ok", "adapter": "a" }),
                 });
             }
             Ok(AdapterSubmitOutcomeV1::Streaming {
                 plan: AdapterStreamingPlanV1 {
-                    accepted_content: Some(json!("accepted")),
+                    accepted_content: Some(json!({ "state": "accepted" })),
                     progress_content: Some(json!({ "percent": 50 })),
                     terminal_content: json!({ "ok": true }),
                 },
@@ -179,15 +179,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sdk_trait_smoke_submit_and_control() {
-        let mut adapter = SmokeAdapter;
-        let ctx = RequestContextV1 {
+    struct RequiredMatrixAdapterB;
+
+    impl AppAdapterV1 for RequiredMatrixAdapterB {
+        fn app_id(&self) -> &str {
+            "aiim"
+        }
+
+        fn submit_action(
+            &mut self,
+            path: &str,
+            _payload: &str,
+            _input_mode: AdapterInputModeV1,
+            execution_mode: AdapterExecutionModeV1,
+            _ctx: &RequestContextV1,
+        ) -> std::result::Result<AdapterSubmitOutcomeV1, AdapterErrorV1> {
+            if execution_mode == AdapterExecutionModeV1::Inline {
+                return Ok(AdapterSubmitOutcomeV1::Completed {
+                    content: json!({ "path": path, "status": "ok", "adapter": "b", "ts": 1 }),
+                });
+            }
+            Ok(AdapterSubmitOutcomeV1::Streaming {
+                plan: AdapterStreamingPlanV1 {
+                    accepted_content: Some(json!({ "state": "accepted", "queue": "default" })),
+                    progress_content: Some(json!({ "percent": 50, "phase": "download" })),
+                    terminal_content: json!({ "ok": true, "saved_to": "/tmp/out.bin" }),
+                },
+            })
+        }
+
+        fn submit_control_action(
+            &mut self,
+            _path: &str,
+            action: AdapterControlActionV1,
+            _ctx: &RequestContextV1,
+        ) -> std::result::Result<AdapterControlOutcomeV1, AdapterErrorV1> {
+            match action {
+                AdapterControlActionV1::PagingFetchNext {
+                    handle_id,
+                    page_no,
+                    has_more,
+                } => Ok(AdapterControlOutcomeV1::Completed {
+                    content: json!({
+                        "items": [{ "id": "m-1" }],
+                        "page": { "handle_id": handle_id, "page_no": page_no, "has_more": has_more, "mode": "snapshot" }
+                    }),
+                }),
+                AdapterControlActionV1::PagingClose { handle_id } => {
+                    Ok(AdapterControlOutcomeV1::Completed {
+                        content: json!({ "closed": true, "handle_id": handle_id }),
+                    })
+                }
+            }
+        }
+    }
+
+    struct ErrorMatrixAdapter;
+
+    impl AppAdapterV1 for ErrorMatrixAdapter {
+        fn app_id(&self) -> &str {
+            "aiim"
+        }
+
+        fn submit_action(
+            &mut self,
+            path: &str,
+            _payload: &str,
+            _input_mode: AdapterInputModeV1,
+            _execution_mode: AdapterExecutionModeV1,
+            _ctx: &RequestContextV1,
+        ) -> std::result::Result<AdapterSubmitOutcomeV1, AdapterErrorV1> {
+            if path.ends_with("/reject.act") {
+                return Err(AdapterErrorV1::Rejected {
+                    code: "INVALID_ARGUMENT".to_string(),
+                    message: "bad payload".to_string(),
+                    retryable: false,
+                });
+            }
+            Err(AdapterErrorV1::Internal {
+                message: "backend unavailable".to_string(),
+            })
+        }
+    }
+
+    type AdapterFactory = fn() -> Box<dyn AppAdapterV1>;
+
+    fn fixture_ctx() -> RequestContextV1 {
+        RequestContextV1 {
             app_id: "aiim".to_string(),
             session_id: "sess-test".to_string(),
             request_id: "req-test".to_string(),
             client_token: Some("tok-1".to_string()),
-        };
+        }
+    }
+
+    fn assert_inline_completed(outcome: AdapterSubmitOutcomeV1) {
+        match outcome {
+            AdapterSubmitOutcomeV1::Completed { content } => {
+                assert_eq!(content["path"], "/contacts/zhangsan/send_message.act");
+                assert_eq!(content["status"], "ok");
+            }
+            _ => panic!("expected completed"),
+        }
+    }
+
+    fn assert_streaming_completed(outcome: AdapterSubmitOutcomeV1) {
+        match outcome {
+            AdapterSubmitOutcomeV1::Streaming { plan } => {
+                assert!(plan.accepted_content.is_some());
+                assert!(plan.progress_content.is_some());
+                assert_eq!(plan.terminal_content["ok"], true);
+            }
+            _ => panic!("expected streaming"),
+        }
+    }
+
+    fn run_required_case_matrix(factory: AdapterFactory) {
+        let mut adapter = factory();
+        let ctx = fixture_ctx();
 
         let inline = adapter
             .submit_action(
@@ -197,13 +306,8 @@ mod tests {
                 AdapterExecutionModeV1::Inline,
                 &ctx,
             )
-            .expect("inline should succeed");
-        match inline {
-            AdapterSubmitOutcomeV1::Completed { content } => {
-                assert_eq!(content["path"], "/contacts/zhangsan/send_message.act");
-            }
-            _ => panic!("expected completed"),
-        }
+            .expect("required matrix inline case should succeed");
+        assert_inline_completed(inline);
 
         let streaming = adapter
             .submit_action(
@@ -213,15 +317,8 @@ mod tests {
                 AdapterExecutionModeV1::Streaming,
                 &ctx,
             )
-            .expect("streaming should succeed");
-        match streaming {
-            AdapterSubmitOutcomeV1::Streaming { plan } => {
-                assert_eq!(plan.accepted_content, Some(json!("accepted")));
-                assert_eq!(plan.progress_content, Some(json!({ "percent": 50 })));
-                assert_eq!(plan.terminal_content["ok"], true);
-            }
-            _ => panic!("expected streaming"),
-        }
+            .expect("required matrix streaming case should succeed");
+        assert_streaming_completed(streaming);
 
         let fetch = adapter
             .submit_control_action(
@@ -233,12 +330,132 @@ mod tests {
                 },
                 &ctx,
             )
-            .expect("fetch should succeed");
+            .expect("required matrix paging fetch should succeed");
         match fetch {
             AdapterControlOutcomeV1::Completed { content } => {
                 assert_eq!(content["page"]["handle_id"], "ph_abc");
                 assert_eq!(content["page"]["page_no"], 1);
+                assert_eq!(content["page"]["has_more"], true);
             }
+        }
+
+        let close = adapter
+            .submit_control_action(
+                "/_paging/close.act",
+                AdapterControlActionV1::PagingClose {
+                    handle_id: "ph_abc".to_string(),
+                },
+                &ctx,
+            )
+            .expect("required matrix paging close should succeed");
+        match close {
+            AdapterControlOutcomeV1::Completed { content } => {
+                assert_eq!(content["closed"], true);
+                assert_eq!(content["handle_id"], "ph_abc");
+            }
+        }
+    }
+
+    fn run_error_case_matrix(factory: AdapterFactory) {
+        let mut adapter = factory();
+        let ctx = fixture_ctx();
+
+        let rejected = adapter
+            .submit_action(
+                "/actions/reject.act",
+                "{}",
+                AdapterInputModeV1::Json,
+                AdapterExecutionModeV1::Inline,
+                &ctx,
+            )
+            .expect_err("error matrix reject case should fail");
+        match rejected {
+            AdapterErrorV1::Rejected {
+                code,
+                message,
+                retryable,
+            } => {
+                assert_eq!(code, "INVALID_ARGUMENT");
+                assert_eq!(message, "bad payload");
+                assert!(!retryable);
+            }
+            _ => panic!("expected rejected error"),
+        }
+
+        let internal = adapter
+            .submit_action(
+                "/actions/internal.act",
+                "{}",
+                AdapterInputModeV1::Json,
+                AdapterExecutionModeV1::Inline,
+                &ctx,
+            )
+            .expect_err("error matrix internal case should fail");
+        match internal {
+            AdapterErrorV1::Internal { message } => {
+                assert_eq!(message, "backend unavailable");
+            }
+            _ => panic!("expected internal error"),
+        }
+    }
+
+    fn make_required_adapter_a() -> Box<dyn AppAdapterV1> {
+        Box::new(RequiredMatrixAdapterA)
+    }
+
+    fn make_required_adapter_b() -> Box<dyn AppAdapterV1> {
+        Box::new(RequiredMatrixAdapterB)
+    }
+
+    fn make_error_adapter() -> Box<dyn AppAdapterV1> {
+        Box::new(ErrorMatrixAdapter)
+    }
+
+    #[test]
+    fn sdk_trait_smoke_submit_and_control() {
+        run_required_case_matrix(make_required_adapter_a);
+    }
+
+    #[test]
+    fn sdk_trait_required_case_matrix_is_adapter_pluggable() {
+        run_required_case_matrix(make_required_adapter_a);
+        run_required_case_matrix(make_required_adapter_b);
+    }
+
+    #[test]
+    fn sdk_trait_error_case_matrix() {
+        run_error_case_matrix(make_error_adapter);
+    }
+
+    #[test]
+    fn sdk_trait_default_control_action_not_supported() {
+        let mut adapter = ErrorMatrixAdapter;
+        let err = adapter
+            .submit_control_action(
+                "/_paging/fetch_next.act",
+                AdapterControlActionV1::PagingFetchNext {
+                    handle_id: "ph_abc".to_string(),
+                    page_no: 1,
+                    has_more: true,
+                },
+                &fixture_ctx(),
+            )
+            .expect_err("default control path should be unsupported");
+        match err {
+            AdapterErrorV1::Rejected {
+                code,
+                message,
+                retryable,
+            } => {
+                assert_eq!(code, "NOT_SUPPORTED");
+                assert!(
+                    message.contains("control action"),
+                    "unexpected message: {}",
+                    message
+                );
+                assert!(!retryable);
+            }
+            _ => panic!("expected rejected not-supported error"),
         }
     }
 }

@@ -31,11 +31,12 @@
 1. Task 1-8 are implemented and validated with live contract coverage (`CT-001` to `CT-016`).
 2. Runtime covers long-handle normalization and restart reconciliation for in-flight streaming requests.
 3. Task 9 core refactor is implemented: runtime action path and paging control path now dispatch through a frozen SDK trait (`AppAdapterV1`) in `sdk/rust/src/appfs_adapter.rs`.
-4. SDK module now includes trait-level smoke tests that validate submit/control outcomes independently from file-watching runtime.
-4. Requirements checklist item 1-17 are marked `PASS` in `APPFS-adapter-requirements-v0.1.md`.
+4. SDK module now includes reusable matrix-style conformance tests (required-case matrix + error-case matrix), with multiple adapter implementations plugged into the same fixture runner.
+5. Demo adapter behavior has been split out of `cli/src/cmd/appfs.rs` into a dedicated module (`cli/src/cmd/appfs/demo_adapter.rs`) to keep runtime orchestration separate from business logic.
+6. Requirements checklist item 1-17 are marked `PASS` in `APPFS-adapter-requirements-v0.1.md`.
 2. Remaining:
-1. Expand SDK-level conformance from smoke tests to reusable fixture suites (multi-adapter plug-in, required-case matrix, error-case matrix).
-2. Split demo adapter implementation from `cli/src/cmd/appfs.rs` into dedicated adapter module/crate for cleaner third-party reuse.
+1. Optional: lift demo adapter module into standalone crate/package boundary for external reuse and independent versioning.
+2. Optional: add language-bridge reference implementation (e.g., gRPC/HTTP) mapped to frozen `AppAdapterV1` semantics.
 
 ## Task 1: Add `serve appfs` Command Skeleton
 

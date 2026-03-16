@@ -1,6 +1,6 @@
 # AppFS Adapter Layer Requirements v0.1
 
-- Version: `0.1-draft-r2`
+- Version: `0.1-draft-r3`
 - Date: `2026-03-16`
 - Status: `Draft`
 - Depends on: `APPFS-v0.1 (r8)`
@@ -229,27 +229,35 @@ Adapter MUST expose structured logs including:
 The following trait shape is the v0.1 frozen logical contract (language-neutral at protocol semantics, Rust shown as reference).
 
 ```rust
-pub trait AppAdapter {
+pub trait AppAdapterV1: Send {
     fn app_id(&self) -> &str;
-    fn manifest(&self) -> ManifestDescriptor;
-
-    fn read_resource(&self, path: &str, ctx: &RequestContext) -> Result<Vec<u8>, AdapterError>;
 
     fn submit_action(
-        &self,
+        &mut self,
         path: &str,
-        payload: &[u8],
-        request_id: &str,
-        ctx: &RequestContext,
-        emitter: &dyn EventEmitter,
-    ) -> Result<SubmitResult, AdapterError>;
+        payload: &str,
+        input_mode: AdapterInputModeV1,
+        execution_mode: AdapterExecutionModeV1,
+        ctx: &RequestContextV1,
+    ) -> Result<AdapterSubmitOutcomeV1, AdapterErrorV1>;
+
+    fn submit_control_action(
+        &mut self,
+        path: &str,
+        action: AdapterControlActionV1,
+        ctx: &RequestContextV1,
+    ) -> Result<AdapterControlOutcomeV1, AdapterErrorV1>;
 }
 ```
 
 Where:
 
-1. `SubmitResult` indicates sync completion vs async accepted.
-2. `EventEmitter` abstracts writing JSONL events to runtime stream.
+1. `RequestContextV1` is runtime-provided correlation context (`app_id`, `session_id`, `request_id`, optional `client_token`).
+2. `submit_action` returns either:
+1. `AdapterSubmitOutcomeV1::Completed` (inline-style terminal content)
+2. `AdapterSubmitOutcomeV1::Streaming` (accepted/progress/terminal plan for runtime emission)
+3. `submit_control_action` is for control channels (currently paging `fetch_next` / `close`).
+4. Runtime keeps ownership of stream durability (`events`, `cursor`, `from-seq`) and ordering/atomicity guarantees.
 
 ### 6.1 v0.1 Freeze Policy
 
@@ -257,6 +265,14 @@ Where:
 2. Removing/renaming/changing behavior of existing required methods is a breaking change and MUST wait for `v0.2`.
 3. Any implementation-specific extension MUST be documented as optional and MUST NOT alter Core semantics.
 4. Manifest SHOULD expose adapter compatibility metadata (e.g., `adapter_sdk_version`).
+
+### 6.2 Conformance Fixture Guidance
+
+1. SDK SHOULD provide reusable fixture-style tests for:
+1. required submit/control case matrix
+2. error case matrix
+2. Different adapter implementations SHOULD be pluggable into the same fixture matrix without changing runtime logic.
+3. Current Rust SDK reference includes matrix-style trait tests in `sdk/rust/src/appfs_adapter.rs`.
 
 ## 7. Security Requirements
 
@@ -295,6 +311,7 @@ Evidence sources used:
 3. Runtime implementation: `cli/src/cmd/appfs.rs`
 4. Live contract additions: `cli/tests/appfs/test-streaming-lifecycle.sh`, `cli/tests/appfs/test-submit-reject.sh`, `cli/tests/appfs/test-submit-order.sh`, `cli/tests/appfs/test-paging-errors.sh`, `cli/tests/appfs/test-submit-atomicity.sh`, `cli/tests/appfs/test-submit-interrupt.sh`, `cli/tests/appfs/test-path-safety.sh`, `cli/tests/appfs/test-duplicate-consumption.sh`, `cli/tests/appfs/test-concurrent-submit-stress.sh`
 5. Harness lifecycle probe: `cli/tests/appfs/run-live-with-adapter.sh` (stop/restart adapter + post-restart submit)
+6. SDK matrix fixture tests: `sdk/rust/src/appfs_adapter.rs` (`sdk_trait_required_case_matrix_is_adapter_pluggable`, `sdk_trait_error_case_matrix`)
 
 | Item | Status | Evidence | Note |
 |---|---|---|---|
