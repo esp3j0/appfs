@@ -24,3 +24,7 @@ DIR="$(dirname "$0")"
 "$DIR/test-overlay-delta-in-base-dir.sh"
 "$DIR/test-fuse-cache-invalidation.sh"
 "$DIR/test-symlinks.sh" || true  # Requires user namespaces (may fail in CI)
+
+# Optional AppFS contract test suite (disabled by default).
+# Enable with: APPFS_CONTRACT_TESTS=1 ./tests/all.sh
+sh "$DIR/test-appfs-contract.sh"

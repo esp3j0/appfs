@@ -1,0 +1,12 @@
+{
+  "granted": [
+    "contacts.read",
+    "contacts.send_message",
+    "files.download",
+    "chats.read"
+  ],
+  "denied": [
+    "contacts.delete",
+    "admin.*"
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "app_id": "aiim",
+  "display_name": "AIIM",
+  "contract_version": "0.1",
+  "stream": {
+    "path": "_stream/events.evt.jsonl",
+    "line_schema": "_meta/schemas/events.evt.schema.json",
+    "cursor_path": "_stream/cursor.res.json",
+    "replay_path_template": "_stream/from-seq/{seq}.evt.jsonl"
+  },
+  "nodes": {
+    "chats/{chat_id}/messages.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/chat.messages.page.output.schema.json",
+      "paging": {
+        "enabled": true,
+        "mode": "snapshot",
+        "default_page_size": 30,
+        "max_page_size": 100,
+        "handle_ttl_sec": 900
+      }
+    },
+    "contacts/{contact_id}/profile.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/contact.profile.output.schema.json"
+    },
+    "contacts/{contact_id}/send_message.act": {
+      "kind": "action",
+      "input_mode": "text_or_json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 2000,
+      "input_schema": "_meta/schemas/send_message.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 8192,
+      "rate_limit_hint": "30/minute",
+      "event_types": [
+        "action.accepted",
+        "action.completed",
+        "action.failed"
+      ],
+      "example": "echo \"hi\" > /app/aiim/contacts/zhangsan/send_message.act"
+    },
+    "files/{file_id}/download.act": {
+      "kind": "action",
+      "input_mode": "json",
+      "execution_mode": "streaming",
+      "input_schema": "_meta/schemas/download.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 4096,
+      "rate_limit_hint": "10/minute",
+      "progress_policy": {
+        "mode": "app_defined",
+        "max_silence_ms": 10000
+      },
+      "event_types": [
+        "action.accepted",
+        "action.progress",
+        "action.completed",
+        "action.failed"
+      ],
+      "example": "echo '{\"target\":\"C:/tmp/file-001.bin\"}' > /app/aiim/files/file-001/download.act"
+    },
+    "_paging/fetch_next.act": {
+      "kind": "action",
+      "input_mode": "text_or_json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 500,
+      "input_schema": "_meta/schemas/paging.fetch_next.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 512,
+      "event_types": [
+        "action.completed",
+        "action.failed"
+      ]
+    },
+    "_paging/close.act": {
+      "kind": "action",
+      "input_mode": "text_or_json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 500,
+      "input_schema": "_meta/schemas/paging.close.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 512,
+      "event_types": [
+        "action.completed",
+        "action.failed"
+      ]
+    }
+  }
+}

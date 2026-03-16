@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "app_id": "aiim",
+      "display_name": "AIIM",
+      "root": "/app/aiim",
+      "contract_version": "0.1"
+    }
+  ]
+}

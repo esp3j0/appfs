@@ -1,0 +1,11 @@
+{
+  "session_id": "sess-example-001",
+  "principal": {
+    "user_id": "user-demo",
+    "agent_id": "agent-demo"
+  },
+  "runtime": {
+    "name": "agentfs",
+    "version": "0.6.2"
+  }
+}

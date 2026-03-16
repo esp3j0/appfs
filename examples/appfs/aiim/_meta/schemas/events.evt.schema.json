@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/events.evt.schema.json",
+  "title": "AppFS Event Stream Line",
+  "description": "JSON schema for one line in /app/<app_id>/_stream/events.evt.jsonl",
+  "type": "object",
+  "required": [
+    "seq",
+    "ts",
+    "app",
+    "session_id",
+    "request_id",
+    "path",
+    "type"
+  ],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "app": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "action.accepted",
+        "action.completed",
+        "action.failed",
+        "action.progress",
+        "action.output",
+        "resource.updated",
+        "action.awaiting_approval",
+        "action.canceled"
+      ]
+    },
+    "content": {
+      "description": "Human-readable message or structured payload.",
+      "type": [
+        "string",
+        "object",
+        "array",
+        "null"
+      ]
+    },
+    "client_token": {
+      "type": "string"
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "integer",
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "meta": {
+      "description": "Extension bag for implementation-specific metadata.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "action.failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "error"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "action.completed"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "error"
+          ]
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

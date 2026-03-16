@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/download.input.schema.json",
+  "title": "AIIM Download Input",
+  "type": "object",
+  "required": [
+    "target"
+  ],
+  "properties": {
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Local or virtual destination path."
+    },
+    "overwrite": {
+      "type": "boolean",
+      "default": false
+    },
+    "client_token": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

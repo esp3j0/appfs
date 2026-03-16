@@ -1,0 +1,9 @@
+{
+  "accepted_total": 2,
+  "completed_total": 2,
+  "failed_total": 0,
+  "stream_backlog": 0,
+  "p95_accept_ms": 120,
+  "p95_end_to_end_ms": 860,
+  "last_error_ts": null
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/paging.fetch_next.input.schema.json",
+  "title": "Fetch Next Page Input",
+  "description": "Text mode is handle_id only. JSON mode is optional for advanced clients.",
+  "oneOf": [
+    {
+      "type": "string",
+      "minLength": 1
+    },
+    {
+      "type": "object",
+      "required": [
+        "handle_id"
+      ],
+      "properties": {
+        "handle_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

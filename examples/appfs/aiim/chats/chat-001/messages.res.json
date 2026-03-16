@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "m29",
+      "text": "hello",
+      "ts": "2026-03-16T09:19:20Z"
+    },
+    {
+      "id": "m30",
+      "text": "hi",
+      "ts": "2026-03-16T09:19:30Z"
+    }
+  ],
+  "page": {
+    "handle_id": "ph_7f2c",
+    "page_no": 0,
+    "has_more": true,
+    "mode": "snapshot",
+    "expires_at": "2026-03-16T12:30:00Z"
+  }
+}
