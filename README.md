@@ -98,24 +98,6 @@ Key compatibility commitments:
 3. Adapter interface surface is frozen for `v0.1.x` (additive changes only).
 4. Troubleshooting baseline is documented in the developer guide (`port`, `uv`, `grpc`, `CT-017`, mount issues).
 
-## Adapter Developer Path（中文）
-
-从这里开始：
-
-1. [APPFS-adapter-developer-guide-v0.1.zh-CN.md](doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md)
-2. [ADAPTER-QUICKSTART.zh-CN.md](examples/appfs/ADAPTER-QUICKSTART.zh-CN.md)
-3. [APPFS-adapter-requirements-v0.1.zh-CN.md](doc/APPFS-adapter-requirements-v0.1.zh-CN.md)
-4. [APPFS-compatibility-matrix-v0.1.zh-CN.md](doc/APPFS-compatibility-matrix-v0.1.zh-CN.md)
-5. [APPFS-conformance-v0.1.zh-CN.md](doc/APPFS-conformance-v0.1.zh-CN.md)
-6. [APPFS-contract-tests-v0.1.zh-CN.md](doc/APPFS-contract-tests-v0.1.zh-CN.md)
-
-兼容性承诺：
-
-1. 允许任意语言实现，接口按规范对齐即可。
-2. 兼容性以行为和合约测试结果为准。
-3. `v0.1.x` 期间适配器接口面保持冻结（仅允许向后兼容的增量扩展）。
-4. 常见排障基线收敛在开发指南（端口、`uv`、`grpc`、`CT-017`、挂载问题）。
-
 ## Repository Map (AppFS-Relevant)
 
 1. `doc/APPFS-v0.1.md`: core protocol.
