@@ -12,7 +12,7 @@ It is split into three layers:
 
 ```bash
 cd examples/appfs/http-bridge/python
-uv run python -m unittest discover -s tests -p "test_*.py"
+uv run python -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
 ## Run bridge service

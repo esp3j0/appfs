@@ -72,7 +72,7 @@ trap cleanup EXIT INT TERM
 command -v "$UV_BIN" >/dev/null 2>&1 || fail "missing uv binary: $UV_BIN"
 
 say "Running Python HTTP bridge unit tests (uv)..."
-"$UV_BIN" run --project "$SCRIPT_DIR" python -m unittest discover -s "$SCRIPT_DIR/tests" -p "test_*.py"
+"$UV_BIN" run --project "$SCRIPT_DIR" python -m unittest discover -s "$SCRIPT_DIR/tests" -t "$SCRIPT_DIR" -p "test_*.py"
 
 say "Starting Python HTTP bridge (uv)..."
 "$UV_BIN" run --project "$SCRIPT_DIR" python "$SCRIPT_DIR/bridge_server.py" >"$BRIDGE_LOG" 2>&1 &
