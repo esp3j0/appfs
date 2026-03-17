@@ -59,6 +59,15 @@ pub struct AppfsServeArgs {
     pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct AppfsBridgeConfig {
+    adapter_http_endpoint: Option<String>,
+    adapter_http_timeout_ms: u64,
+    adapter_grpc_endpoint: Option<String>,
+    adapter_grpc_timeout_ms: u64,
+    runtime_options: BridgeRuntimeOptions,
+}
+
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let AppfsServeArgs {
         root,
@@ -87,17 +96,15 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_circuit_breaker_failures,
         adapter_bridge_circuit_breaker_cooldown_ms,
     );
-
-    let mut adapter = AppfsAdapter::new(
-        root,
-        app_id,
-        session_id,
+    let bridge_config = AppfsBridgeConfig {
         adapter_http_endpoint,
         adapter_http_timeout_ms,
         adapter_grpc_endpoint,
         adapter_grpc_timeout_ms,
-        bridge_runtime_options,
-    )?;
+        runtime_options: bridge_runtime_options,
+    };
+
+    let mut adapter = AppfsAdapter::new(root, app_id, session_id, bridge_config)?;
     adapter.prepare_action_sinks()?;
 
     eprintln!(
@@ -239,11 +246,7 @@ impl AppfsAdapter {
         root: PathBuf,
         app_id: String,
         session_id: String,
-        adapter_http_endpoint: Option<String>,
-        adapter_http_timeout_ms: u64,
-        adapter_grpc_endpoint: Option<String>,
-        adapter_grpc_timeout_ms: u64,
-        bridge_runtime_options: BridgeRuntimeOptions,
+        bridge_config: AppfsBridgeConfig,
     ) -> Result<Self> {
         let app_dir = root.join(&app_id);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
@@ -271,12 +274,14 @@ impl AppfsAdapter {
         let cursor = Self::load_cursor(&cursor_path)?;
         let next_seq = cursor.max_seq + 1;
         let action_specs = Self::load_action_specs(&manifest_path)?;
-        let normalized_http_endpoint = adapter_http_endpoint
+        let normalized_http_endpoint = bridge_config
+            .adapter_http_endpoint
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        let normalized_grpc_endpoint = adapter_grpc_endpoint
+        let normalized_grpc_endpoint = bridge_config
+            .adapter_grpc_endpoint
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -294,8 +299,8 @@ impl AppfsAdapter {
                     GrpcBridgeAdapterV1::new(
                         app_id.clone(),
                         endpoint,
-                        Duration::from_millis(adapter_grpc_timeout_ms.max(1)),
-                        bridge_runtime_options,
+                        Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
+                        bridge_config.runtime_options,
                     )
                     .map_err(|err| {
                         anyhow::anyhow!("failed to initialize gRPC bridge adapter: {err}")
@@ -306,8 +311,8 @@ impl AppfsAdapter {
                 Box::new(HttpBridgeAdapterV1::new(
                     app_id.clone(),
                     endpoint,
-                    Duration::from_millis(adapter_http_timeout_ms.max(1)),
-                    bridge_runtime_options,
+                    Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
+                    bridge_config.runtime_options,
                 ))
             } else {
                 Box::new(DemoAppAdapterV1::new(app_id.clone()))

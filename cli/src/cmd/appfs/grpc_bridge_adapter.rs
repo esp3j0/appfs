@@ -72,7 +72,7 @@ impl GrpcBridgeAdapterV1 {
                 self.metrics.snapshot()
             );
             if self.metrics.short_circuited_total <= 3
-                || self.metrics.short_circuited_total % 10 == 0
+                || self.metrics.short_circuited_total.is_multiple_of(10)
             {
                 eprintln!("AppFS bridge grpc short-circuit: {message}");
             }
@@ -147,7 +147,7 @@ impl GrpcBridgeAdapterV1 {
                 self.metrics.snapshot()
             );
             if self.metrics.short_circuited_total <= 3
-                || self.metrics.short_circuited_total % 10 == 0
+                || self.metrics.short_circuited_total.is_multiple_of(10)
             {
                 eprintln!("AppFS bridge grpc short-circuit: {message}");
             }
@@ -216,7 +216,10 @@ impl GrpcBridgeAdapterV1 {
     }
 
     fn log_observation(&self, method: &str, attempts: u32, elapsed: Duration, outcome: &str) {
-        if attempts > 1 || outcome != "ok" || self.metrics.requests_total % 50 == 0 {
+        if attempts > 1
+            || outcome != "ok"
+            || self.metrics.requests_total.is_multiple_of(50)
+        {
             eprintln!(
                 "AppFS bridge grpc metrics method={} outcome={} attempts={} latency_ms={} {}",
                 method,
