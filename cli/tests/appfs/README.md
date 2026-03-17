@@ -85,6 +85,16 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 | `APPFS_MOUNT_LOG` | `cli/appfs-mount-live.log` |
 | `APPFS_ADAPTER_LOG` | `cli/appfs-adapter-live.log` |
 
+`run-live-with-adapter.sh` uses fixed in-fixture paths for:
+
+1. `APPFS_TEST_ACTION`
+2. `APPFS_STREAMING_ACTION`
+3. `APPFS_PAGEABLE_RESOURCE`
+4. `APPFS_EXPIRED_PAGEABLE_RESOURCE`
+5. `APPFS_LONG_HANDLE_RESOURCE`
+
+to avoid inheriting stale shell environment overrides.
+
 ## Notes
 
 1. Linux CI now runs AppFS contract gates in `.github/workflows/rust.yml`: `appfs-contract-gate` (in-process), `appfs-contract-gate-http-bridge`, and `appfs-contract-gate-grpc-bridge`.

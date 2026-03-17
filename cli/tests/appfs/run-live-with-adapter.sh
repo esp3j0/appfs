@@ -24,6 +24,11 @@ APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
 APPFS_ADAPTER_LOG="${APPFS_ADAPTER_LOG:-$CLI_DIR/appfs-adapter-live.log}"
+APPFS_TEST_ACTION_LIVE=""
+APPFS_STREAMING_ACTION_LIVE=""
+APPFS_PAGEABLE_RESOURCE_LIVE=""
+APPFS_EXPIRED_PAGEABLE_RESOURCE_LIVE=""
+APPFS_LONG_HANDLE_RESOURCE_LIVE=""
 
 MOUNT_PID=""
 ADAPTER_PID=""
@@ -194,11 +199,25 @@ fi
 
 say "Copying AppFS fixture into mounted filesystem..."
 cp -a "$APPFS_FIXTURE_DIR"/. "$APPFS_LIVE_MOUNTPOINT"/
+APPFS_TEST_ACTION_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/zhangsan/send_message.act"
+APPFS_STREAMING_ACTION_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/files/file-001/download.act"
+APPFS_PAGEABLE_RESOURCE_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/chats/chat-001/messages.res.json"
+APPFS_EXPIRED_PAGEABLE_RESOURCE_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/chats/chat-expired/messages.res.json"
+APPFS_LONG_HANDLE_RESOURCE_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/chats/chat-long/messages.res.json"
 
 start_adapter
 
 say "Running AppFS contract tests against live adapter..."
-if ! APPFS_CONTRACT_TESTS=1 APPFS_ROOT="$APPFS_LIVE_MOUNTPOINT" APPFS_APP_ID="$APPFS_APP_ID" APPFS_TIMEOUT_SEC="$APPFS_TIMEOUT_SEC" sh "$CLI_DIR/tests/test-appfs-contract.sh"; then
+if ! APPFS_CONTRACT_TESTS=1 \
+    APPFS_ROOT="$APPFS_LIVE_MOUNTPOINT" \
+    APPFS_APP_ID="$APPFS_APP_ID" \
+    APPFS_TIMEOUT_SEC="$APPFS_TIMEOUT_SEC" \
+    APPFS_TEST_ACTION="$APPFS_TEST_ACTION_LIVE" \
+    APPFS_STREAMING_ACTION="$APPFS_STREAMING_ACTION_LIVE" \
+    APPFS_PAGEABLE_RESOURCE="$APPFS_PAGEABLE_RESOURCE_LIVE" \
+    APPFS_EXPIRED_PAGEABLE_RESOURCE="$APPFS_EXPIRED_PAGEABLE_RESOURCE_LIVE" \
+    APPFS_LONG_HANDLE_RESOURCE="$APPFS_LONG_HANDLE_RESOURCE_LIVE" \
+    sh "$CLI_DIR/tests/test-appfs-contract.sh"; then
     say "---- mount log tail ----"
     tail -n 80 "$APPFS_MOUNT_LOG" 2>/dev/null || true
     say "---- adapter log tail ----"
@@ -227,7 +246,7 @@ say "Lifecycle probe passed."
 say "CT-016: restart reconciliation for accepted-but-not-terminal streaming request..."
 stop_adapter
 start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
-reconcile_action="${APPFS_STREAMING_ACTION:-$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/files/file-001/download.act}"
+reconcile_action="$APPFS_STREAMING_ACTION_LIVE"
 reconcile_token="ct-reconcile-$$"
 wait_writable "$reconcile_action" "$APPFS_TIMEOUT_SEC" || fail "reconcile action sink not writable: $reconcile_action"
 printf '{"target":"/tmp/reconcile.bin","client_token":"%s"}\n' "$reconcile_token" > "$reconcile_action" || fail "reconcile submit failed"

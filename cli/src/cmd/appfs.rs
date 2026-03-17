@@ -641,6 +641,11 @@ impl AppfsAdapter {
         }
 
         if expires_at_ts.is_some_and(|expiry| Utc::now().timestamp() >= expiry) {
+            if let Some(handle) = self.handles.get_mut(&handle_key) {
+                // Tombstone expired handles on explicit close requests so any
+                // subsequent fetch observes deterministic CLOSED semantics.
+                handle.closed = true;
+            }
             return self.emit_failed(
                 action_path,
                 request_id,
