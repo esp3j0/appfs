@@ -24,6 +24,7 @@ APPFS_BRIDGE_RESILIENCE_CONTRACT="${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}"
 APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC="${APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC:-4}"
 APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX="${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX:-resilience-}"
 APPFS_BRIDGE_FAULT_CONFIG_PATH="${APPFS_BRIDGE_FAULT_CONFIG_PATH:-/tmp/appfs-bridge-fault-config.json}"
+APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS="${APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS:-4000}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
@@ -36,6 +37,12 @@ APPFS_LONG_HANDLE_RESOURCE_LIVE=""
 
 MOUNT_PID=""
 ADAPTER_PID=""
+
+if [ "${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}" = "1" ]; then
+    if [ "$APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS" -lt "$APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS" ]; then
+        APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS="$APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS"
+    fi
+fi
 
 say() {
     printf '%s\n' "$*"
@@ -408,7 +415,7 @@ if ! APPFS_CONTRACT_TESTS=1 \
 fi
 
 banner "AppFS CT-016 Restart Reconciliation"
-say "  INFO lifecycle probe: graceful stop + restart + post-restart submit"
+pass "lifecycle probe: graceful stop + restart + post-restart submit"
 if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
     fail "adapter not alive before lifecycle probe"
 fi
@@ -426,7 +433,7 @@ printf 'token:%s\nrestart-ok\n' "$probe_token" > "$probe_action" || fail "lifecy
 wait_token_in_events "$probe_token" "$events_file" "$APPFS_TIMEOUT_SEC" || fail "lifecycle probe event not observed after adapter restart"
 pass "lifecycle probe passed"
 
-say "  INFO restart reconciliation for accepted-but-not-terminal streaming request"
+pass "restart reconciliation for accepted-but-not-terminal streaming request"
 stop_adapter
 start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
 reconcile_action="$APPFS_STREAMING_ACTION_LIVE"

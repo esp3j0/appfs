@@ -90,6 +90,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` | Set `1` in bridge-mode runs to execute `CT-017` (retry/circuit/recovery) |
 | `APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX` | `resilience-` | Contact id prefix used by `CT-017` multi-sink probe |
 | `APPFS_BRIDGE_FAULT_CONFIG_PATH` | `/tmp/appfs-bridge-fault-config.json` | Runtime-written bridge fault config for deterministic `CT-017` injection |
+| `APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS` | `4000` | Minimum breaker cooldown floor enforced during `CT-017` to avoid timing races |
 
 ## 4. Contract Suite
 
