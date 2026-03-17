@@ -190,10 +190,7 @@ impl HttpBridgeAdapterV1 {
     }
 
     fn log_observation(&self, route: &str, attempts: u32, elapsed: Duration, outcome: &str) {
-        if attempts > 1
-            || outcome != "ok"
-            || self.metrics.requests_total.is_multiple_of(50)
-        {
+        if attempts > 1 || outcome != "ok" || self.metrics.requests_total.is_multiple_of(50) {
             eprintln!(
                 "AppFS bridge http metrics route={} outcome={} attempts={} latency_ms={} {}",
                 route,

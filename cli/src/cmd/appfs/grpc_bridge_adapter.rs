@@ -216,10 +216,7 @@ impl GrpcBridgeAdapterV1 {
     }
 
     fn log_observation(&self, method: &str, attempts: u32, elapsed: Duration, outcome: &str) {
-        if attempts > 1
-            || outcome != "ok"
-            || self.metrics.requests_total.is_multiple_of(50)
-        {
+        if attempts > 1 || outcome != "ok" || self.metrics.requests_total.is_multiple_of(50) {
             eprintln!(
                 "AppFS bridge grpc metrics method={} outcome={} attempts={} latency_ms={} {}",
                 method,
