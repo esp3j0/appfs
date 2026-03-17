@@ -97,3 +97,9 @@ Runtime-side gRPC bridge dispatch includes:
 1. bounded retry with exponential backoff (retryable gRPC status codes)
 2. circuit breaker on repeated transport-level failures
 3. transport metrics logs (`requests/attempts/retries/success/fail/short_circuit`) for observability
+
+Reference Python gRPC bridge (`examples/appfs/grpc-bridge/python/grpc_server.py`) supports optional fault injection knobs for contract testing:
+
+1. `APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION` (int, default `0`)
+2. `APPFS_BRIDGE_FAIL_PATH_PREFIX` (only fail matching action paths)
+3. `APPFS_BRIDGE_FAIL_GRPC_CODE` (default `UNAVAILABLE`)

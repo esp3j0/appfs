@@ -80,6 +80,8 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 | `APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS` | `1000` |
 | `APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES` | `5` |
 | `APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS` | `3000` |
+| `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` |
+| `APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC` | `4` |
 | `APPFS_TIMEOUT_SEC` | `20` |
 | `APPFS_MOUNT_WAIT_SEC` | `20` |
 | `APPFS_MOUNT_LOG` | `cli/appfs-mount-live.log` |
@@ -103,4 +105,5 @@ to avoid inheriting stale shell environment overrides.
 4. `run-live-with-adapter.sh` is Linux/FUSE oriented and expects `fusermount` + `mountpoint`.
 5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), and long-handle normalization compatibility (`CT-015`).
 6. `run-live-with-adapter.sh` additionally runs lifecycle restart probes, including accepted-but-not-terminal reconciliation for streaming requests (`CT-016`).
-7. This is a skeleton focused on protocol gates, not full adapter business behavior.
+7. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1` and bridge mode is enabled, `run-live-with-adapter.sh` also runs `CT-017` (retry + circuit-breaker + cooldown recovery probe) and checks adapter logs for retry/short-circuit observations.
+8. This is a skeleton focused on protocol gates, not full adapter business behavior.

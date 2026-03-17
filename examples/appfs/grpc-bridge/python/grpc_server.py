@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import os
+import threading
 from concurrent import futures
 
 import grpc
@@ -8,10 +10,56 @@ import appfs_adapter_v1_pb2 as pb2
 import appfs_adapter_v1_pb2_grpc as pb2_grpc
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _parse_fail_status_code(raw: str) -> grpc.StatusCode:
+    normalized = (raw or "").strip().upper()
+    if normalized == "":
+        return grpc.StatusCode.UNAVAILABLE
+    code = grpc.StatusCode.__members__.get(normalized)
+    if code is None:
+        return grpc.StatusCode.UNAVAILABLE
+    return code
+
+
+class FaultInjector:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.fail_next_submit_action = max(0, _env_int("APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION", 0))
+        self.fail_path_prefix = os.getenv("APPFS_BRIDGE_FAIL_PATH_PREFIX", "").strip()
+        self.fail_status_code = _parse_fail_status_code(os.getenv("APPFS_BRIDGE_FAIL_GRPC_CODE", ""))
+
+    def maybe_fail_submit_action(self, path: str) -> tuple[bool, int]:
+        with self._lock:
+            if self.fail_next_submit_action <= 0:
+                return (False, 0)
+            if self.fail_path_prefix and not path.startswith(self.fail_path_prefix):
+                return (False, self.fail_next_submit_action)
+            self.fail_next_submit_action -= 1
+            return (True, self.fail_next_submit_action)
+
+
+FAULT_INJECTOR = FaultInjector()
+
+
 class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
     def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
         path = request.path
         execution_mode = request.execution_mode
+        should_fail, remaining = FAULT_INJECTOR.maybe_fail_submit_action(path)
+        if should_fail:
+            context.abort(
+                FAULT_INJECTOR.fail_status_code,
+                f"fault injected for path={path}, remaining={remaining}",
+            )
 
         if execution_mode == pb2.EXECUTION_MODE_INLINE:
             if path.endswith("/send_message.act"):
@@ -82,6 +130,14 @@ def main() -> None:
     server.add_insecure_port("127.0.0.1:50051")
     server.start()
     print("AppFS gRPC bridge listening on 127.0.0.1:50051")
+    print(
+        "Fault injector: fail_next_submit_action=%d fail_status_code=%s fail_path_prefix=%r"
+        % (
+            FAULT_INJECTOR.fail_next_submit_action,
+            FAULT_INJECTOR.fail_status_code.name,
+            FAULT_INJECTOR.fail_path_prefix,
+        )
+    )
     server.wait_for_termination()
 
 

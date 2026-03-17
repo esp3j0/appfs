@@ -89,6 +89,7 @@ To claim Core compatibility, implementation MUST pass:
 3. Adapter acceptance checklist items in `APPFS-adapter-requirements-v0.1`.
 4. CI gate MUST include both static and live contract execution (reference: `.github/workflows/rust.yml`, job `appfs-contract-gate`).
 5. Repository reference CI additionally validates out-of-process transport parity with `appfs-contract-gate-http-bridge` and `appfs-contract-gate-grpc-bridge`.
+6. For bridge modes (HTTP/gRPC), CI SHOULD run bridge resilience probe (`CT-017`) to validate retry/circuit-breaker/cooldown recovery behavior.
 
 ### 5.2 Failure Policy
 

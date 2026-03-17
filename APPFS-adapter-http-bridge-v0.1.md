@@ -160,3 +160,9 @@ Runtime-side HTTP bridge dispatch includes:
 1. bounded retry with exponential backoff (transport + retryable status)
 2. circuit breaker on repeated transport-level failures
 3. transport metrics logs (`requests/attempts/retries/success/fail/short_circuit`) for observability
+
+Reference Python bridge (`examples/appfs/http-bridge/python/bridge_server.py`) supports optional fault injection knobs for contract testing:
+
+1. `APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION` (int, default `0`)
+2. `APPFS_BRIDGE_FAIL_PATH_PREFIX` (only fail matching action paths)
+3. `APPFS_BRIDGE_FAIL_HTTP_STATUS` (default `503`)

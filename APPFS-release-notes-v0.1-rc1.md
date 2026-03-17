@@ -15,6 +15,7 @@
 2. Adapter abstraction is frozen at v0.1 surface (`AppAdapterV1`) for compatibility-oriented integration.
 3. Out-of-process bridge parity is covered in both reference docs and CI (HTTP + gRPC).
 4. Linux live contract gate is wired into CI and aligned with static fixture checks.
+5. Bridge fault-tolerance contract probe is added (`CT-017`) to validate retry/circuit-breaker/cooldown recovery in HTTP and gRPC bridge jobs.
 
 ## What Is Included In RC1
 
@@ -27,7 +28,7 @@
    - HTTP bridge reference mapping
    - gRPC bridge reference mapping
 4. Contract tests:
-   - `CT-001` to `CT-016`
+   - `CT-001` to `CT-017`
    - static + live + bridge parity in CI
 
 ## CI Baseline For RC1
@@ -50,4 +51,3 @@ Main-branch baseline runs (success):
 1. Any implementation language is allowed.
 2. Compatibility is behavior-based (conformance + contract tests), not runtime-language based.
 3. v0.1 adapter surface is additive-only in `0.1.x`; breaking changes are deferred to `v0.2`.
-

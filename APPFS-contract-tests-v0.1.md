@@ -1,7 +1,7 @@
 # AppFS v0.1 Contract Test Plan
 
-- Version: `0.1-draft-r9`
-- Date: `2026-03-16`
+- Version: `0.1-draft-r10`
+- Date: `2026-03-17`
 - Status: `Draft`
 - Depends on: `APPFS-v0.1 (r8)`, `APPFS-adapter-requirements-v0.1`
 
@@ -55,13 +55,25 @@ APPFS_CONTRACT_TESTS=1 sh ./tests/appfs/run-live-with-adapter.sh
 3. Live HTTP bridge gate:
 
 ```bash
-APPFS_CONTRACT_TESTS=1 APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./tests/appfs/run-live-with-adapter.sh
+APPFS_CONTRACT_TESTS=1 \
+APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 \
+APPFS_ADAPTER_BRIDGE_MAX_RETRIES=1 \
+APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES=2 \
+APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS=1200 \
+APPFS_BRIDGE_RESILIENCE_CONTRACT=1 \
+sh ./tests/appfs/run-live-with-adapter.sh
 ```
 
 4. Live gRPC bridge gate:
 
 ```bash
-APPFS_CONTRACT_TESTS=1 APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051 sh ./tests/appfs/run-live-with-adapter.sh
+APPFS_CONTRACT_TESTS=1 \
+APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051 \
+APPFS_ADAPTER_BRIDGE_MAX_RETRIES=1 \
+APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES=2 \
+APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS=1200 \
+APPFS_BRIDGE_RESILIENCE_CONTRACT=1 \
+sh ./tests/appfs/run-live-with-adapter.sh
 ```
 
 ## 3. Environment Inputs
@@ -75,10 +87,11 @@ APPFS_CONTRACT_TESTS=1 APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051 sh ./t
 | `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.json` | Pageable resource used by paging tests |
 | `APPFS_TIMEOUT_SEC` | `10` | Wait timeout for async assertions |
 | `APPFS_STATIC_FIXTURE` | `0` | Set `1` to run only static checks against fixture trees |
+| `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` | Set `1` in bridge-mode runs to execute `CT-017` (retry/circuit/recovery) |
 
 ## 4. Contract Suite
 
-Note: `cli/tests/appfs/` currently contains CT-001 through CT-016. Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` close-time reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation).
+Note: `cli/tests/appfs/` currently contains CT-001 through CT-016 as direct scripts, and `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`) plus optional bridge resilience probe (`CT-017`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` close-time reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance).
 
 ### CT-001 Layout and Required Nodes
 
@@ -174,6 +187,26 @@ Script:
 
 ```text
 cli/tests/appfs/test-manifest-policy.sh
+```
+
+### CT-017 Bridge Fault Tolerance (Retry/Circuit/Recovery)
+
+Spec refs:
+
+1. `APPFS-adapter-requirements-v0.1` (`AR-019`, resilience baseline).
+2. Bridge runtime resilience options in `agentfs serve appfs`.
+
+Assertions:
+
+1. Retryable transport failures trigger bounded retry attempts (observed in adapter log).
+2. After consecutive retryable failures hit threshold, circuit breaker short-circuits new requests.
+3. During circuit-open window, request still receives deterministic terminal failure event.
+4. After cooldown, a healthy request succeeds without runtime restart.
+
+Entry:
+
+```text
+cli/tests/appfs/run-live-with-adapter.sh (enabled via APPFS_BRIDGE_RESILIENCE_CONTRACT=1)
 ```
 
 ## 5. Gaps and Follow-up (v0.2 Candidate)

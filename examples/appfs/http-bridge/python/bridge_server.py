@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import json
+import os
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -10,6 +12,36 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict) -> 
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     handler.wfile.write(payload)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+class FaultInjector:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.fail_next_submit_action = max(0, _env_int("APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION", 0))
+        self.fail_http_status = _env_int("APPFS_BRIDGE_FAIL_HTTP_STATUS", 503)
+        self.fail_path_prefix = os.getenv("APPFS_BRIDGE_FAIL_PATH_PREFIX", "").strip()
+
+    def maybe_fail_submit_action(self, path: str) -> tuple[bool, int]:
+        with self._lock:
+            if self.fail_next_submit_action <= 0:
+                return (False, 0)
+            if self.fail_path_prefix and not path.startswith(self.fail_path_prefix):
+                return (False, self.fail_next_submit_action)
+            self.fail_next_submit_action -= 1
+            return (True, self.fail_next_submit_action)
+
+
+FAULT_INJECTOR = FaultInjector()
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -48,6 +80,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = str(data.get("path", ""))
         execution_mode = str(data.get("execution_mode", "inline"))
         payload = str(data.get("payload", ""))
+        should_fail, remaining = FAULT_INJECTOR.maybe_fail_submit_action(path)
+
+        if should_fail:
+            _json_response(
+                self,
+                FAULT_INJECTOR.fail_http_status,
+                {
+                    "kind": "internal",
+                    "message": f"fault injected for path={path}, remaining={remaining}",
+                },
+            )
+            return
 
         if execution_mode == "inline":
             if path.endswith("/send_message.act"):
@@ -135,6 +179,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
 def main() -> None:
     server = HTTPServer(("127.0.0.1", 8080), BridgeHandler)
     print("AppFS HTTP bridge listening on http://127.0.0.1:8080")
+    print(
+        "Fault injector: fail_next_submit_action=%d fail_http_status=%d fail_path_prefix=%r"
+        % (
+            FAULT_INJECTOR.fail_next_submit_action,
+            FAULT_INJECTOR.fail_http_status,
+            FAULT_INJECTOR.fail_path_prefix,
+        )
+    )
     server.serve_forever()
 
 

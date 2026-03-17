@@ -75,6 +75,9 @@ jobs:
     - name: Start HTTP bridge
       run: |
         cd ../examples/appfs/http-bridge/python
+        APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
+        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience/ \
+        APPFS_BRIDGE_FAIL_HTTP_STATUS=503 \
         nohup python3 bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-http-bridge.pid"
         python3 - <<'PY'
@@ -100,6 +103,13 @@ jobs:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
+        APPFS_ADAPTER_BRIDGE_MAX_RETRIES: "1"
+        APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS: "50"
+        APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS: "200"
+        APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES: "2"
+        APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS: "1200"
+        APPFS_BRIDGE_RESILIENCE_CONTRACT: "1"
+        APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC: "4"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
     - name: Dump HTTP bridge log on failure
@@ -153,6 +163,9 @@ jobs:
     - name: Start gRPC bridge
       run: |
         cd ../examples/appfs/grpc-bridge/python
+        APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
+        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience/ \
+        APPFS_BRIDGE_FAIL_GRPC_CODE=UNAVAILABLE \
         nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-grpc-bridge.pid"
         python3 - <<'PY'
@@ -178,6 +191,13 @@ jobs:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
         APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
+        APPFS_ADAPTER_BRIDGE_MAX_RETRIES: "1"
+        APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS: "50"
+        APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS: "200"
+        APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES: "2"
+        APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS: "1200"
+        APPFS_BRIDGE_RESILIENCE_CONTRACT: "1"
+        APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC: "4"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
     - name: Dump gRPC bridge log on failure

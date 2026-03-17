@@ -20,6 +20,8 @@ APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS="${APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_
 APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS="${APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS:-1000}"
 APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES="${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES:-5}"
 APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS="${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS:-3000}"
+APPFS_BRIDGE_RESILIENCE_CONTRACT="${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}"
+APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC="${APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC:-4}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
@@ -116,6 +118,24 @@ token_terminal_count() {
     grep "$token" "$file" 2>/dev/null | grep -E -c '"type":"action\.(completed|failed|canceled)"' || true
 }
 
+assert_token_failed_internal_retryable() {
+    token="$1"
+    file="$2"
+    line="$(grep "$token" "$file" 2>/dev/null | tail -n 1 || true)"
+    [ -n "$line" ] || fail "missing event line for token: $token"
+    printf '%s\n' "$line" | grep -q '"type":"action.failed"' || fail "token $token did not emit action.failed"
+    printf '%s\n' "$line" | grep -q '"code":"INTERNAL"' || fail "token $token did not emit error.code=INTERNAL"
+    printf '%s\n' "$line" | grep -q '"retryable":true' || fail "token $token did not emit retryable=true"
+}
+
+assert_token_completed() {
+    token="$1"
+    file="$2"
+    line="$(grep "$token" "$file" 2>/dev/null | tail -n 1 || true)"
+    [ -n "$line" ] || fail "missing event line for token: $token"
+    printf '%s\n' "$line" | grep -q '"type":"action.completed"' || fail "token $token did not emit action.completed"
+}
+
 wait_writable() {
     path="$1"
     timeout="${2:-20}"
@@ -128,6 +148,52 @@ wait_writable() {
         sleep 1
     done
     return 1
+}
+
+run_bridge_resilience_probe() {
+    if [ "${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}" != "1" ]; then
+        return 0
+    fi
+    if [ -z "$APPFS_ADAPTER_HTTP_ENDPOINT" ] && [ -z "$APPFS_ADAPTER_GRPC_ENDPOINT" ]; then
+        say "CT-017 skipped: bridge resilience probe requires HTTP or gRPC bridge endpoint"
+        return 0
+    fi
+
+    say "CT-017: bridge retry + circuit breaker + cooldown recovery..."
+    events_file="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/_stream/events.evt.jsonl"
+    resilience_action="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/resilience/send_message.act"
+    mkdir -p "$(dirname "$resilience_action")"
+
+    token_retry_1="ct-resilience-1-$$"
+    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
+    printf 'token:%s\nresilience-1\n' "$token_retry_1" > "$resilience_action" || fail "resilience request 1 submit failed"
+    wait_token_type_count "$token_retry_1" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 1 missing action.failed"
+    assert_token_failed_internal_retryable "$token_retry_1" "$events_file"
+
+    token_retry_2="ct-resilience-2-$$"
+    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
+    printf 'token:%s\nresilience-2\n' "$token_retry_2" > "$resilience_action" || fail "resilience request 2 submit failed"
+    wait_token_type_count "$token_retry_2" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 2 missing action.failed"
+    assert_token_failed_internal_retryable "$token_retry_2" "$events_file"
+
+    token_short_circuit="ct-resilience-3-$$"
+    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
+    printf 'token:%s\nresilience-3\n' "$token_short_circuit" > "$resilience_action" || fail "resilience request 3 submit failed"
+    wait_token_type_count "$token_short_circuit" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 3 missing action.failed"
+    assert_token_failed_internal_retryable "$token_short_circuit" "$events_file"
+
+    grep -q "bridge .* retry" "$APPFS_ADAPTER_LOG" || fail "bridge retry log not observed in adapter log"
+    grep -q "short-circuit" "$APPFS_ADAPTER_LOG" || fail "bridge short-circuit log not observed in adapter log"
+
+    sleep "$APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC"
+
+    token_recovered="ct-resilience-4-$$"
+    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
+    printf 'token:%s\nresilience-4\n' "$token_recovered" > "$resilience_action" || fail "resilience request 4 submit failed"
+    wait_token_type_count "$token_recovered" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience recovery request missing action.completed"
+    assert_token_completed "$token_recovered" "$events_file"
+
+    say "CT-017 passed."
 }
 
 cleanup() {
@@ -261,5 +327,7 @@ wait_token_type_count "$reconcile_token" "action.completed" 1 "$events_file" "$A
 terminal_after="$(token_terminal_count "$reconcile_token" "$events_file")"
 [ "$terminal_after" -eq 1 ] || fail "reconcile request emitted unexpected terminal count: $terminal_after"
 say "CT-016 passed."
+
+run_bridge_resilience_probe
 
 say "LIVE AppFS contract tests passed."

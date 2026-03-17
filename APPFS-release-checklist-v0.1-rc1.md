@@ -2,7 +2,7 @@
 
 - Target: `v0.1-rc1`
 - Date: `2026-03-17`
-- Status: `In Progress`
+- Status: `Ready for RC Sign-off`
 - Freeze commit (implementation baseline): `64a30fb`
 
 ## 1. Release Scope
@@ -30,7 +30,7 @@ Core docs frozen for this RC:
 1. `APPFS-v0.1.md` (`0.1-draft-r8`)
 2. `APPFS-adapter-requirements-v0.1.md` (`0.1-draft-r5`)
 3. `APPFS-conformance-v0.1.md` (`0.1`)
-4. `APPFS-contract-tests-v0.1.md` (`0.1-draft-r9`)
+4. `APPFS-contract-tests-v0.1.md` (`0.1-draft-r10`)
 5. `APPFS-adapter-http-bridge-v0.1.md`
 6. `APPFS-adapter-grpc-bridge-v0.1.md`
 
@@ -53,6 +53,7 @@ Required before tagging:
    - `AppFS Contract Gate (linux, grpc bridge)`
    - `Test (ubuntu-latest, cli)`
    - `Test (ubuntu-latest, sdk/rust)`
+   - Bridge gate runs include resilience probe `CT-017` (retry/circuit/cooldown)
 2. `main` Python CI green.
 3. `main` TypeScript CI green.
 4. Branch protection for `main` enforces PR-only and required checks.
@@ -88,4 +89,3 @@ gh release create appfs-v0.1-rc1 \
 1. Verify release workflow sees the new tag and runs successfully.
 2. Verify release artifacts/announcement behavior matches repo policy.
 3. Freeze `APPFS-v0.1` wording from `Draft` to `RC` only after RC sign-off.
-
