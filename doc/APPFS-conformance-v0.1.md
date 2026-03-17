@@ -17,6 +17,10 @@ It is language-neutral and runtime-neutral:
 2. Any deployment shape is allowed (in-process, sidecar, daemon, service).
 3. Compatibility is judged by external behavior and contract tests, not internal design.
 
+Compatibility implementation coverage by language/transport/capability is tracked in:
+
+1. `APPFS-compatibility-matrix-v0.1.md`
+
 ## 2. Compatibility Levels
 
 ### 2.1 Core Profile (Required)

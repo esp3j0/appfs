@@ -90,9 +90,10 @@ Reference docs:
 
 1. `../../doc/APPFS-v0.1.md`
 2. `../../doc/APPFS-adapter-requirements-v0.1.md`
-3. `../../doc/APPFS-conformance-v0.1.md`
-4. `../../doc/APPFS-contract-tests-v0.1.md`
-5. `../../doc/APPFS-adapter-developer-guide-v0.1.md`
+3. `../../doc/APPFS-compatibility-matrix-v0.1.md`
+4. `../../doc/APPFS-conformance-v0.1.md`
+5. `../../doc/APPFS-contract-tests-v0.1.md`
+6. `../../doc/APPFS-adapter-developer-guide-v0.1.md`
 
 ## 7. Troubleshooting Entry
 

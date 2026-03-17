@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Required AppFS gate: static + live (in-process)
   appfs-contract-gate:
     name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
@@ -46,6 +47,7 @@ jobs:
         APPFS_TIMEOUT_SEC: "30"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
+  # Required AppFS gate: live HTTP bridge path
   appfs-contract-gate-http-bridge:
     name: AppFS Contract Gate (linux, http bridge)
     runs-on: ubuntu-latest
@@ -133,11 +135,13 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
+  # Informational AppFS gate: live gRPC bridge path (keeps signal without blocking merge)
   appfs-contract-gate-grpc-bridge:
     name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
+    if: always()
     defaults:
       run:
         working-directory: cli

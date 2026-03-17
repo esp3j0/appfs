@@ -23,6 +23,8 @@ Success means:
 4. Contract and conformance definitions:
    - `doc/APPFS-conformance-v0.1.md`
    - `doc/APPFS-contract-tests-v0.1.md`
+5. Compatibility matrix:
+   - `doc/APPFS-compatibility-matrix-v0.1.md`
 
 ## 3. 30-Minute Minimum Loop
 
@@ -141,6 +143,11 @@ Recommended:
 
 1. gRPC bridge suite as informational gate.
 2. Bridge-side unit tests (validation/fault injection/server dispatch).
+
+Reference CI tiering in this repo:
+
+1. Required: `appfs-contract-gate`, `appfs-contract-gate-http-bridge`
+2. Informational: `appfs-contract-gate-grpc-bridge` (`continue-on-error`)
 
 ## 8. Troubleshooting Handbook
 

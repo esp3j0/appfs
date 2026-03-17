@@ -14,6 +14,7 @@
 4. Contract tests (`CT-001`..`CT-017`) are integrated and exercised in CI.
 5. CI pipeline is green on the current branch after recent conflict and lint fixes.
 6. AppFS documentation set has been centralized under `doc/`.
+7. Compatibility matrix and developer troubleshooting path are documented.
 
 ### 1.2 Quality Level
 
@@ -23,24 +24,23 @@
 
 ## 2. Known Gaps
 
-1. Adapter author onboarding is still “engineer-friendly” rather than “newcomer-friendly”.
-2. No dedicated compatibility matrix page summarizing language/runtime combinations.
-3. Release governance docs exist, but `rc2 -> v0.1.0` cadence is not yet formalized as a single checklist.
-4. Some non-Core roadmap items (multi-tenant context, richer QoS, advanced subscriptions) are not yet ADR-tracked.
+1. Adapter author onboarding still needs more end-to-end real-app examples.
+2. Release governance docs exist, but `rc2 -> v0.1.0` cadence is not yet formalized as a single checklist.
+3. Some non-Core roadmap items (multi-tenant context, richer QoS, advanced subscriptions) are not yet ADR-tracked.
 
 ## 3. Recommended Next Steps
 
 ## 3.1 Immediate (v0.1.0 Finalization)
 
 1. Finalize `rc2` freeze and keep only bugfix/additive PRs.
-2. Add a compact compatibility matrix doc (runtime mode x transport mode x conformance level).
-3. Publish a final release checklist for `v0.1.0` tag cut (owner, evidence, rollback notes).
+2. Publish a final release checklist for `v0.1.0` tag cut (owner, evidence, rollback notes).
+3. Ensure required/informational CI policy is reflected in branch protection and team docs.
 
 ## 3.2 Short Term (v0.1.x Experience)
 
 1. Add adapter starter templates for at least one additional language (Go or TypeScript).
-2. Provide one-command local dev bootstrap for bridge conformance (including Python deps).
-3. Add a troubleshooting guide for common CI/live-test failures.
+2. Add one real-app adapter walkthrough based on the developer guide.
+3. Keep bridge conformance bootstrap scripts aligned with CI defaults.
 
 ## 3.3 Mid Term (v0.2 Design)
 
@@ -50,7 +50,6 @@
 
 ## 4. Delivery Plan (Suggested)
 
-1. Milestone A (1-3 days): `rc2` freeze docs + compatibility matrix + final release checklist.
-2. Milestone B (1 week): adapter DX uplift (template + bootstrap + troubleshooting).
+1. Milestone A (1-3 days): `rc2` freeze docs + final release checklist + CI policy sync.
+2. Milestone B (1 week): adapter DX uplift (template + real-app walkthrough + troubleshooting hardening).
 3. Milestone C (2-3 weeks): `v0.2` ADR set and prototype decisions.
-
