@@ -10,6 +10,7 @@ fi
 CLI_DIR="$REPO_DIR/cli"
 
 UV_BIN="${UV_BIN:-uv}"
+APPFS_ADAPTER_HTTP_ENDPOINT_SET="${APPFS_ADAPTER_HTTP_ENDPOINT+x}"
 APPFS_ADAPTER_HTTP_ENDPOINT="${APPFS_ADAPTER_HTTP_ENDPOINT:-http://127.0.0.1:8080}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_ADAPTER_BRIDGE_MAX_RETRIES="${APPFS_ADAPTER_BRIDGE_MAX_RETRIES:-1}"
@@ -89,6 +90,41 @@ print(port)
 PY
 }
 
+endpoint_bindable() {
+    host="$1"
+    port="$2"
+    "$UV_BIN" run --project "$SCRIPT_DIR" python - "$host" "$port" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+s = socket.socket()
+try:
+    s.bind((host, port))
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+find_free_port() {
+    host="$1"
+    "$UV_BIN" run --project "$SCRIPT_DIR" python - "$host" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+s = socket.socket()
+s.bind((host, 0))
+port = s.getsockname()[1]
+s.close()
+print(port)
+PY
+}
+
 trap cleanup EXIT INT TERM
 
 command -v "$UV_BIN" >/dev/null 2>&1 || fail "missing uv binary: $UV_BIN"
@@ -99,6 +135,16 @@ say "Running Python HTTP bridge unit tests (uv)..."
 set -- $(parse_http_endpoint "$APPFS_ADAPTER_HTTP_ENDPOINT")
 BRIDGE_HOST="$1"
 BRIDGE_PORT="$2"
+if ! endpoint_bindable "$BRIDGE_HOST" "$BRIDGE_PORT"; then
+    if [ -z "$APPFS_ADAPTER_HTTP_ENDPOINT_SET" ]; then
+        old_port="$BRIDGE_PORT"
+        BRIDGE_PORT="$(find_free_port "$BRIDGE_HOST")"
+        APPFS_ADAPTER_HTTP_ENDPOINT="http://${BRIDGE_HOST}:${BRIDGE_PORT}"
+        say "Default port ${old_port} is busy; switched endpoint to ${APPFS_ADAPTER_HTTP_ENDPOINT}"
+    else
+        fail "configured endpoint is busy: ${APPFS_ADAPTER_HTTP_ENDPOINT}; choose a free APPFS_ADAPTER_HTTP_ENDPOINT"
+    fi
+fi
 
 say "Starting Python HTTP bridge (uv) on ${BRIDGE_HOST}:${BRIDGE_PORT}..."
 APPFS_BRIDGE_HOST="$BRIDGE_HOST" \

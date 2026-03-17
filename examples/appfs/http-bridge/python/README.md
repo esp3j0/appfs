@@ -38,6 +38,7 @@ sh ./run-conformance.sh
 
 `run-conformance.sh` enables bridge resilience contract checks by default (`CT-017` included).
 It also derives bridge listen host/port from `APPFS_ADAPTER_HTTP_ENDPOINT`.
+If default `127.0.0.1:8080` is occupied and no endpoint is specified, it auto-picks a free local port.
 
 Example custom port:
 
