@@ -287,6 +287,10 @@ Where:
 6. gRPC transport reference (proto + examples) is documented in `APPFS-adapter-grpc-bridge-v0.1.md` and `examples/appfs/grpc-bridge/`.
 7. Current CLI runtime includes optional native gRPC bridge transport (`--adapter-grpc-endpoint`) mapped to the same frozen `AppAdapterV1` semantics.
 8. Rust SDK publishes reusable matrix runners for adapter implementers in `sdk/rust/src/appfs_adapter_testkit.rs`.
+9. Repository SHOULD include adapter-author DX entrypoints:
+1. one-command conformance runner (`examples/appfs/run-conformance.sh`)
+2. bridge-scoped conformance runners
+3. minimal adapter template + quickstart
 
 ## 7. Security Requirements
 
@@ -316,6 +320,8 @@ Adapter implementation is accepted when all checks pass:
 16. Lifecycle checks: readiness/liveness/shutdown/recovery behaviors are verified in integration tests.
 17. Adapter SDK freeze: runtime delegates through frozen adapter interface and compatibility policy is documented.
 18. CI gate: Linux CI executes both static and live AppFS contract suites.
+19. Transport parity gate: Linux CI executes live suites against HTTP and gRPC bridge modes.
+20. Adapter DX entrypoints: quickstart + one-command conformance runner + minimal template are available for third-party implementers.
 
 ### 8.1 Phase 1 Validation Snapshot (`2026-03-16`)
 
@@ -350,6 +356,7 @@ Evidence sources used:
 | 17 | PASS | `sdk/rust/src/appfs_adapter.rs` + `cli/src/cmd/appfs.rs` + `run-live-with-adapter.sh` (`CT-001` to `CT-016`) | Runtime dispatches business action handling through the frozen `AppAdapterV1` contract and preserves live conformance behavior |
 | 18 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate`) + `cli/tests/appfs/run-live-with-adapter.sh` | CI enforces AppFS static + live contract suites as merge gate on Linux |
 | 19 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate-http-bridge`, `appfs-contract-gate-grpc-bridge`) | CI enforces transport parity by running the same live suite against HTTP and native gRPC bridge modes |
+| 20 | PASS | `examples/appfs/ADAPTER-QUICKSTART.md` + `examples/appfs/run-conformance.sh` + `examples/appfs/adapter-template/rust-minimal/` | Adapter authors have a minimal, reproducible onboarding path with one-command conformance and SDK-based starter template |
 
 ## 9. Delivery Plan
 

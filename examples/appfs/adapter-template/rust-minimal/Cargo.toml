@@ -1,0 +1,9 @@
+[package]
+name = "appfs-rust-minimal-adapter-template"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+agentfs-sdk = { path = "../../../../sdk/rust" }
+serde_json = "1"

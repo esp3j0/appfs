@@ -26,7 +26,7 @@
 5. M5: Adapter SDK abstraction + v0.1 interface freeze.
 6. M6: CI contract gate (static + live) on Linux.
 
-## Progress Snapshot (`2026-03-16`)
+## Progress Snapshot (`2026-03-17`)
 
 1. Completed:
 1. Task 1-8 are implemented and validated with live contract coverage (`CT-001` to `CT-016`).
@@ -41,6 +41,7 @@
 10. SDK now exposes reusable adapter matrix runners (`sdk/rust/src/appfs_adapter_testkit.rs`) so adapter authors can validate implementations against the frozen trait contract without runtime internals.
 11. CI now enforces AppFS contract gates via `.github/workflows/rust.yml` (`appfs-contract-gate`), including static fixture checks and Linux live harness checks.
 12. CI now validates out-of-process parity with bridge-mode jobs (`appfs-contract-gate-http-bridge`, `appfs-contract-gate-grpc-bridge`) using the same live suite.
+13. Adapter DX baseline is now included in `examples/appfs/`: one-command conformance entry (`run-conformance.sh`), bridge-specific conformance runners, and minimal Rust adapter template + quickstart guide.
 2. Remaining:
 1. Optional: add bridge resilience policies (retry/backoff/circuit-breaker) and explicit transport-level observability metrics.
 

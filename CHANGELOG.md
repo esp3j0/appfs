@@ -7,10 +7,17 @@
 - AppFS release candidate baseline documents:
   - `APPFS-release-checklist-v0.1-rc1.md`
   - `APPFS-release-notes-v0.1-rc1.md`
+- AppFS adapter developer experience baseline:
+  - `examples/appfs/ADAPTER-QUICKSTART.md`
+  - `examples/appfs/run-conformance.sh`
+  - `examples/appfs/http-bridge/python/run-conformance.sh`
+  - `examples/appfs/grpc-bridge/python/run-conformance.sh`
+  - `examples/appfs/adapter-template/rust-minimal/`
 
 ### Changed
 
 - AppFS contract test dependency reference updated to `APPFS-v0.1 (r8)`.
+- Adapter implementation/requirements docs updated with DX rollout status and acceptance item 20.
 
 ## [0.6.2] - 2026-02-21
 
