@@ -84,7 +84,7 @@ Before claiming compatibility, verify:
 
 Reference docs:
 
-1. `APPFS-v0.1.md`
-2. `APPFS-adapter-requirements-v0.1.md`
-3. `APPFS-conformance-v0.1.md`
-4. `APPFS-contract-tests-v0.1.md`
+1. `../../doc/APPFS-v0.1.md`
+2. `../../doc/APPFS-adapter-requirements-v0.1.md`
+3. `../../doc/APPFS-conformance-v0.1.md`
+4. `../../doc/APPFS-contract-tests-v0.1.md`

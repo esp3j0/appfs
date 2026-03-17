@@ -5,8 +5,8 @@
 ### Added
 
 - AppFS release candidate baseline documents:
-  - `APPFS-release-checklist-v0.1-rc1.md`
-  - `APPFS-release-notes-v0.1-rc1.md`
+  - `doc/APPFS-release-checklist-v0.1-rc1.md`
+  - `doc/APPFS-release-notes-v0.1-rc1.md`
 - AppFS adapter developer experience baseline:
   - `examples/appfs/ADAPTER-QUICKSTART.md`
   - `examples/appfs/run-conformance.sh`

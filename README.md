@@ -41,7 +41,7 @@ echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 
 - Draw.io source: [docs/architecture/appfs-v0.1-architecture.drawio](docs/architecture/appfs-v0.1-architecture.drawio)
 - SVG preview: [docs/architecture/appfs-v0.1-architecture.svg](docs/architecture/appfs-v0.1-architecture.svg)
-- Spec baseline: [APPFS-v0.1.md](APPFS-v0.1.md)
+- Spec baseline: [APPFS-v0.1.md](doc/APPFS-v0.1.md)
 
 The architecture has four layers:
 
@@ -83,9 +83,9 @@ sh ./run-conformance.sh grpc-python
 Start here:
 
 1. [examples/appfs/ADAPTER-QUICKSTART.md](examples/appfs/ADAPTER-QUICKSTART.md)
-2. [APPFS-adapter-requirements-v0.1.md](APPFS-adapter-requirements-v0.1.md)
-3. [APPFS-conformance-v0.1.md](APPFS-conformance-v0.1.md)
-4. [APPFS-contract-tests-v0.1.md](APPFS-contract-tests-v0.1.md)
+2. [APPFS-adapter-requirements-v0.1.md](doc/APPFS-adapter-requirements-v0.1.md)
+3. [APPFS-conformance-v0.1.md](doc/APPFS-conformance-v0.1.md)
+4. [APPFS-contract-tests-v0.1.md](doc/APPFS-contract-tests-v0.1.md)
 
 Key compatibility commitments:
 
@@ -95,9 +95,9 @@ Key compatibility commitments:
 
 ## Repository Map (AppFS-Relevant)
 
-1. `APPFS-v0.1.md`: core protocol.
-2. `APPFS-adapter-requirements-v0.1.md`: adapter requirements.
-3. `APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
+1. `doc/APPFS-v0.1.md`: core protocol.
+2. `doc/APPFS-adapter-requirements-v0.1.md`: adapter requirements.
+3. `doc/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
 4. `examples/appfs/`: reference fixtures and bridge examples.
 5. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
 6. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
@@ -112,9 +112,9 @@ Current branch has AppFS v0.1 contract suite and RC closure artifacts, including
 
 For release details, see:
 
-1. [APPFS-release-checklist-v0.1-rc1.md](APPFS-release-checklist-v0.1-rc1.md)
-2. [APPFS-release-notes-v0.1-rc1.md](APPFS-release-notes-v0.1-rc1.md)
-3. [APPFS-rc-closure-v0.1.md](APPFS-rc-closure-v0.1.md)
+1. [APPFS-release-checklist-v0.1-rc1.md](doc/APPFS-release-checklist-v0.1-rc1.md)
+2. [APPFS-release-notes-v0.1-rc1.md](doc/APPFS-release-notes-v0.1-rc1.md)
+3. [APPFS-rc-closure-v0.1.md](doc/APPFS-rc-closure-v0.1.md)
 
 ## License
 
