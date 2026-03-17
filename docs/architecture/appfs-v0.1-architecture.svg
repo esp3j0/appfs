@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #111827; }
+      .label { font: 600 18px Arial, sans-serif; fill: #111827; }
+      .text { font: 14px Arial, sans-serif; fill: #111827; }
+      .edge { stroke: #374151; stroke-width: 2.5; fill: none; }
+      .edge-dashed { stroke: #6b7280; stroke-width: 2.5; fill: none; stroke-dasharray: 8 6; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-dashed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="900" fill="#ffffff"/>
+  <text x="40" y="62" class="title">AppFS v0.1 Architecture</text>
+
+  <rect x="40" y="300" width="230" height="120" rx="12" ry="12" fill="#dbeafe" stroke="#60a5fa" stroke-width="2"/>
+  <text x="58" y="336" class="label">LLM Agent (shell)</text>
+  <text x="58" y="366" class="text">cat / echo / tail</text>
+
+  <rect x="330" y="260" width="340" height="200" rx="12" ry="12" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+  <text x="350" y="296" class="label">Mounted AppFS Namespace</text>
+  <text x="350" y="326" class="text">/app/&lt;app_id&gt;/...</text>
+  <text x="350" y="352" class="text">_meta / _stream / _paging / domain</text>
+
+  <rect x="740" y="230" width="410" height="260" rx="12" ry="12" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="760" y="266" class="label">AppFS Runtime (agentfs serve appfs)</text>
+  <text x="760" y="300" class="text">- path safety + normalization</text>
+  <text x="760" y="326" class="text">- action submit (write+close)</text>
+  <text x="760" y="352" class="text">- stream persistence + replay</text>
+  <text x="760" y="378" class="text">- paging handle state</text>
+
+  <rect x="1220" y="280" width="310" height="160" rx="12" ry="12" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="1240" y="316" class="label">Adapter SDK (AppAdapterV1)</text>
+  <text x="1240" y="346" class="text">in-process / HTTP bridge / gRPC bridge</text>
+
+  <rect x="1220" y="560" width="310" height="120" rx="12" ry="12" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="1240" y="596" class="label">Real App Backend</text>
+  <text x="1240" y="626" class="text">IM / files / CRM / SaaS API</text>
+
+  <rect x="740" y="560" width="410" height="180" rx="12" ry="12" fill="#f3f4f6" stroke="#6b7280" stroke-width="2"/>
+  <text x="760" y="596" class="label">Contract + Conformance</text>
+  <text x="760" y="626" class="text">APPFS-v0.1 / adapter requirements</text>
+  <text x="760" y="652" class="text">contract tests CT-001 .. CT-017</text>
+
+  <line x1="270" y1="360" x2="330" y2="360" class="edge" marker-end="url(#arrow)"/>
+  <text x="274" y="344" class="text">cat / echo / tail</text>
+
+  <line x1="670" y1="360" x2="740" y2="360" class="edge" marker-end="url(#arrow)"/>
+  <text x="678" y="344" class="text">filesystem ops</text>
+
+  <line x1="1150" y1="360" x2="1220" y2="360" class="edge" marker-end="url(#arrow)"/>
+  <text x="1152" y="344" class="text">submit_action / read_resource</text>
+
+  <line x1="1375" y1="440" x2="1375" y2="560" class="edge" marker-end="url(#arrow)"/>
+  <text x="1388" y="510" class="text">app API call</text>
+
+  <line x1="1325" y1="560" x2="1325" y2="440" class="edge-dashed" marker-end="url(#arrow-dashed)"/>
+  <text x="1015" y="525" class="text">result / progress / error</text>
+
+  <line x1="880" y1="490" x2="560" y2="490" class="edge" marker-end="url(#arrow)"/>
+  <line x1="560" y1="490" x2="560" y2="460" class="edge" marker-end="url(#arrow)"/>
+  <text x="568" y="484" class="text">events.evt.jsonl + cursor + from-seq</text>
+
+  <line x1="945" y1="560" x2="945" y2="490" class="edge" marker-end="url(#arrow)"/>
+  <text x="954" y="530" class="text">normative constraints</text>
+</svg>

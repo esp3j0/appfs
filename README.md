@@ -1,211 +1,121 @@
-<p align="center">
-  <h1 align="center">AgentFS</h1>
-</p>
+# AppFS
 
-<p align="center">
-  The filesystem for agents.
-</p>
+Filesystem-native app protocol for shell-first AI agents.
 
-<p align="center">
-  <a title="Build Status" target="_blank" href="https://github.com/tursodatabase/agentfs/actions/workflows/rust.yml"><img src="https://img.shields.io/github/actions/workflow/status/tursodatabase/agentfs/rust.yml?style=flat-square"></a>
-  <a title="Rust" target="_blank" href="https://crates.io/crates/agentfs-sdk"><img alt="Crate" src="https://img.shields.io/crates/v/agentfs-sdk"></a>
-  <a title="JavaScript" target="_blank" href="https://www.npmjs.com/package/agentfs-sdk"><img alt="NPM" src="https://img.shields.io/npm/v/agentfs-sdk"></a>
-  <a title="Python" target="_blank" href="https://pypi.org/project/agentfs-sdk/"><img alt="PyPI" src="https://img.shields.io/pypi/v/agentfs-sdk"></a>
-  <a title="MIT" target="_blank" href="https://github.com/tursodatabase/agentfs/blob/main/LICENSE.md"><img src="http://img.shields.io/badge/license-MIT-orange.svg?style=flat-square"></a>
-</p>
-<p align="center">
-  <a title="Users's Discord" target="_blank" href="https://tur.so/discord"><img alt="Chat with other users of Turso (and Turso Cloud) on Discord" src="https://img.shields.io/discord/933071162680958986?label=Discord&logo=Discord&style=social&label=Users"></a>
-</p>
+AppFS makes different apps look and feel like one filesystem contract, so an agent can use the same primitives across tools:
 
----
+1. `cat` for reading resources.
+2. `echo > *.act` for triggering actions.
+3. `tail -f` on stream files for async results.
 
-> **⚠️ Warning:** This software is in BETA. It may still contain bugs and unexpected behavior. Use caution with production data and ensure you have backups.
+This repository currently hosts the AppFS spec, adapter contracts, reference fixtures, conformance tests, and runtime implementation on top of AgentFS.
 
-## 🎯 What is AgentFS?
+## Why AppFS
 
-AgentFS is a filesystem explicitly designed for AI agents. Just as traditional filesystems provide file and directory abstractions for applications, AgentFS provides the storage abstractions that AI agents need.
+The design target is practical LLM + bash operation:
 
-The AgentFS repository consists of the following:
+1. One interaction model across many apps instead of one MCP schema per app.
+2. Low token overhead with path-native operations.
+3. Stream-first async model with replay support.
+4. Runtime-generated request IDs, so clients do not need UUID management.
+5. Cross-language adapter compatibility through a frozen contract surface.
 
-* **SDK** - [TypeScript](sdk/typescript), [Python](sdk/python), and [Rust](sdk/rust) libraries for programmatic filesystem access.
-* **[CLI](MANUAL.md)** - Command-line interface for managing agent filesystems:
-  - Mount AgentFS on host filesystem with FUSE on Linux, NFS on macOS, and WinFSP on Windows.
-  - Access AgentFS files with a command line tool.
-* **[AgentFS Specification](SPEC.md)** - SQLite-based agent filesystem specification.
-
-## 💡 Why AgentFS?
-
-AgentFS provides the following benefits for agent state management:
-
-* **Auditability**: Every file operation, tool call, and state change is recorded in a SQLite database file. Query your agent's complete history with SQL to debug issues, analyze behavior, or meet compliance requirements.
-* **Reproducibility**: Snapshot an agent's state at any point with cp agent.db snapshot.db. Restore it later to reproduce exact execution states, test what-if scenarios, or roll back mistakes.
-* **Portability**: The entire agent runtime—files, state, history —is stored in a single SQLite file. Move it between machines, check it into version control, or deploy it to any system where Turso runs.
-
-Read more about the motivation for AgentFS in the announcement [blog post](https://turso.tech/blog/agentfs).
-
-## 🧑‍💻 Getting Started
-
-### Using the CLI
-
-Install the AgentFS CLI:
+## Core Interaction Model
 
 ```bash
-curl -fsSL https://agentfs.ai/install | bash
+# 1) subscribe app event stream first
+tail -f /app/aiim/_stream/events.evt.jsonl
+
+# 2) trigger an action by write+close
+echo "hello" > /app/aiim/contacts/zhangsan/send_message.act
+
+# 3) read resources directly
+cat /app/aiim/contacts/zhangsan/profile.res.json
+
+# 4) page long content via unified paging actions
+cat /app/aiim/chats/chat-001/messages.res.json
+echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 ```
 
-Initialize an agent filesystem:
+## Architecture
+
+- Draw.io source: [docs/architecture/appfs-v0.1-architecture.drawio](docs/architecture/appfs-v0.1-architecture.drawio)
+- SVG preview: [docs/architecture/appfs-v0.1-architecture.svg](docs/architecture/appfs-v0.1-architecture.svg)
+- Spec baseline: [APPFS-v0.1.md](APPFS-v0.1.md)
+
+The architecture has four layers:
+
+1. Agent shell operations (`cat`, `echo`, `tail`).
+2. AppFS namespace and contract files (`_meta`, `_stream`, `_paging`, domain paths).
+3. AppFS runtime in `agentfs serve appfs` (routing, validation, stream persistence, replay).
+4. Business adapter implementations (in-process or HTTP/gRPC bridge) that call real app backends.
+
+![AppFS v0.1 Architecture](docs/architecture/appfs-v0.1-architecture.svg)
+
+## Quick Start
+
+### 1) Static Contract Checks
 
 ```bash
-$ agentfs init my-agent
-Created agent filesystem: .agentfs/my-agent.db
-Agent ID: my-agent
+cd cli
+APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs" sh ./tests/test-appfs-contract.sh
 ```
 
-Inspect the agent filesystem:
+### 2) Live Conformance (In-Process Adapter)
+
+Linux + FUSE environment required:
 
 ```bash
-$ agentfs fs ls my-agent
-Using agent: my-agent
-f hello.txt
-
-$ agentfs fs cat my-agent hello.txt
-hello from agent
+cd examples/appfs
+sh ./run-conformance.sh inprocess
 ```
 
-You can also use a database path directly:
+### 3) Live Conformance (Out-of-Process Bridges)
 
 ```bash
-$ agentfs fs cat .agentfs/my-agent.db hello.txt
-hello from agent
+cd examples/appfs
+sh ./run-conformance.sh http-python
+sh ./run-conformance.sh grpc-python
 ```
 
-View the agent's action timeline:
+## Adapter Developer Path
 
-```bash
-$ agentfs timeline my-agent
-ID   TOOL                 STATUS       DURATION STARTED
-4    execute_code         pending            -- 2024-01-05 09:44:20
-3    api_call             error           300ms 2024-01-05 09:44:15
-2    read_file            success          50ms 2024-01-05 09:44:10
-1    web_search           success        1200ms 2024-01-05 09:43:45
-```
+Start here:
 
-You can mount an agent filesystem using FUSE (Linux), NFS (macOS), or WinFSP (Windows):
+1. [examples/appfs/ADAPTER-QUICKSTART.md](examples/appfs/ADAPTER-QUICKSTART.md)
+2. [APPFS-adapter-requirements-v0.1.md](APPFS-adapter-requirements-v0.1.md)
+3. [APPFS-conformance-v0.1.md](APPFS-conformance-v0.1.md)
+4. [APPFS-contract-tests-v0.1.md](APPFS-contract-tests-v0.1.md)
 
-```bash
-$ agentfs mount my-agent ./mnt
-$ echo "hello" > ./mnt/hello.txt
-$ cat ./mnt/hello.txt
-hello
-```
+Key compatibility commitments:
 
-You can also run a program in an experimental sandbox with the agent filesystem mounted at `/agent`:
+1. Language-neutral implementation is allowed.
+2. Compatibility is judged by behavior and conformance tests.
+3. Adapter interface surface is frozen for `v0.1.x` (additive changes only).
 
-```bash
-$ agentfs run /bin/bash
-Welcome to AgentFS!
+## Repository Map (AppFS-Relevant)
 
-$ echo "hello from agent" > /agent/hello.txt
-$ cat /agent/hello.txt
-hello from agent
-$ exit
-```
+1. `APPFS-v0.1.md`: core protocol.
+2. `APPFS-adapter-requirements-v0.1.md`: adapter requirements.
+3. `APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
+4. `examples/appfs/`: reference fixtures and bridge examples.
+5. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
+6. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
 
-Read the **[User Manual](MANUAL.md)** for complete documentation.
+## Current Status
 
-### Using the SDK
+Current branch has AppFS v0.1 contract suite and RC closure artifacts, including:
 
-Install the SDK in your project:
+1. Release checklist and notes.
+2. RC closure record.
+3. Static and live conformance gates for in-process and bridge modes.
 
-```bash
-npm install agentfs-sdk
-```
+For release details, see:
 
-Use it in your agent code:
+1. [APPFS-release-checklist-v0.1-rc1.md](APPFS-release-checklist-v0.1-rc1.md)
+2. [APPFS-release-notes-v0.1-rc1.md](APPFS-release-notes-v0.1-rc1.md)
+3. [APPFS-rc-closure-v0.1.md](APPFS-rc-closure-v0.1.md)
 
-```typescript
-import { AgentFS } from 'agentfs-sdk';
-
-// Persistent storage with identifier
-const agent = await AgentFS.open({ id: 'my-agent' });
-// Creates: .agentfs/my-agent.db
-
-// Or use ephemeral in-memory database
-const ephemeralAgent = await AgentFS.open();
-
-// Key-value operations
-await agent.kv.set('user:preferences', { theme: 'dark' });
-const prefs = await agent.kv.get('user:preferences');
-
-// Filesystem operations
-await agent.fs.writeFile('/output/report.pdf', pdfBuffer);
-const files = await agent.fs.readdir('/output');
-
-// Tool call tracking
-await agent.tools.record(
-  'web_search',
-  Date.now() / 1000,
-  Date.now() / 1000 + 1.5,
-  { query: 'AI' },
-  { results: [...] }
-);
-```
-
-### Examples
-
-This source repository also contains examples that demonstrate how to integrate AgentFS with some popular AI frameworks:
-
-- **[Mastra](examples/mastra/research-assistant)** - Research assistant using the Mastra AI framework
-- **[Claude Agent SDK](examples/claude-agent/research-assistant)** - Research assistant using Anthropic's Claude Agent SDK
-- **[OpenAI Agents](examples/openai-agents/research-assistant)** - Research assistant using OpenAI Agents SDK
-- **[Firecracker](examples/firecracker)** - Minimal Firecracker VM with AgentFS mounted via NFSv3
-- **[AI SDK + just-bash](examples/ai-sdk-just-bash)** - Interactive AI agent using Vercel AI SDK with just-bash for command execution
-- **[Cloudflare Workers](examples/cloudflare)** - AI agent using AI SDK + just-bash on Cloudflare Workers with Durable Objects storage
-
-See the **[examples](examples)** directory for more details.
-
-## 🔧 How AgentFS Works?
-
-<img align="right" width="40%" src=".github/assets/agentfs-arch.svg">
-
-AgentFS is an agent filesystem accessible through an SDK that provides three essential interfaces for agent state management:
-
-* **Filesystem:** A POSIX-like filesystem for files and directories
-* **Key-Value:** A key-value store for agent state and context
-* **Toolcall:** A toolcall audit trail for debugging and analysis
-
-At the heart of AgentFS is the [agent filesystem](SPEC.md), a complete SQLite-based storage system for agents implemented using [Turso](https://github.com/tursodatabase/turso). Everything an agent does—every file it creates, every piece of state it stores, every tool it invokes—lives in a single SQLite database file.
-
-## 🤔 FAQ
-
-### How is AgentFS different from _X_?
-
-[Bubblewrap](https://github.com/containers/bubblewrap) provides filesystem isolation using Linux namespaces and overlays. While you could achieve similar isolation with a `bwrap` call that mounts `/` read-only and uses `--tmp-overlay` on the working directory, the key difference is persistence and queryability: with AgentFS, the upper filesystem is stored in a single SQLite database file, which you can query, snapshot, and move to another machine. Read more about the motivation in the announcement [blog post](https://turso.tech/blog/agentfs).
-
-[Docker Sandbox](https://www.docker.com/blog/docker-sandboxes-a-new-approach-for-coding-agent-safety/) and AgentFS are complementary rather than competing. AgentFS answers "what happened and what's the state?" while Docker Sandboxes answer "how do I run this safely?" You could use both together: run an agent inside a Docker Sandbox for security, while using AgentFS inside that sandbox for structured state management and audit trails.
-
-[Git worktrees](https://git-scm.com/docs/git-worktree) let you check out multiple branches of a repository into separate directories, allowing agents to work on independent copies of the source code—similar to AgentFS. But AgentFS solves the problem at a lower level. With git worktrees, nothing prevents an agent from modifying files outside its worktree: another agent's worktree, system files, or anything else on the filesystem. The isolation is purely conventional, not enforced. AgentFS provides filesystem-level copy-on-write isolation that's system-wide and cannot be bypassed—letting you safely run untrusted agents. And because it operates below git, it also handles untracked files, making it useful beyond just version-controlled source code.
-
-### Why implement AgentFS at the filesystem layer instead of using containers or VMs?
-
-The filesystem layer gives us capabilities that block devices can't. First, because everything is stored in structured SQLite tables, you can query the filesystem, which is essential for auditability and debugging agent behavior. Second, SQLite's write-ahead log enables snapshotting and time-travel forking by capturing every filesystem change. Third, we can provide an SDK that works in environments such as serverless or the browser, where there's no way to mount a block device at all. Note that this approach works fine with containers and VMs too—you can use AgentFS via remote filesystem protocols like NFS or through mechanisms like virtio-fuse.
-
-## 📚 Learn More
-
-- **[User Manual](MANUAL.md)** - Complete guide to using the AgentFS CLI and SDK
-- **[Agent Filesystem Specification](SPEC.md)** - Technical specification of the agent filesystem SQLite schema
-- **[SDK Examples](examples/)** - Working code examples using AgentFS
-- **[Turso database](https://github.com/tursodatabase/turso)** - an in-process SQL database, compatible with SQLite.
-
-### Blog Posts
-
-- **[Introducing AgentFS](https://turso.tech/blog/agentfs)** - The motivation behind AgentFS
-- **[AgentFS with FUSE](https://turso.tech/blog/agentfs-fuse)** - Mounting agent filesystems using FUSE
-- **[AgentFS with Overlay Filesystem](https://turso.tech/blog/agentfs-overlay)** - Sandboxing agents with copy-on-write overlays
-- **[AI Agents with Just Bash](https://turso.tech/blog/agentfs-just-bash)** - Safe bash command execution for agents
-- **[AgentFS in the Browser](https://turso.tech/blog/agentfs_browser)** - Running AgentFS in browsers with WebAssembly
-- **[Making Coding Agents Safe Using LlamaIndex](https://www.llamaindex.ai/blog/making-coding-agents-safe-using-llamaindex)** - Using AgentFS with LlamaIndex
-
-## 📝 License
+## License
 
 MIT
