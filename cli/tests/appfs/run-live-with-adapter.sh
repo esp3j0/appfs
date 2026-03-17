@@ -23,6 +23,7 @@ APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS="${APPFS_ADAPTER_BRIDGE_CIRCUIT
 APPFS_BRIDGE_RESILIENCE_CONTRACT="${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}"
 APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC="${APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC:-4}"
 APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX="${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX:-resilience-}"
+APPFS_BRIDGE_FAULT_CONFIG_PATH="${APPFS_BRIDGE_FAULT_CONFIG_PATH:-/tmp/appfs-bridge-fault-config.json}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
@@ -40,9 +41,19 @@ say() {
     printf '%s\n' "$*"
 }
 
+pass() {
+    say "  OK   $*"
+}
+
 fail() {
     say "FAILED: $*"
     exit 1
+}
+
+banner() {
+    say "================================================"
+    say "  $1"
+    say "================================================"
 }
 
 endpoint_host_port() {
@@ -237,7 +248,7 @@ run_bridge_resilience_probe() {
         fail "CT-017 requires APPFS_ADAPTER_HTTP_ENDPOINT or APPFS_ADAPTER_GRPC_ENDPOINT"
     fi
 
-    say "CT-017: bridge retry + circuit breaker + cooldown recovery..."
+    banner "AppFS CT-017 Bridge Retry/Circuit/Recovery"
     events_file="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/_stream/events.evt.jsonl"
     resilience_action_1="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}1/send_message.act"
     resilience_action_2="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}2/send_message.act"
@@ -250,25 +261,44 @@ run_bridge_resilience_probe() {
         fi
         wait_writable "$action_path" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $action_path"
     done
+    pass "resilience action sinks initialized"
+
+    mkdir -p "$(dirname "$APPFS_BRIDGE_FAULT_CONFIG_PATH")"
+    if [ -n "$APPFS_ADAPTER_GRPC_ENDPOINT" ]; then
+        cat > "$APPFS_BRIDGE_FAULT_CONFIG_PATH" <<EOF
+{"fail_next_submit_action":4,"fail_path_prefix":"/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}","fail_grpc_code":"UNAVAILABLE"}
+EOF
+    else
+        cat > "$APPFS_BRIDGE_FAULT_CONFIG_PATH" <<EOF
+{"fail_next_submit_action":4,"fail_path_prefix":"/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}","fail_http_status":503}
+EOF
+    fi
+    pass "bridge fault config prepared at $APPFS_BRIDGE_FAULT_CONFIG_PATH"
+    sleep 1
 
     token_retry_1="ct-resilience-1-$$"
     printf 'token:%s\nresilience-1\n' "$token_retry_1" > "$resilience_action_1" || fail "resilience request 1 submit failed"
     wait_token_type_count "$token_retry_1" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 1 missing action.failed"
     assert_token_failed_internal_retryable "$token_retry_1" "$events_file"
+    pass "request 1 failed with INTERNAL/retryable"
 
     token_retry_2="ct-resilience-2-$$"
     printf 'token:%s\nresilience-2\n' "$token_retry_2" > "$resilience_action_2" || fail "resilience request 2 submit failed"
     wait_log_token "circuit opened" "$APPFS_ADAPTER_LOG" "$APPFS_TIMEOUT_SEC" || fail "bridge circuit did not open in adapter log"
+    pass "circuit opened observed in adapter log"
 
     token_short_circuit="ct-resilience-3-$$"
     printf 'token:%s\nresilience-3\n' "$token_short_circuit" > "$resilience_action_3" || fail "resilience request 3 submit failed"
     wait_token_type_count "$token_retry_2" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 2 missing action.failed"
     assert_token_failed_internal_retryable "$token_retry_2" "$events_file"
+    pass "request 2 failed with INTERNAL/retryable"
     wait_token_type_count "$token_short_circuit" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 3 missing action.failed"
     assert_token_failed_internal_retryable "$token_short_circuit" "$events_file"
+    pass "request 3 failed with INTERNAL/retryable (short-circuit window)"
 
     grep -q "bridge .* retry" "$APPFS_ADAPTER_LOG" || fail "bridge retry log not observed in adapter log"
     grep -q "short-circuit" "$APPFS_ADAPTER_LOG" || fail "bridge short-circuit log not observed in adapter log"
+    pass "retry and short-circuit logs observed"
 
     sleep "$APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC"
 
@@ -276,8 +306,9 @@ run_bridge_resilience_probe() {
     printf 'token:%s\nresilience-4\n' "$token_recovered" > "$resilience_action_4" || fail "resilience request 4 submit failed"
     wait_token_type_count "$token_recovered" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience recovery request missing action.completed"
     assert_token_completed "$token_recovered" "$events_file"
+    pass "request 4 recovered with action.completed"
 
-    say "CT-017 passed."
+    say "CT-017 done"
 }
 
 cleanup() {
@@ -303,6 +334,7 @@ cleanup() {
     rm -f "$CLI_DIR/.agentfs/${APPFS_LIVE_AGENT_ID}.db"
     rm -f "$CLI_DIR/.agentfs/${APPFS_LIVE_AGENT_ID}.db-shm"
     rm -f "$CLI_DIR/.agentfs/${APPFS_LIVE_AGENT_ID}.db-wal"
+    rm -f "$APPFS_BRIDGE_FAULT_CONFIG_PATH"
 }
 
 trap cleanup EXIT INT TERM
@@ -375,7 +407,8 @@ if ! APPFS_CONTRACT_TESTS=1 \
     fail "live AppFS contract tests failed"
 fi
 
-say "Lifecycle probe: graceful stop + restart + post-restart submit..."
+banner "AppFS CT-016 Restart Reconciliation"
+say "  INFO lifecycle probe: graceful stop + restart + post-restart submit"
 if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
     fail "adapter not alive before lifecycle probe"
 fi
@@ -391,9 +424,9 @@ probe_token="ct-lifecycle-$$"
 mkdir -p "$(dirname "$probe_action")"
 printf 'token:%s\nrestart-ok\n' "$probe_token" > "$probe_action" || fail "lifecycle probe submit failed"
 wait_token_in_events "$probe_token" "$events_file" "$APPFS_TIMEOUT_SEC" || fail "lifecycle probe event not observed after adapter restart"
-say "Lifecycle probe passed."
+pass "lifecycle probe passed"
 
-say "CT-016: restart reconciliation for accepted-but-not-terminal streaming request..."
+say "  INFO restart reconciliation for accepted-but-not-terminal streaming request"
 stop_adapter
 start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
 reconcile_action="$APPFS_STREAMING_ACTION_LIVE"
@@ -401,6 +434,7 @@ reconcile_token="ct-reconcile-$$"
 wait_writable "$reconcile_action" "$APPFS_TIMEOUT_SEC" || fail "reconcile action sink not writable: $reconcile_action"
 printf '{"target":"/tmp/reconcile.bin","client_token":"%s"}\n' "$reconcile_token" > "$reconcile_action" || fail "reconcile submit failed"
 wait_token_type_count "$reconcile_token" "action.accepted" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile accepted event missing before restart"
+pass "reconcile accepted event observed before restart"
 terminal_before="$(token_terminal_count "$reconcile_token" "$events_file")"
 [ "$terminal_before" -eq 0 ] || fail "reconcile terminal emitted too early before restart"
 
@@ -410,7 +444,8 @@ wait_token_type_count "$reconcile_token" "action.progress" 1 "$events_file" "$AP
 wait_token_type_count "$reconcile_token" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile terminal missing after restart"
 terminal_after="$(token_terminal_count "$reconcile_token" "$events_file")"
 [ "$terminal_after" -eq 1 ] || fail "reconcile request emitted unexpected terminal count: $terminal_after"
-say "CT-016 passed."
+pass "reconcile emitted progress and single terminal after restart"
+say "CT-016 done"
 
 run_bridge_resilience_probe
 

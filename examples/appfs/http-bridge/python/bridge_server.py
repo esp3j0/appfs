@@ -30,9 +30,37 @@ class FaultInjector:
         self.fail_next_submit_action = max(0, _env_int("APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION", 0))
         self.fail_http_status = _env_int("APPFS_BRIDGE_FAIL_HTTP_STATUS", 503)
         self.fail_path_prefix = os.getenv("APPFS_BRIDGE_FAIL_PATH_PREFIX", "").strip()
+        self.config_path = os.getenv(
+            "APPFS_BRIDGE_FAULT_CONFIG_PATH", "/tmp/appfs-bridge-fault-config.json"
+        ).strip()
+        self._last_config_mtime = None
+
+    def _reload_config_from_file(self) -> None:
+        if self.config_path == "":
+            return
+        try:
+            stat = os.stat(self.config_path)
+        except OSError:
+            return
+        mtime = stat.st_mtime
+        if self._last_config_mtime == mtime:
+            return
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        try:
+            self.fail_next_submit_action = max(0, int(data.get("fail_next_submit_action", 0)))
+            self.fail_http_status = int(data.get("fail_http_status", self.fail_http_status))
+            self.fail_path_prefix = str(data.get("fail_path_prefix", self.fail_path_prefix)).strip()
+        except Exception:
+            return
+        self._last_config_mtime = mtime
 
     def maybe_fail_submit_action(self, path: str) -> tuple[bool, int]:
         with self._lock:
+            self._reload_config_from_file()
             if self.fail_next_submit_action <= 0:
                 return (False, 0)
             if self.fail_path_prefix and not path.startswith(self.fail_path_prefix):
@@ -187,6 +215,7 @@ def main() -> None:
             FAULT_INJECTOR.fail_path_prefix,
         )
     )
+    print(f"Fault config path: {FAULT_INJECTOR.config_path}")
     server.serve_forever()
 
 

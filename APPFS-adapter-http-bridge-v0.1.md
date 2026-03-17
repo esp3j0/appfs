@@ -166,3 +166,4 @@ Reference Python bridge (`examples/appfs/http-bridge/python/bridge_server.py`) s
 1. `APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION` (int, default `0`)
 2. `APPFS_BRIDGE_FAIL_PATH_PREFIX` (only fail matching action paths)
 3. `APPFS_BRIDGE_FAIL_HTTP_STATUS` (default `503`)
+4. `APPFS_BRIDGE_FAULT_CONFIG_PATH` (default `/tmp/appfs-bridge-fault-config.json`, hot-reload JSON config written by `CT-017`)

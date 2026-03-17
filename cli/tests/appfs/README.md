@@ -83,6 +83,7 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` |
 | `APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC` | `4` |
 | `APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX` | `resilience-` |
+| `APPFS_BRIDGE_FAULT_CONFIG_PATH` | `/tmp/appfs-bridge-fault-config.json` |
 | `APPFS_TIMEOUT_SEC` | `20` |
 | `APPFS_MOUNT_WAIT_SEC` | `20` |
 | `APPFS_MOUNT_LOG` | `cli/appfs-mount-live.log` |
@@ -109,5 +110,6 @@ to avoid inheriting stale shell environment overrides.
 7. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1` and bridge mode is enabled, `run-live-with-adapter.sh` also runs `CT-017` (retry + circuit-breaker + cooldown recovery probe) and checks adapter logs for retry/short-circuit observations.
 8. `CT-017` uses multiple action sinks under `contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}{1..4}` to avoid submit cooldown interference.
 9. If bridge-side fault injection is enabled, make sure fault-match prefix aligns with test actions (CI uses `/contacts/resilience-`).
-10. This is a skeleton focused on protocol gates, not full adapter business behavior.
-11. Bridge mode now performs endpoint readiness precheck (`host:port` connect) before starting runtime; unreachable bridge endpoints fail fast.
+10. `CT-017` writes runtime fault config to `APPFS_BRIDGE_FAULT_CONFIG_PATH`; bridge examples hot-reload this file for deterministic fault injection.
+11. This is a skeleton focused on protocol gates, not full adapter business behavior.
+12. Bridge mode now performs endpoint readiness precheck (`host:port` connect) before starting runtime; unreachable bridge endpoints fail fast.
