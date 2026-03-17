@@ -1,0 +1,9 @@
+[project]
+name = "appfs-http-bridge-mini"
+version = "0.1.0"
+description = "AppFS mini backend HTTP bridge (Mock AIIM)"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false

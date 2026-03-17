@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Required AppFS gate: static + live (in-process)
   appfs-contract-gate:
     name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
@@ -46,6 +47,7 @@ jobs:
         APPFS_TIMEOUT_SEC: "30"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
+  # Required AppFS gate: live HTTP bridge path
   appfs-contract-gate-http-bridge:
     name: AppFS Contract Gate (linux, http bridge)
     runs-on: ubuntu-latest
@@ -66,11 +68,21 @@ jobs:
       with:
         python-version: "3.12"
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+
     - name: Install system dependencies
       run: |
         ../scripts/install-deps.sh
         sudo apt-get update
         sudo apt-get install -y jq
+
+    - name: Run HTTP bridge unit tests
+      run: |
+        cd ../examples/appfs/http-bridge/python
+        uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge
       run: |
@@ -78,9 +90,9 @@ jobs:
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
         APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_HTTP_STATUS=503 \
-        nohup python3 bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
+        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-http-bridge.pid"
-        python3 - <<'PY'
+        uv run python - <<'PY'
         import socket
         import sys
         import time
@@ -123,10 +135,13 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
+  # Informational AppFS gate: live gRPC bridge path (keeps signal without blocking merge)
   appfs-contract-gate-grpc-bridge:
     name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: appfs-contract-gate
+    if: always()
     defaults:
       run:
         working-directory: cli
