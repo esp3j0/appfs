@@ -1,7 +1,7 @@
 # AppFS Adapter HTTP Bridge v0.1 (Reference)
 
 - Version: `0.1-draft`
-- Date: `2026-03-16`
+- Date: `2026-03-17`
 - Status: `Draft`
 - Scope: Optional language bridge for `AppAdapterV1`
 
@@ -18,13 +18,23 @@ agentfs serve appfs \
   --root /app \
   --app-id aiim \
   --adapter-http-endpoint http://127.0.0.1:8080 \
-  --adapter-http-timeout-ms 5000
+  --adapter-http-timeout-ms 5000 \
+  --adapter-bridge-max-retries 2 \
+  --adapter-bridge-initial-backoff-ms 100 \
+  --adapter-bridge-max-backoff-ms 1000 \
+  --adapter-bridge-circuit-breaker-failures 5 \
+  --adapter-bridge-circuit-breaker-cooldown-ms 3000
 ```
 
 Equivalent env vars:
 
 1. `APPFS_ADAPTER_HTTP_ENDPOINT`
 2. `APPFS_ADAPTER_HTTP_TIMEOUT_MS`
+3. `APPFS_ADAPTER_BRIDGE_MAX_RETRIES`
+4. `APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS`
+5. `APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS`
+6. `APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES`
+7. `APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS`
 
 If endpoint is omitted, runtime uses in-process `DemoAppAdapterV1`.
 
@@ -142,3 +152,11 @@ This bridge only changes transport. AppFS protocol guarantees still stay in runt
 2. event persistence/order
 3. cursor/replay atomicity
 4. paging close-time error semantics
+
+## 7. Bridge Resilience and Metrics
+
+Runtime-side HTTP bridge dispatch includes:
+
+1. bounded retry with exponential backoff (transport + retryable status)
+2. circuit breaker on repeated transport-level failures
+3. transport metrics logs (`requests/attempts/retries/success/fail/short_circuit`) for observability

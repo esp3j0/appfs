@@ -453,6 +453,42 @@ pub enum ServeCommand {
         /// gRPC bridge request timeout in milliseconds.
         #[arg(long, default_value_t = 5000, env = "APPFS_ADAPTER_GRPC_TIMEOUT_MS")]
         adapter_grpc_timeout_ms: u64,
+
+        /// Max retry count for bridge transport failures (per request).
+        #[arg(long, default_value_t = 2, env = "APPFS_ADAPTER_BRIDGE_MAX_RETRIES")]
+        adapter_bridge_max_retries: u32,
+
+        /// Initial backoff in milliseconds for bridge retries.
+        #[arg(
+            long,
+            default_value_t = 100,
+            env = "APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS"
+        )]
+        adapter_bridge_initial_backoff_ms: u64,
+
+        /// Max backoff in milliseconds for bridge retries.
+        #[arg(
+            long,
+            default_value_t = 1000,
+            env = "APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS"
+        )]
+        adapter_bridge_max_backoff_ms: u64,
+
+        /// Consecutive bridge transport failures required to open circuit breaker.
+        #[arg(
+            long,
+            default_value_t = 5,
+            env = "APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES"
+        )]
+        adapter_bridge_circuit_breaker_failures: u32,
+
+        /// Circuit breaker cooldown in milliseconds before retrying bridge calls.
+        #[arg(
+            long,
+            default_value_t = 3000,
+            env = "APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS"
+        )]
+        adapter_bridge_circuit_breaker_cooldown_ms: u64,
     },
 }
 

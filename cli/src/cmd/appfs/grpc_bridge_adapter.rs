@@ -1,3 +1,6 @@
+use super::bridge_resilience::{
+    is_retryable_grpc_code, BridgeCircuitBreaker, BridgeMetrics, BridgeRuntimeOptions,
+};
 use agentfs_sdk::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
     AdapterInputModeV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1,
@@ -5,7 +8,7 @@ use agentfs_sdk::{
 };
 use serde_json::Value as JsonValue;
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::transport::{Channel, Endpoint};
 
 pub(super) mod proto {
@@ -24,6 +27,9 @@ use proto::{
 pub(super) struct GrpcBridgeAdapterV1 {
     app_id: String,
     client: AppfsAdapterBridgeClient<Channel>,
+    runtime_options: BridgeRuntimeOptions,
+    metrics: BridgeMetrics,
+    circuit_breaker: BridgeCircuitBreaker,
 }
 
 impl GrpcBridgeAdapterV1 {
@@ -31,6 +37,7 @@ impl GrpcBridgeAdapterV1 {
         app_id: String,
         endpoint: String,
         timeout: Duration,
+        runtime_options: BridgeRuntimeOptions,
     ) -> Result<Self, AdapterErrorV1> {
         let endpoint = endpoint.trim().trim_end_matches('/').to_string();
         let endpoint =
@@ -47,7 +54,178 @@ impl GrpcBridgeAdapterV1 {
         Ok(Self {
             app_id,
             client: AppfsAdapterBridgeClient::new(channel),
+            runtime_options,
+            metrics: BridgeMetrics::default(),
+            circuit_breaker: BridgeCircuitBreaker::default(),
         })
+    }
+
+    fn submit_action_rpc(
+        &mut self,
+        request: SubmitActionRequest,
+    ) -> Result<proto::SubmitActionResponse, AdapterErrorV1> {
+        if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
+            self.metrics.record_short_circuit();
+            let message = format!(
+                "bridge grpc circuit open for SubmitAction; retry_in_ms={} metrics={}",
+                remaining.as_millis(),
+                self.metrics.snapshot()
+            );
+            if self.metrics.short_circuited_total <= 3
+                || self.metrics.short_circuited_total % 10 == 0
+            {
+                eprintln!("AppFS bridge grpc short-circuit: {message}");
+            }
+            return Err(AdapterErrorV1::Internal { message });
+        }
+
+        let max_attempts = self.runtime_options.max_retries.saturating_add(1).max(1);
+        let started = Instant::now();
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let mut client = self.client.clone();
+            match run_async(client.submit_action(request.clone())) {
+                Ok(response) => {
+                    self.circuit_breaker.record_success();
+                    self.metrics.record_request(attempt, true);
+                    self.log_observation("SubmitAction", attempt, started.elapsed(), "ok");
+                    return Ok(response.into_inner());
+                }
+                Err(status) => {
+                    let retryable = is_retryable_grpc_code(status.code());
+                    if retryable && attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        eprintln!(
+                            "AppFS bridge grpc retry method=SubmitAction attempt={}/{} code={} backoff_ms={}",
+                            attempt,
+                            max_attempts,
+                            status.code(),
+                            backoff.as_millis()
+                        );
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    if retryable {
+                        let opened = self
+                            .circuit_breaker
+                            .record_failure(Instant::now(), self.runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge grpc circuit opened after SubmitAction failure code={} {}",
+                                status.code(),
+                                self.metrics.snapshot()
+                            );
+                        }
+                    } else {
+                        self.circuit_breaker.record_success();
+                    }
+
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation("SubmitAction", attempt, started.elapsed(), "failed");
+                    return Err(map_grpc_status(
+                        "SubmitAction",
+                        status,
+                        attempt,
+                        &self.metrics.snapshot(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn submit_control_rpc(
+        &mut self,
+        request: SubmitControlActionRequest,
+    ) -> Result<proto::SubmitControlActionResponse, AdapterErrorV1> {
+        if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
+            self.metrics.record_short_circuit();
+            let message = format!(
+                "bridge grpc circuit open for SubmitControlAction; retry_in_ms={} metrics={}",
+                remaining.as_millis(),
+                self.metrics.snapshot()
+            );
+            if self.metrics.short_circuited_total <= 3
+                || self.metrics.short_circuited_total % 10 == 0
+            {
+                eprintln!("AppFS bridge grpc short-circuit: {message}");
+            }
+            return Err(AdapterErrorV1::Internal { message });
+        }
+
+        let max_attempts = self.runtime_options.max_retries.saturating_add(1).max(1);
+        let started = Instant::now();
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let mut client = self.client.clone();
+            match run_async(client.submit_control_action(request.clone())) {
+                Ok(response) => {
+                    self.circuit_breaker.record_success();
+                    self.metrics.record_request(attempt, true);
+                    self.log_observation("SubmitControlAction", attempt, started.elapsed(), "ok");
+                    return Ok(response.into_inner());
+                }
+                Err(status) => {
+                    let retryable = is_retryable_grpc_code(status.code());
+                    if retryable && attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        eprintln!(
+                            "AppFS bridge grpc retry method=SubmitControlAction attempt={}/{} code={} backoff_ms={}",
+                            attempt,
+                            max_attempts,
+                            status.code(),
+                            backoff.as_millis()
+                        );
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    if retryable {
+                        let opened = self
+                            .circuit_breaker
+                            .record_failure(Instant::now(), self.runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge grpc circuit opened after SubmitControlAction failure code={} {}",
+                                status.code(),
+                                self.metrics.snapshot()
+                            );
+                        }
+                    } else {
+                        self.circuit_breaker.record_success();
+                    }
+
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation(
+                        "SubmitControlAction",
+                        attempt,
+                        started.elapsed(),
+                        "failed",
+                    );
+                    return Err(map_grpc_status(
+                        "SubmitControlAction",
+                        status,
+                        attempt,
+                        &self.metrics.snapshot(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn log_observation(&self, method: &str, attempts: u32, elapsed: Duration, outcome: &str) {
+        if attempts > 1 || outcome != "ok" || self.metrics.requests_total % 50 == 0 {
+            eprintln!(
+                "AppFS bridge grpc metrics method={} outcome={} attempts={} latency_ms={} {}",
+                method,
+                outcome,
+                attempts,
+                elapsed.as_millis(),
+                self.metrics.snapshot()
+            );
+        }
     }
 }
 
@@ -73,9 +251,8 @@ impl AppAdapterV1 for GrpcBridgeAdapterV1 {
             context: Some(to_proto_context(ctx)),
         };
 
-        let response = run_async(self.client.submit_action(request))
-            .map_err(|status| map_grpc_status("SubmitAction", status))?;
-        match response.into_inner().result {
+        let response = self.submit_action_rpc(request)?;
+        match response.result {
             Some(SubmitActionResult::Completed(outcome)) => {
                 let content = parse_json_text(&outcome.content_json, "completed.content_json")?;
                 Ok(AdapterSubmitOutcomeV1::Completed { content })
@@ -146,9 +323,8 @@ impl AppAdapterV1 for GrpcBridgeAdapterV1 {
             action: Some(action),
             context: Some(to_proto_context(ctx)),
         };
-        let response = run_async(self.client.submit_control_action(request))
-            .map_err(|status| map_grpc_status("SubmitControlAction", status))?;
-        match response.into_inner().result {
+        let response = self.submit_control_rpc(request)?;
+        match response.result {
             Some(SubmitControlResult::Completed(ControlCompletedOutcome { content_json })) => {
                 let content = parse_json_text(&content_json, "control.completed.content_json")?;
                 Ok(AdapterControlOutcomeV1::Completed { content })
@@ -195,13 +371,20 @@ fn parse_json_text(text: &str, field: &str) -> Result<JsonValue, AdapterErrorV1>
     })
 }
 
-fn map_grpc_status(method: &str, status: tonic::Status) -> AdapterErrorV1 {
+fn map_grpc_status(
+    method: &str,
+    status: tonic::Status,
+    attempts: u32,
+    metrics: &str,
+) -> AdapterErrorV1 {
     AdapterErrorV1::Internal {
         message: format!(
-            "bridge grpc {} error: code={} message={}",
+            "bridge grpc {} error: code={} message={} attempts={} metrics={}",
             method,
             status.code(),
-            status.message()
+            status.message(),
+            attempts,
+            metrics
         ),
     }
 }
@@ -378,6 +561,7 @@ mod tests {
             "aiim".to_string(),
             format!("http://{}", addr),
             Duration::from_millis(1000),
+            super::BridgeRuntimeOptions::from_cli(1, 10, 100, 3, 200),
         )
         .expect("create grpc bridge adapter");
 

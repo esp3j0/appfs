@@ -50,7 +50,12 @@ cd cli
 agentfs serve appfs \
   --root /app \
   --app-id aiim \
-  --adapter-http-endpoint http://127.0.0.1:8080
+  --adapter-http-endpoint http://127.0.0.1:8080 \
+  --adapter-bridge-max-retries 2 \
+  --adapter-bridge-initial-backoff-ms 100 \
+  --adapter-bridge-max-backoff-ms 1000 \
+  --adapter-bridge-circuit-breaker-failures 5 \
+  --adapter-bridge-circuit-breaker-cooldown-ms 3000
 ```
 
 For live harness:

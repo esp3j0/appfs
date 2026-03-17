@@ -291,6 +291,10 @@ Where:
 1. one-command conformance runner (`examples/appfs/run-conformance.sh`)
 2. bridge-scoped conformance runners
 3. minimal adapter template + quickstart
+10. Runtime SHOULD expose native bridge resilience knobs:
+1. bounded retry + backoff
+2. circuit breaker guard
+3. transport-level observability metrics
 
 ## 7. Security Requirements
 
@@ -322,6 +326,7 @@ Adapter implementation is accepted when all checks pass:
 18. CI gate: Linux CI executes both static and live AppFS contract suites.
 19. Transport parity gate: Linux CI executes live suites against HTTP and gRPC bridge modes.
 20. Adapter DX entrypoints: quickstart + one-command conformance runner + minimal template are available for third-party implementers.
+21. Bridge resilience baseline: runtime bridge path provides configurable retry/backoff/circuit-breaker and emits transport-level metrics logs.
 
 ### 8.1 Phase 1 Validation Snapshot (`2026-03-16`)
 
@@ -357,6 +362,7 @@ Evidence sources used:
 | 18 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate`) + `cli/tests/appfs/run-live-with-adapter.sh` | CI enforces AppFS static + live contract suites as merge gate on Linux |
 | 19 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate-http-bridge`, `appfs-contract-gate-grpc-bridge`) | CI enforces transport parity by running the same live suite against HTTP and native gRPC bridge modes |
 | 20 | PASS | `examples/appfs/ADAPTER-QUICKSTART.md` + `examples/appfs/run-conformance.sh` + `examples/appfs/adapter-template/rust-minimal/` | Adapter authors have a minimal, reproducible onboarding path with one-command conformance and SDK-based starter template |
+| 21 | PASS | `cli/src/cmd/appfs/bridge_resilience.rs` + `cli/src/cmd/appfs/http_bridge_adapter.rs` + `cli/src/cmd/appfs/grpc_bridge_adapter.rs` + `cli/tests/appfs/run-live-with-adapter.sh` | Runtime bridge path now includes configurable retry/backoff/circuit-breaker and emits transport metrics snapshots for observability |
 
 ## 9. Delivery Plan
 

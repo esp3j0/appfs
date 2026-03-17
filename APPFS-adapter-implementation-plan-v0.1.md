@@ -42,8 +42,9 @@
 11. CI now enforces AppFS contract gates via `.github/workflows/rust.yml` (`appfs-contract-gate`), including static fixture checks and Linux live harness checks.
 12. CI now validates out-of-process parity with bridge-mode jobs (`appfs-contract-gate-http-bridge`, `appfs-contract-gate-grpc-bridge`) using the same live suite.
 13. Adapter DX baseline is now included in `examples/appfs/`: one-command conformance entry (`run-conformance.sh`), bridge-specific conformance runners, and minimal Rust adapter template + quickstart guide.
+14. Runtime bridge resilience baseline is now implemented with native options (retry/backoff/circuit-breaker) and transport metrics logs in both HTTP and gRPC adapters.
 2. Remaining:
-1. Optional: add bridge resilience policies (retry/backoff/circuit-breaker) and explicit transport-level observability metrics.
+1. Optional: add advanced resilience policy profiles (per-app/per-route overrides, jitter strategy, and SLO-based breaker tuning).
 
 ## Task 1: Add `serve appfs` Command Skeleton
 

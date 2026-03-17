@@ -18,6 +18,7 @@
 
 - AppFS contract test dependency reference updated to `APPFS-v0.1 (r8)`.
 - Adapter implementation/requirements docs updated with DX rollout status and acceptance item 20.
+- AppFS runtime bridge path now supports native resilience knobs (`retry/backoff/circuit-breaker`) and transport metrics logging for HTTP/gRPC adapters.
 
 ## [0.6.2] - 2026-02-21
 

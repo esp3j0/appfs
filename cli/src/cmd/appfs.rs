@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use uuid::Uuid;
 
+mod bridge_resilience;
 mod grpc_bridge_adapter;
 mod http_bridge_adapter;
 
+use bridge_resilience::BridgeRuntimeOptions;
 use grpc_bridge_adapter::GrpcBridgeAdapterV1;
 use http_bridge_adapter::HttpBridgeAdapterV1;
 
@@ -50,6 +52,11 @@ pub struct AppfsServeArgs {
     pub adapter_http_timeout_ms: u64,
     pub adapter_grpc_endpoint: Option<String>,
     pub adapter_grpc_timeout_ms: u64,
+    pub adapter_bridge_max_retries: u32,
+    pub adapter_bridge_initial_backoff_ms: u64,
+    pub adapter_bridge_max_backoff_ms: u64,
+    pub adapter_bridge_circuit_breaker_failures: u32,
+    pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
 }
 
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
@@ -62,12 +69,24 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_http_timeout_ms,
         adapter_grpc_endpoint,
         adapter_grpc_timeout_ms,
+        adapter_bridge_max_retries,
+        adapter_bridge_initial_backoff_ms,
+        adapter_bridge_max_backoff_ms,
+        adapter_bridge_circuit_breaker_failures,
+        adapter_bridge_circuit_breaker_cooldown_ms,
     } = args;
 
     let session_id = session_id.unwrap_or_else(|| {
         let uuid = Uuid::new_v4().simple().to_string();
         format!("sess-{}", &uuid[..8])
     });
+    let bridge_runtime_options = BridgeRuntimeOptions::from_cli(
+        adapter_bridge_max_retries,
+        adapter_bridge_initial_backoff_ms,
+        adapter_bridge_max_backoff_ms,
+        adapter_bridge_circuit_breaker_failures,
+        adapter_bridge_circuit_breaker_cooldown_ms,
+    );
 
     let mut adapter = AppfsAdapter::new(
         root,
@@ -77,6 +96,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_http_timeout_ms,
         adapter_grpc_endpoint,
         adapter_grpc_timeout_ms,
+        bridge_runtime_options,
     )?;
     adapter.prepare_action_sinks()?;
 
@@ -223,6 +243,7 @@ impl AppfsAdapter {
         adapter_http_timeout_ms: u64,
         adapter_grpc_endpoint: Option<String>,
         adapter_grpc_timeout_ms: u64,
+        bridge_runtime_options: BridgeRuntimeOptions,
     ) -> Result<Self> {
         let app_dir = root.join(&app_id);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
@@ -274,6 +295,7 @@ impl AppfsAdapter {
                         app_id.clone(),
                         endpoint,
                         Duration::from_millis(adapter_grpc_timeout_ms.max(1)),
+                        bridge_runtime_options,
                     )
                     .map_err(|err| {
                         anyhow::anyhow!("failed to initialize gRPC bridge adapter: {err}")
@@ -285,6 +307,7 @@ impl AppfsAdapter {
                     app_id.clone(),
                     endpoint,
                     Duration::from_millis(adapter_http_timeout_ms.max(1)),
+                    bridge_runtime_options,
                 ))
             } else {
                 Box::new(DemoAppAdapterV1::new(app_id.clone()))

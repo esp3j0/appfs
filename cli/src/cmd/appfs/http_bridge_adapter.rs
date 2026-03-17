@@ -1,14 +1,20 @@
+use super::bridge_resilience::{
+    is_retryable_http_status, BridgeCircuitBreaker, BridgeMetrics, BridgeRuntimeOptions,
+};
 use agentfs_sdk::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
     AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(super) struct HttpBridgeAdapterV1 {
     app_id: String,
     endpoint: String,
     timeout: Duration,
+    runtime_options: BridgeRuntimeOptions,
+    metrics: BridgeMetrics,
+    circuit_breaker: BridgeCircuitBreaker,
 }
 
 #[derive(Debug, Serialize)]
@@ -38,16 +44,24 @@ struct BridgeErrorPayload {
 }
 
 impl HttpBridgeAdapterV1 {
-    pub(super) fn new(app_id: String, endpoint: String, timeout: Duration) -> Self {
+    pub(super) fn new(
+        app_id: String,
+        endpoint: String,
+        timeout: Duration,
+        runtime_options: BridgeRuntimeOptions,
+    ) -> Self {
         Self {
             app_id,
             endpoint: endpoint.trim_end_matches('/').to_string(),
             timeout,
+            runtime_options,
+            metrics: BridgeMetrics::default(),
+            circuit_breaker: BridgeCircuitBreaker::default(),
         }
     }
 
     fn post_json<Req, Resp>(
-        &self,
+        &mut self,
         route: &str,
         req: &Req,
     ) -> std::result::Result<Resp, AdapterErrorV1>
@@ -55,23 +69,136 @@ impl HttpBridgeAdapterV1 {
         Req: Serialize,
         Resp: DeserializeOwned,
     {
-        let url = format!("{}/{}", self.endpoint, route.trim_start_matches('/'));
-        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
-        let request = agent.post(&url);
-
-        match request.send_json(req) {
-            Ok(response) => response
-                .into_json::<Resp>()
-                .map_err(|err| AdapterErrorV1::Internal {
-                    message: format!("bridge decode error for {url}: {err}"),
-                }),
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                Err(map_status_error(status, &body))
+        if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
+            self.metrics.record_short_circuit();
+            let message = format!(
+                "bridge circuit open for route={route}; retry_in_ms={} metrics={}",
+                remaining.as_millis(),
+                self.metrics.snapshot()
+            );
+            if self.metrics.short_circuited_total <= 3
+                || self.metrics.short_circuited_total % 10 == 0
+            {
+                eprintln!("AppFS bridge http short-circuit: {message}");
             }
-            Err(ureq::Error::Transport(err)) => Err(AdapterErrorV1::Internal {
-                message: format!("bridge transport error for {url}: {err}"),
-            }),
+            return Err(AdapterErrorV1::Internal { message });
+        }
+
+        let url = format!("{}/{}", self.endpoint, route.trim_start_matches('/'));
+        let max_attempts = self.runtime_options.max_retries.saturating_add(1).max(1);
+        let started = Instant::now();
+        let mut attempt = 0u32;
+
+        loop {
+            attempt = attempt.saturating_add(1);
+            let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+            let request = agent.post(&url);
+
+            match request.send_json(req) {
+                Ok(response) => {
+                    let parsed = match response.into_json::<Resp>() {
+                        Ok(value) => value,
+                        Err(err) => {
+                            let opened = self
+                                .circuit_breaker
+                                .record_failure(Instant::now(), self.runtime_options);
+                            self.metrics.record_request(attempt, false);
+                            self.log_observation(route, attempt, started.elapsed(), "failed");
+                            return Err(AdapterErrorV1::Internal {
+                                message: format!(
+                                    "bridge decode error for {url}: {err} (attempts={} circuit_opened={} metrics={})",
+                                    attempt,
+                                    opened,
+                                    self.metrics.snapshot()
+                                ),
+                            });
+                        }
+                    };
+
+                    self.circuit_breaker.record_success();
+                    self.metrics.record_request(attempt, true);
+                    self.log_observation(route, attempt, started.elapsed(), "ok");
+                    return Ok(parsed);
+                }
+                Err(ureq::Error::Status(status, response)) => {
+                    let body = response.into_string().unwrap_or_default();
+                    let retryable = is_retryable_http_status(status);
+                    if retryable && attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        eprintln!(
+                            "AppFS bridge http retry route={} attempt={}/{} status={} backoff_ms={}",
+                            route,
+                            attempt,
+                            max_attempts,
+                            status,
+                            backoff.as_millis()
+                        );
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    if retryable {
+                        let opened = self
+                            .circuit_breaker
+                            .record_failure(Instant::now(), self.runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge http circuit opened after status={} route={} metrics={}",
+                                status,
+                                route,
+                                self.metrics.snapshot()
+                            );
+                        }
+                    } else {
+                        self.circuit_breaker.record_success();
+                    }
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation(route, attempt, started.elapsed(), "failed");
+                    return Err(map_status_error(status, &body));
+                }
+                Err(ureq::Error::Transport(err)) => {
+                    if attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        eprintln!(
+                            "AppFS bridge http retry route={} attempt={}/{} transport_error={} backoff_ms={}",
+                            route,
+                            attempt,
+                            max_attempts,
+                            err,
+                            backoff.as_millis()
+                        );
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    let opened = self
+                        .circuit_breaker
+                        .record_failure(Instant::now(), self.runtime_options);
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation(route, attempt, started.elapsed(), "failed");
+                    return Err(AdapterErrorV1::Internal {
+                        message: format!(
+                            "bridge transport error for {url}: {err} (attempts={} circuit_opened={} metrics={})",
+                            attempt,
+                            opened,
+                            self.metrics.snapshot()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    fn log_observation(&self, route: &str, attempts: u32, elapsed: Duration, outcome: &str) {
+        if attempts > 1 || outcome != "ok" || self.metrics.requests_total % 50 == 0 {
+            eprintln!(
+                "AppFS bridge http metrics route={} outcome={} attempts={} latency_ms={} {}",
+                route,
+                outcome,
+                attempts,
+                elapsed.as_millis(),
+                self.metrics.snapshot()
+            );
         }
     }
 }

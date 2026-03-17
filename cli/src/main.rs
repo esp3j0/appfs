@@ -321,6 +321,11 @@ fn main() {
                 adapter_http_timeout_ms,
                 adapter_grpc_endpoint,
                 adapter_grpc_timeout_ms,
+                adapter_bridge_max_retries,
+                adapter_bridge_initial_backoff_ms,
+                adapter_bridge_max_backoff_ms,
+                adapter_bridge_circuit_breaker_failures,
+                adapter_bridge_circuit_breaker_cooldown_ms,
             } => {
                 let rt = get_runtime();
                 if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_adapter_command(
@@ -333,6 +338,11 @@ fn main() {
                         adapter_http_timeout_ms,
                         adapter_grpc_endpoint,
                         adapter_grpc_timeout_ms,
+                        adapter_bridge_max_retries,
+                        adapter_bridge_initial_backoff_ms,
+                        adapter_bridge_max_backoff_ms,
+                        adapter_bridge_circuit_breaker_failures,
+                        adapter_bridge_circuit_breaker_cooldown_ms,
                     },
                 )) {
                     eprintln!("Error: {}", e);
