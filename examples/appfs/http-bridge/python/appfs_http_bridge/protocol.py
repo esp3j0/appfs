@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from .errors import internal_error, rejected_error
 from .fault_injector import FaultInjector
-from .mock_aiim import MockAiimBackend
+
+
+class AdapterBackend(Protocol):
+    def submit_action(self, path: str, execution_mode: str, payload: str) -> dict[str, object]:
+        ...
+
+    def submit_control_fetch_next(
+        self,
+        handle_id: str,
+        page_no: int,
+        has_more: bool,
+    ) -> dict[str, object]:
+        ...
+
+    def submit_control_close(self, handle_id: str) -> dict[str, object]:
+        ...
 
 ALLOWED_EXECUTION_MODES = {"inline", "streaming"}
 ALLOWED_INPUT_MODES = {"text", "json", "text_or_json"}
@@ -15,7 +30,7 @@ def dispatch_submit_action(
     payload: dict[str, Any],
     *,
     fault_injector: FaultInjector,
-    backend: MockAiimBackend,
+    backend: AdapterBackend,
 ) -> tuple[int, dict[str, Any]]:
     path = payload.get("path")
     if not isinstance(path, str) or path.strip() == "":
@@ -58,13 +73,16 @@ def dispatch_submit_action(
             internal_error(f"fault injected for path={path}, remaining={remaining}"),
         )
 
-    return (200, backend.submit_action(path, execution_mode, raw_body))
+    try:
+        return (200, backend.submit_action(path, execution_mode, raw_body))
+    except Exception as err:
+        return (500, internal_error(f"backend submit_action failed: {err}"))
 
 
 def dispatch_submit_control(
     payload: dict[str, Any],
     *,
-    backend: MockAiimBackend,
+    backend: AdapterBackend,
 ) -> tuple[int, dict[str, Any]]:
     path = payload.get("path")
     if not isinstance(path, str) or path.strip() == "":
@@ -96,16 +114,22 @@ def dispatch_submit_control(
         if not isinstance(has_more, bool):
             return (400, rejected_error("INVALID_ARGUMENT", "has_more must be boolean"))
 
-        return (
-            200,
-            backend.submit_control_fetch_next(handle_id, page_no, has_more),
-        )
+        try:
+            return (
+                200,
+                backend.submit_control_fetch_next(handle_id, page_no, has_more),
+            )
+        except Exception as err:
+            return (500, internal_error(f"backend fetch_next failed: {err}"))
 
     if kind == "paging_close":
         handle_id = action.get("handle_id")
         if not isinstance(handle_id, str) or handle_id.strip() == "":
             return (400, rejected_error("INVALID_ARGUMENT", "handle_id is required"))
-        return (200, backend.submit_control_close(handle_id))
+        try:
+            return (200, backend.submit_control_close(handle_id))
+        except Exception as err:
+            return (500, internal_error(f"backend close failed: {err}"))
 
     return (
         400,

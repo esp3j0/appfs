@@ -11,6 +11,7 @@ This directory contains AppFS v0.1 reference fixtures and adapter examples align
 5. Resource/action sample paths under `contacts/`, `files/`, `chats/`.
 6. `http-bridge/python/` and `grpc-bridge/python/` out-of-process adapter bridge examples (HTTP mini backend uses `uv`).
 7. `adapter-template/rust-minimal/` minimal Rust adapter template using frozen `AppAdapterV1`.
+8. `new-adapter.sh` one-command scaffold for new Python HTTP bridge adapters.
 
 ## Contract Checks
 
@@ -31,3 +32,4 @@ sh ./run-conformance.sh grpc-python
 ```
 
 See `ADAPTER-QUICKSTART.md` for adapter author workflow.
+For full workflow + troubleshooting, see `../../doc/APPFS-adapter-developer-guide-v0.1.md`.

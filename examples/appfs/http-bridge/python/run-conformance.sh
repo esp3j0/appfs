@@ -2,7 +2,11 @@
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)"
+if REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+    REPO_DIR="$REPO_ROOT"
+else
+    REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../../../.." && pwd)"
+fi
 CLI_DIR="$REPO_DIR/cli"
 
 UV_BIN="${UV_BIN:-uv}"

@@ -7,6 +7,7 @@ from typing import Any
 
 from .errors import internal_error, rejected_error
 from .fault_injector import FaultInjector
+from .jsonplaceholder_backend import JsonPlaceholderBackend
 from .mock_aiim import MockAiimBackend
 from .protocol import dispatch_submit_action, dispatch_submit_control
 
@@ -24,7 +25,7 @@ class BridgeApplication:
     def __init__(
         self,
         *,
-        backend: MockAiimBackend | None = None,
+        backend: object | None = None,
         fault_injector: FaultInjector | None = None,
     ) -> None:
         self.backend = backend or MockAiimBackend()
@@ -105,12 +106,24 @@ def create_http_server(
 def run_server() -> None:
     host = os.getenv("APPFS_BRIDGE_HOST", "127.0.0.1")
     port = int(os.getenv("APPFS_BRIDGE_PORT", "8080"))
+    backend_mode = os.getenv("APPFS_HTTP_BRIDGE_BACKEND", "mock_aiim").strip().lower()
 
-    app = BridgeApplication()
+    if backend_mode in ("mock", "mock_aiim", "aiim"):
+        backend = MockAiimBackend()
+    elif backend_mode in ("jsonplaceholder", "real_jsonplaceholder"):
+        backend = JsonPlaceholderBackend()
+    else:
+        raise ValueError(
+            "unsupported APPFS_HTTP_BRIDGE_BACKEND=%r (expected: mock_aiim|jsonplaceholder)"
+            % backend_mode
+        )
+
+    app = BridgeApplication(backend=backend)
     server = create_http_server(host, port, application=app)
     snapshot = app.fault_injector.snapshot()
 
     print(f"AppFS HTTP bridge listening on http://{host}:{port}")
+    print(f"Bridge backend mode: {backend_mode}")
     print(
         "Fault injector: fail_next_submit_action=%d fail_http_status=%d fail_path_prefix=%r"
         % (

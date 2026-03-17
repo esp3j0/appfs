@@ -22,6 +22,13 @@ cd examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
+To run against a real upstream service (JSONPlaceholder) instead of the default mock backend:
+
+```bash
+cd examples/appfs/http-bridge/python
+APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder uv run python bridge_server.py
+```
+
 ## Run full live conformance (HTTP bridge)
 
 ```bash

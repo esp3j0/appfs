@@ -2,6 +2,10 @@
 
 This guide targets adapter authors who want to pass AppFS v0.1 conformance with minimum setup.
 
+For full implementation and troubleshooting details, use:
+
+1. `doc/APPFS-adapter-developer-guide-v0.1.md`
+
 ## 1. Choose Adapter Path
 
 1. In-process (Rust runtime demo path):
@@ -88,3 +92,22 @@ Reference docs:
 2. `../../doc/APPFS-adapter-requirements-v0.1.md`
 3. `../../doc/APPFS-conformance-v0.1.md`
 4. `../../doc/APPFS-contract-tests-v0.1.md`
+5. `../../doc/APPFS-adapter-developer-guide-v0.1.md`
+
+## 7. Troubleshooting Entry
+
+If you hit runtime/bridge test failures (port conflicts, `uv` issues, gRPC deps, CT-017 failures), start from:
+
+1. `../../doc/APPFS-adapter-developer-guide-v0.1.md#8-troubleshooting-handbook`
+
+## 8. Scaffold New Adapter
+
+Generate a new Python HTTP bridge scaffold:
+
+```bash
+sh ./new-adapter.sh myapp
+```
+
+Generated path:
+
+1. `./adapters/myapp/python`
