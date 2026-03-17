@@ -2,8 +2,8 @@
 
 - Target: `v0.1-rc1`
 - Date: `2026-03-17`
-- Status: `Ready for RC Sign-off`
-- Freeze commit (implementation baseline): `64a30fb`
+- Status: `Closed (Ready to tag)`
+- Freeze commit (implementation baseline): `e521262`
 
 ## 1. Release Scope
 
@@ -64,6 +64,9 @@ Evidence snapshot:
 1. Rust CI (push/main): `23175318095`
 2. Python CI (push/main): `23175318076`
 3. TypeScript CI (push/main): `23175318074`
+4. Remote live validation (HTTP bridge): `/tmp/appfs-http-live-run.log` (`CT-017 done`, `LIVE AppFS contract tests passed.`)
+5. Remote live validation (gRPC bridge): `/tmp/appfs-grpc-live-run.log` (`CT-017 done`, `LIVE AppFS contract tests passed.`)
+6. RC closure report: `APPFS-rc-closure-v0.1.md`
 
 ## 4. Release Commands (Tag + Release)
 

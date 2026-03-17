@@ -39,6 +39,12 @@ Main-branch baseline runs (success):
 2. Python CI: `23175318076`
 3. TypeScript CI: `23175318074`
 
+Manual closure validation (2026-03-17):
+
+1. HTTP bridge live contract run passed (`CT-001`~`CT-017`) on `fsapp:1:test.0`
+2. gRPC bridge live contract run passed (`CT-001`~`CT-017`) on `fsapp:1:test.0`
+3. Closure record: `APPFS-rc-closure-v0.1.md`
+
 ## Known Gaps (Deferred)
 
 1. Unified cancel semantics across apps.
