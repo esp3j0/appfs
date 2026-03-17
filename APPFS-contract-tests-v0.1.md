@@ -3,7 +3,7 @@
 - Version: `0.1-draft-r9`
 - Date: `2026-03-16`
 - Status: `Draft`
-- Depends on: `APPFS-v0.1 (r7)`, `APPFS-adapter-requirements-v0.1`
+- Depends on: `APPFS-v0.1 (r8)`, `APPFS-adapter-requirements-v0.1`
 
 ## 1. Purpose
 

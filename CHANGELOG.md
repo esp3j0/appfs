@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- AppFS release candidate baseline documents:
+  - `APPFS-release-checklist-v0.1-rc1.md`
+  - `APPFS-release-notes-v0.1-rc1.md`
+
+### Changed
+
+- AppFS contract test dependency reference updated to `APPFS-v0.1 (r8)`.
+
 ## [0.6.2] - 2026-02-21
 
 ### Fixed
