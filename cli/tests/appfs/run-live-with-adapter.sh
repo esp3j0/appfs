@@ -225,6 +225,9 @@ run_bridge_resilience_probe() {
     events_file="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/_stream/events.evt.jsonl"
     resilience_action="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/resilience/send_message.act"
     mkdir -p "$(dirname "$resilience_action")"
+    if [ ! -f "$resilience_action" ]; then
+        : > "$resilience_action" || fail "failed to initialize resilience action sink: $resilience_action"
+    fi
 
     token_retry_1="ct-resilience-1-$$"
     wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
