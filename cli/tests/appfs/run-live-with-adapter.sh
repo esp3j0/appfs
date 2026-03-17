@@ -44,8 +44,71 @@ fail() {
     exit 1
 }
 
+endpoint_host_port() {
+    endpoint="$1"
+    trimmed="${endpoint#*://}"
+    authority="${trimmed%%/*}"
+    host="${authority%%:*}"
+    port="${authority##*:}"
+    if [ -z "$host" ] || [ -z "$port" ] || [ "$port" = "$authority" ]; then
+        fail "invalid bridge endpoint (expected scheme://host:port): $endpoint"
+    fi
+    printf '%s %s\n' "$host" "$port"
+}
+
+wait_tcp_ready() {
+    host="$1"
+    port="$2"
+    timeout="${3:-20}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if command -v python3 >/dev/null 2>&1; then
+            if python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket()
+sock.settimeout(1.0)
+try:
+    sock.connect((host, port))
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+            then
+                return 0
+            fi
+        elif command -v nc >/dev/null 2>&1; then
+            if nc -z "$host" "$port" >/dev/null 2>&1; then
+                return 0
+            fi
+        else
+            fail "missing python3 or nc for bridge readiness check"
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
 start_adapter() {
     poll_ms="${1:-$APPFS_ADAPTER_POLL_MS}"
+    if [ -n "$APPFS_ADAPTER_HTTP_ENDPOINT" ]; then
+        set -- $(endpoint_host_port "$APPFS_ADAPTER_HTTP_ENDPOINT")
+        if ! wait_tcp_ready "$1" "$2" "$APPFS_TIMEOUT_SEC"; then
+            fail "http bridge endpoint not ready: $APPFS_ADAPTER_HTTP_ENDPOINT"
+        fi
+    fi
+    if [ -n "$APPFS_ADAPTER_GRPC_ENDPOINT" ]; then
+        set -- $(endpoint_host_port "$APPFS_ADAPTER_GRPC_ENDPOINT")
+        if ! wait_tcp_ready "$1" "$2" "$APPFS_TIMEOUT_SEC"; then
+            fail "grpc bridge endpoint not ready: $APPFS_ADAPTER_GRPC_ENDPOINT"
+        fi
+    fi
     say "Starting AppFS adapter runtime..."
     set -- "$AGENTFS_BIN" serve appfs --root "$APPFS_LIVE_MOUNTPOINT" --app-id "$APPFS_APP_ID" --poll-ms "$poll_ms" \
         --adapter-bridge-max-retries "$APPFS_ADAPTER_BRIDGE_MAX_RETRIES" \
@@ -155,8 +218,7 @@ run_bridge_resilience_probe() {
         return 0
     fi
     if [ -z "$APPFS_ADAPTER_HTTP_ENDPOINT" ] && [ -z "$APPFS_ADAPTER_GRPC_ENDPOINT" ]; then
-        say "CT-017 skipped: bridge resilience probe requires HTTP or gRPC bridge endpoint"
-        return 0
+        fail "CT-017 requires APPFS_ADAPTER_HTTP_ENDPOINT or APPFS_ADAPTER_GRPC_ENDPOINT"
     fi
 
     say "CT-017: bridge retry + circuit breaker + cooldown recovery..."
