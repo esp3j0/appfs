@@ -40,16 +40,30 @@ const MAX_SEGMENT_BYTES: usize = 255;
 const ALLOWED_SEGMENT_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-~";
 
-pub async fn handle_appfs_adapter_command(
-    root: PathBuf,
-    app_id: String,
-    session_id: Option<String>,
-    poll_ms: u64,
-    adapter_http_endpoint: Option<String>,
-    adapter_http_timeout_ms: u64,
-    adapter_grpc_endpoint: Option<String>,
-    adapter_grpc_timeout_ms: u64,
-) -> Result<()> {
+#[derive(Debug, Clone)]
+pub struct AppfsServeArgs {
+    pub root: PathBuf,
+    pub app_id: String,
+    pub session_id: Option<String>,
+    pub poll_ms: u64,
+    pub adapter_http_endpoint: Option<String>,
+    pub adapter_http_timeout_ms: u64,
+    pub adapter_grpc_endpoint: Option<String>,
+    pub adapter_grpc_timeout_ms: u64,
+}
+
+pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
+    let AppfsServeArgs {
+        root,
+        app_id,
+        session_id,
+        poll_ms,
+        adapter_http_endpoint,
+        adapter_http_timeout_ms,
+        adapter_grpc_endpoint,
+        adapter_grpc_timeout_ms,
+    } = args;
+
     let session_id = session_id.unwrap_or_else(|| {
         let uuid = Uuid::new_v4().simple().to_string();
         format!("sess-{}", &uuid[..8])
@@ -1311,7 +1325,7 @@ fn is_safe_segment(segment: &str) -> bool {
     if is_windows_reserved_name(segment) {
         return false;
     }
-    if segment.as_bytes().len() > MAX_SEGMENT_BYTES {
+    if segment.len() > MAX_SEGMENT_BYTES {
         return false;
     }
 
@@ -1410,7 +1424,7 @@ fn normalize_runtime_handle_id(handle_id: &str) -> String {
 }
 
 fn deterministic_shorten_segment(segment: &str, max_bytes: usize) -> String {
-    if segment.as_bytes().len() <= max_bytes {
+    if segment.len() <= max_bytes {
         return segment.to_string();
     }
 
