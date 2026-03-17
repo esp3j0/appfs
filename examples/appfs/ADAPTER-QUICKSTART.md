@@ -26,7 +26,7 @@ What it runs:
 
 1. Mount AgentFS live filesystem.
 2. Start adapter runtime (or runtime + bridge endpoint).
-3. Execute `CT-001` to `CT-016` via `cli/tests/appfs/run-live-with-adapter.sh`.
+3. Execute `CT-001` to `CT-017` via `cli/tests/appfs/run-live-with-adapter.sh`.
 
 ## 3. Minimal Rust Adapter Template
 
@@ -57,7 +57,7 @@ Manual run:
 
 ```bash
 cd examples/appfs/http-bridge/python
-python3 bridge_server.py
+uv run python bridge_server.py
 ```
 
 ## 5. gRPC Bridge Starter

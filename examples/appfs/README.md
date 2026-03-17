@@ -9,7 +9,7 @@ This directory contains AppFS v0.1 reference fixtures and adapter examples align
 3. `aiim/_stream/*` sample event stream + replay snapshots.
 4. `aiim/_paging/*` action sinks for paging protocol.
 5. Resource/action sample paths under `contacts/`, `files/`, `chats/`.
-6. `http-bridge/python/` and `grpc-bridge/python/` out-of-process adapter bridge examples.
+6. `http-bridge/python/` and `grpc-bridge/python/` out-of-process adapter bridge examples (HTTP mini backend uses `uv`).
 7. `adapter-template/rust-minimal/` minimal Rust adapter template using frozen `AppAdapterV1`.
 
 ## Contract Checks

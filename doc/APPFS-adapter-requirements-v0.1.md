@@ -295,6 +295,10 @@ Where:
 1. bounded retry + backoff
 2. circuit breaker guard
 3. transport-level observability metrics
+11. Repository SHOULD provide a minimal out-of-process adapter backend reference using `uv` with:
+1. protocol/business/test-hook layering
+2. unit tests for validation/error mapping/fault injection
+3. one-command live conformance entrypoint
 
 ## 7. Security Requirements
 
