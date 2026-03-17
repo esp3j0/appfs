@@ -115,6 +115,9 @@ For release details, see:
 1. [APPFS-release-checklist-v0.1-rc1.md](doc/APPFS-release-checklist-v0.1-rc1.md)
 2. [APPFS-release-notes-v0.1-rc1.md](doc/APPFS-release-notes-v0.1-rc1.md)
 3. [APPFS-rc-closure-v0.1.md](doc/APPFS-rc-closure-v0.1.md)
+4. [APPFS-v0.1.0-rc2-freeze.md](doc/APPFS-v0.1.0-rc2-freeze.md)
+5. [APPFS-migration-note-v0.1.0-rc2.md](doc/APPFS-migration-note-v0.1.0-rc2.md)
+6. [APPFS-project-status-and-roadmap-2026-03-17.md](doc/APPFS-project-status-and-roadmap-2026-03-17.md)
 
 ## License
 

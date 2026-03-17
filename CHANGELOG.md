@@ -7,6 +7,10 @@
 - AppFS release candidate baseline documents:
   - `doc/APPFS-release-checklist-v0.1-rc1.md`
   - `doc/APPFS-release-notes-v0.1-rc1.md`
+- AppFS rc2 stabilization docs:
+  - `doc/APPFS-v0.1.0-rc2-freeze.md`
+  - `doc/APPFS-migration-note-v0.1.0-rc2.md`
+  - `doc/APPFS-project-status-and-roadmap-2026-03-17.md`
 - AppFS adapter developer experience baseline:
   - `examples/appfs/ADAPTER-QUICKSTART.md`
   - `examples/appfs/run-conformance.sh`
