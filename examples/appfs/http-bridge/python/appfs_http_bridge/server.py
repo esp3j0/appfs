@@ -95,8 +95,11 @@ def create_http_server(
     class BridgeHandler(_BridgeHandler):
         pass
 
+    class ReusableHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
     BridgeHandler.application = app
-    return HTTPServer((host, port), BridgeHandler)
+    return ReusableHTTPServer((host, port), BridgeHandler)
 
 
 def run_server() -> None:

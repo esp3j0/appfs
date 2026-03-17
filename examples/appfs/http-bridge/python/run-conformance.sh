@@ -67,6 +67,24 @@ PY
     return 1
 }
 
+parse_http_endpoint() {
+    endpoint="$1"
+    "$UV_BIN" run --project "$SCRIPT_DIR" python - "$endpoint" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+endpoint = sys.argv[1]
+parsed = urlparse(endpoint)
+host = parsed.hostname
+port = parsed.port
+if host is None or port is None:
+    print(f"invalid APPFS_ADAPTER_HTTP_ENDPOINT: {endpoint}", file=sys.stderr)
+    sys.exit(1)
+print(host)
+print(port)
+PY
+}
+
 trap cleanup EXIT INT TERM
 
 command -v "$UV_BIN" >/dev/null 2>&1 || fail "missing uv binary: $UV_BIN"
@@ -74,7 +92,13 @@ command -v "$UV_BIN" >/dev/null 2>&1 || fail "missing uv binary: $UV_BIN"
 say "Running Python HTTP bridge unit tests (uv)..."
 "$UV_BIN" run --project "$SCRIPT_DIR" python -m unittest discover -s "$SCRIPT_DIR/tests" -t "$SCRIPT_DIR" -p "test_*.py"
 
-say "Starting Python HTTP bridge (uv)..."
+set -- $(parse_http_endpoint "$APPFS_ADAPTER_HTTP_ENDPOINT")
+BRIDGE_HOST="$1"
+BRIDGE_PORT="$2"
+
+say "Starting Python HTTP bridge (uv) on ${BRIDGE_HOST}:${BRIDGE_PORT}..."
+APPFS_BRIDGE_HOST="$BRIDGE_HOST" \
+APPFS_BRIDGE_PORT="$BRIDGE_PORT" \
 "$UV_BIN" run --project "$SCRIPT_DIR" python "$SCRIPT_DIR/bridge_server.py" >"$BRIDGE_LOG" 2>&1 &
 BRIDGE_PID=$!
 

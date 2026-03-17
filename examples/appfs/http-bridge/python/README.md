@@ -30,6 +30,13 @@ sh ./run-conformance.sh
 ```
 
 `run-conformance.sh` enables bridge resilience contract checks by default (`CT-017` included).
+It also derives bridge listen host/port from `APPFS_ADAPTER_HTTP_ENDPOINT`.
+
+Example custom port:
+
+```bash
+APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:9000 sh ./run-conformance.sh
+```
 
 ## Run AppFS runtime with bridge mode
 
