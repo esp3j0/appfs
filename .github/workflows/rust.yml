@@ -76,7 +76,7 @@ jobs:
       run: |
         cd ../examples/appfs/http-bridge/python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
-        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience/ \
+        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_HTTP_STATUS=503 \
         nohup python3 bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-http-bridge.pid"
@@ -164,7 +164,7 @@ jobs:
       run: |
         cd ../examples/appfs/grpc-bridge/python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
-        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience/ \
+        APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_GRPC_CODE=UNAVAILABLE \
         nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-grpc-bridge.pid"

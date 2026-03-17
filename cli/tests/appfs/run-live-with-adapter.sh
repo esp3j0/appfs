@@ -22,6 +22,7 @@ APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES="${APPFS_ADAPTER_BRIDGE_CIRCUIT_BR
 APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS="${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS:-3000}"
 APPFS_BRIDGE_RESILIENCE_CONTRACT="${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}"
 APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC="${APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC:-4}"
+APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX="${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX:-resilience-}"
 APPFS_TIMEOUT_SEC="${APPFS_TIMEOUT_SEC:-20}"
 APPFS_MOUNT_WAIT_SEC="${APPFS_MOUNT_WAIT_SEC:-20}"
 APPFS_MOUNT_LOG="${APPFS_MOUNT_LOG:-$CLI_DIR/appfs-mount-live.log}"
@@ -213,6 +214,21 @@ wait_writable() {
     return 1
 }
 
+wait_log_token() {
+    pattern="$1"
+    file="$2"
+    timeout="${3:-20}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if grep -q "$pattern" "$file" 2>/dev/null; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
 run_bridge_resilience_probe() {
     if [ "${APPFS_BRIDGE_RESILIENCE_CONTRACT:-0}" != "1" ]; then
         return 0
@@ -223,27 +239,31 @@ run_bridge_resilience_probe() {
 
     say "CT-017: bridge retry + circuit breaker + cooldown recovery..."
     events_file="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/_stream/events.evt.jsonl"
-    resilience_action="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/resilience/send_message.act"
-    mkdir -p "$(dirname "$resilience_action")"
-    if [ ! -f "$resilience_action" ]; then
-        : > "$resilience_action" || fail "failed to initialize resilience action sink: $resilience_action"
-    fi
+    resilience_action_1="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}1/send_message.act"
+    resilience_action_2="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}2/send_message.act"
+    resilience_action_3="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}3/send_message.act"
+    resilience_action_4="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}4/send_message.act"
+    for action_path in "$resilience_action_1" "$resilience_action_2" "$resilience_action_3" "$resilience_action_4"; do
+        mkdir -p "$(dirname "$action_path")"
+        if [ ! -f "$action_path" ]; then
+            : > "$action_path" || fail "failed to initialize resilience action sink: $action_path"
+        fi
+        wait_writable "$action_path" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $action_path"
+    done
 
     token_retry_1="ct-resilience-1-$$"
-    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
-    printf 'token:%s\nresilience-1\n' "$token_retry_1" > "$resilience_action" || fail "resilience request 1 submit failed"
+    printf 'token:%s\nresilience-1\n' "$token_retry_1" > "$resilience_action_1" || fail "resilience request 1 submit failed"
     wait_token_type_count "$token_retry_1" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 1 missing action.failed"
     assert_token_failed_internal_retryable "$token_retry_1" "$events_file"
 
     token_retry_2="ct-resilience-2-$$"
-    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
-    printf 'token:%s\nresilience-2\n' "$token_retry_2" > "$resilience_action" || fail "resilience request 2 submit failed"
-    wait_token_type_count "$token_retry_2" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 2 missing action.failed"
-    assert_token_failed_internal_retryable "$token_retry_2" "$events_file"
+    printf 'token:%s\nresilience-2\n' "$token_retry_2" > "$resilience_action_2" || fail "resilience request 2 submit failed"
+    wait_log_token "circuit opened" "$APPFS_ADAPTER_LOG" "$APPFS_TIMEOUT_SEC" || fail "bridge circuit did not open in adapter log"
 
     token_short_circuit="ct-resilience-3-$$"
-    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
-    printf 'token:%s\nresilience-3\n' "$token_short_circuit" > "$resilience_action" || fail "resilience request 3 submit failed"
+    printf 'token:%s\nresilience-3\n' "$token_short_circuit" > "$resilience_action_3" || fail "resilience request 3 submit failed"
+    wait_token_type_count "$token_retry_2" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 2 missing action.failed"
+    assert_token_failed_internal_retryable "$token_retry_2" "$events_file"
     wait_token_type_count "$token_short_circuit" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 3 missing action.failed"
     assert_token_failed_internal_retryable "$token_short_circuit" "$events_file"
 
@@ -253,8 +273,7 @@ run_bridge_resilience_probe() {
     sleep "$APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC"
 
     token_recovered="ct-resilience-4-$$"
-    wait_writable "$resilience_action" "$APPFS_TIMEOUT_SEC" || fail "resilience sink not writable: $resilience_action"
-    printf 'token:%s\nresilience-4\n' "$token_recovered" > "$resilience_action" || fail "resilience request 4 submit failed"
+    printf 'token:%s\nresilience-4\n' "$token_recovered" > "$resilience_action_4" || fail "resilience request 4 submit failed"
     wait_token_type_count "$token_recovered" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience recovery request missing action.completed"
     assert_token_completed "$token_recovered" "$events_file"
 

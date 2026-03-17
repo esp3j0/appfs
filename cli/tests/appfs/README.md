@@ -82,6 +82,7 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 | `APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS` | `3000` |
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` |
 | `APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC` | `4` |
+| `APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX` | `resilience-` |
 | `APPFS_TIMEOUT_SEC` | `20` |
 | `APPFS_MOUNT_WAIT_SEC` | `20` |
 | `APPFS_MOUNT_LOG` | `cli/appfs-mount-live.log` |
@@ -106,5 +107,7 @@ to avoid inheriting stale shell environment overrides.
 5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), and long-handle normalization compatibility (`CT-015`).
 6. `run-live-with-adapter.sh` additionally runs lifecycle restart probes, including accepted-but-not-terminal reconciliation for streaming requests (`CT-016`).
 7. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1` and bridge mode is enabled, `run-live-with-adapter.sh` also runs `CT-017` (retry + circuit-breaker + cooldown recovery probe) and checks adapter logs for retry/short-circuit observations.
-8. This is a skeleton focused on protocol gates, not full adapter business behavior.
-9. Bridge mode now performs endpoint readiness precheck (`host:port` connect) before starting runtime; unreachable bridge endpoints fail fast.
+8. `CT-017` uses multiple action sinks under `contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}{1..4}` to avoid submit cooldown interference.
+9. If bridge-side fault injection is enabled, make sure fault-match prefix aligns with test actions (CI uses `/contacts/resilience-`).
+10. This is a skeleton focused on protocol gates, not full adapter business behavior.
+11. Bridge mode now performs endpoint readiness precheck (`host:port` connect) before starting runtime; unreachable bridge endpoints fail fast.

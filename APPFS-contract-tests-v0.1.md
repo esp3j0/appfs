@@ -88,6 +88,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 | `APPFS_TIMEOUT_SEC` | `10` | Wait timeout for async assertions |
 | `APPFS_STATIC_FIXTURE` | `0` | Set `1` to run only static checks against fixture trees |
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` | Set `1` in bridge-mode runs to execute `CT-017` (retry/circuit/recovery) |
+| `APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX` | `resilience-` | Contact id prefix used by `CT-017` multi-sink probe |
 
 ## 4. Contract Suite
 
