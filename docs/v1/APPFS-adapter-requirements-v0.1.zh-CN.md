@@ -1,4 +1,4 @@
-# AppFS Adapter 层需求 v0.1（中文）
+﻿# AppFS Adapter 层需求 v0.1（中文）
 
 - 版本：`0.1-draft-r5`
 - 日期：`2026-03-16`
