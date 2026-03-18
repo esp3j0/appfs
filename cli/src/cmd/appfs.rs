@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -391,9 +391,16 @@ impl AppfsAdapter {
             return Ok(false);
         };
 
-        let bytes = match fs::read(action_path) {
-            Ok(bytes) => bytes,
+        let mut cursor = self.action_cursors.get(&rel).cloned().unwrap_or_default();
+        let original_cursor = cursor.clone();
+        let file_len = match fs::metadata(action_path) {
+            Ok(meta) => meta.len(),
             Err(err) => {
+                if is_transient_action_sink_busy(&err) {
+                    // Writer currently owns an exclusive handle (common on Windows).
+                    // Defer and retry next poll without consuming data.
+                    return Ok(false);
+                }
                 eprintln!(
                     "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} reason={}",
                     err
@@ -402,8 +409,30 @@ impl AppfsAdapter {
             }
         };
 
-        let mut cursor = self.action_cursors.get(&rel).cloned().unwrap_or_default();
-        let original_cursor = cursor.clone();
+        if cursor.offset > file_len {
+            eprintln!(
+                "AppFS adapter HIGH: illegal action sink truncation detected for {rel}: offset={} file_len={file_len}; skipping rewritten content and waiting for future append",
+                cursor.offset
+            );
+            cursor.offset = file_len;
+            cursor.boundary_probe = None;
+        } else if cursor.offset == file_len {
+            return Ok(false);
+        }
+
+        let bytes = match fs::read(action_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if is_transient_action_sink_busy(&err) {
+                    return Ok(false);
+                }
+                eprintln!(
+                    "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} reason={}",
+                    err
+                );
+                return Ok(false);
+            }
+        };
         let file_len = bytes.len() as u64;
 
         if cursor.offset > file_len {
@@ -412,7 +441,7 @@ impl AppfsAdapter {
                 cursor.offset
             );
             cursor.offset = file_len;
-            cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+            cursor.boundary_probe = None;
         } else if cursor.offset > 0 && cursor.boundary_probe.is_some() {
             let expected = cursor.boundary_probe.as_deref().unwrap_or_default();
             let current = boundary_probe_from_bytes(&bytes, cursor.offset);
@@ -1354,6 +1383,22 @@ fn decode_jsonl_line(
     let decoded = std::str::from_utf8(slice)
         .map_err(|err| format!("utf8 decode failed for JSONL line: {err}"))?;
     Ok(Some(decoded.to_string()))
+}
+
+fn is_transient_action_sink_busy(err: &std::io::Error) -> bool {
+    if !matches!(err.kind(), ErrorKind::PermissionDenied | ErrorKind::WouldBlock) {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        matches!(err.raw_os_error(), Some(5 | 32 | 33))
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
