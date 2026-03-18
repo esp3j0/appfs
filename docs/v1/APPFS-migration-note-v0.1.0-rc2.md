@@ -1,4 +1,4 @@
-# AppFS Migration Note to v0.1.0-rc2
+﻿# AppFS Migration Note to v0.1.0-rc2
 
 - Version: `v0.1.0-rc2`
 - Date: `2026-03-17`
@@ -12,7 +12,7 @@ This migration note covers the `rc2` stabilization phase.
 Key points:
 
 1. Core AppFS protocol semantics remain compatible with previous `v0.1` drafts.
-2. AppFS specification files are now organized under `doc/`.
+2. AppFS specification files are now organized under `docs/v1/`.
 3. CI gate expectations remain strict for Core and bridge-mode live conformance.
 
 ## 2. What Changed
@@ -21,7 +21,7 @@ Key points:
 
 Moved:
 
-1. `APPFS-*.md` (repo root) -> `doc/APPFS-*.md`
+1. `APPFS-*.md` (repo root) -> `docs/v1/APPFS-*.md`
 
 Updated references:
 
@@ -52,7 +52,7 @@ For adapters implementing current `v0.1` Core semantics:
 
 ## 4. Action Items for Maintainers
 
-1. Update any hardcoded doc paths in automation from `APPFS-*.md` to `doc/APPFS-*.md`.
+1. Update any hardcoded doc paths in automation from `APPFS-*.md` to `docs/v1/APPFS-*.md`.
 2. Keep Core contract test suite (`CT-001`..`CT-017`) green before merging.
 3. Treat semantic changes as `v0.2` candidates unless critical defect.
 
@@ -62,4 +62,5 @@ For adapters implementing current `v0.1` Core semantics:
 2. Conformance docs are discoverable from repository root entry points.
 3. Existing adapter quickstart still points to valid spec files.
 4. CI required checks remain green on PR.
+
 

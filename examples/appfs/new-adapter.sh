@@ -1,4 +1,4 @@
-#!/bin/sh
+﻿#!/bin/sh
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -114,8 +114,8 @@ APPFS_FIXTURE_DIR=/path/to/appfs-fixture APPFS_APP_ID=${ADAPTER_ID} APPFS_ADAPTE
 
 Reference docs:
 
-1. \`doc/APPFS-adapter-structure-mapping-v0.1.md\`
-2. \`doc/APPFS-adapter-developer-guide-v0.1.md\`
+1. \`docs/v1/APPFS-adapter-structure-mapping-v0.1.md\`
+2. \`docs/v1/APPFS-adapter-developer-guide-v0.1.md\`
 
 ## Next Edits
 
@@ -133,3 +133,4 @@ printf '1. cd %s\n' "$TARGET_DIR"
 printf '2. edit NODE-MAPPING.md and manifest/app fixture nodes first\n'
 printf '3. uv run python -m unittest discover -s tests -t . -p "test_*.py"\n'
 printf '4. APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh\n'
+
