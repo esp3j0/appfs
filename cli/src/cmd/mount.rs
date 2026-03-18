@@ -1,10 +1,10 @@
-use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
-use anyhow::Result;
-use std::{path::PathBuf, sync::Arc};
-#[cfg(unix)]
-use anyhow::Context;
 #[cfg(unix)]
 use agentfs_sdk::FileSystem;
+use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
+use std::{path::PathBuf, sync::Arc};
 
 #[cfg(unix)]
 use agentfs_sdk::{HostFS, OverlayFS};
