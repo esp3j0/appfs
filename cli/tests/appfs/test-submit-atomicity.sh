@@ -49,7 +49,8 @@ wait_writable "$action" || fail "action sink remained non-writable: $action"
 (
     printf '{"client_token":"%s","text":"atomic' "$token"
     sleep 1
-    printf '-finish"}\n'
+    printf '%s' '-finish"}'
+    printf '\n'
 ) >> "$action" &
 writer_pid=$!
 

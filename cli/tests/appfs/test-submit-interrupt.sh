@@ -51,7 +51,8 @@ wait_writable "$action" || fail "action sink remained non-writable: $action"
     # Intentionally write a non-terminated payload chunk, then hang.
     printf '{"client_token":"%s","text":"partial' "$token_partial" >&3
     sleep 10
-    printf '-late-body"}\n' >&3
+    printf '%s' '-late-body"}' >&3
+    printf '\n' >&3
     exec 3>&-
 ) &
 writer_pid=$!
@@ -68,7 +69,9 @@ pass "no event emitted for interrupted write"
 
 token_recover="ct-interrupt-recover-$$"
 wait_writable "$action" || fail "action sink remained non-writable after interrupted write: $action"
-printf '{"client_token":"%s","text":"recovered"}\n' "$token_recover" >> "$action" || fail "recovery submit failed"
+# Flush poisoned partial line first; runtime will consume the malformed line
+# and then parse the next JSONL record normally.
+printf '\n{"client_token":"%s","text":"recovered"}\n' "$token_recover" >> "$action" || fail "recovery submit failed"
 wait_token_event "$token_recover" || fail "recovery event did not arrive in time"
 pass "subsequent valid submit succeeded"
 
