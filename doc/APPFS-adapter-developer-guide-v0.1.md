@@ -19,11 +19,12 @@ Success means:
 
 1. Protocol baseline: `doc/APPFS-v0.1.md`
 2. Adapter requirements: `doc/APPFS-adapter-requirements-v0.1.md`
-3. This guide for implementation workflow.
-4. Contract and conformance definitions:
+3. Structure-to-bridge mapping guide: `doc/APPFS-adapter-structure-mapping-v0.1.md`
+4. This guide for implementation workflow.
+5. Contract and conformance definitions:
    - `doc/APPFS-conformance-v0.1.md`
    - `doc/APPFS-contract-tests-v0.1.md`
-5. Compatibility matrix:
+6. Compatibility matrix:
    - `doc/APPFS-compatibility-matrix-v0.1.md`
 
 ## 3. 30-Minute Minimum Loop
@@ -87,6 +88,18 @@ Reference:
 
 1. `examples/appfs/grpc-bridge/python/`
 2. `doc/APPFS-adapter-grpc-bridge-v0.1.md`
+
+## 4.4 Define App Structure and Handler Mapping First
+
+Before backend implementation, lock this chain:
+
+1. Node templates in `manifest.res.json`
+2. Real sink/resource files under `/app/<app_id>/...`
+3. One-to-one mapping from declared node templates to bridge handlers
+
+Reference:
+
+1. `doc/APPFS-adapter-structure-mapping-v0.1.md`
 
 ## 5. Adapter Contract Essentials
 

@@ -90,6 +90,7 @@ Start here:
 4. [APPFS-compatibility-matrix-v0.1.md](doc/APPFS-compatibility-matrix-v0.1.md)
 5. [APPFS-conformance-v0.1.md](doc/APPFS-conformance-v0.1.md)
 6. [APPFS-contract-tests-v0.1.md](doc/APPFS-contract-tests-v0.1.md)
+7. [APPFS-adapter-structure-mapping-v0.1.md](doc/APPFS-adapter-structure-mapping-v0.1.md)
 
 Key compatibility commitments:
 
@@ -103,12 +104,13 @@ Key compatibility commitments:
 1. `doc/APPFS-v0.1.md`: core protocol.
 2. `doc/APPFS-adapter-requirements-v0.1.md`: adapter requirements.
 3. `doc/APPFS-adapter-developer-guide-v0.1.md`: end-to-end developer workflow and troubleshooting.
-4. `doc/APPFS-compatibility-matrix-v0.1.md`: language/transport/capability compatibility and acceptance commands.
-5. `doc/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
-6. `examples/appfs/`: reference fixtures and bridge examples.
-7. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
-8. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-9. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
+4. `doc/APPFS-adapter-structure-mapping-v0.1.md`: app structure definition and node-to-handler mapping workflow.
+5. `doc/APPFS-compatibility-matrix-v0.1.md`: language/transport/capability compatibility and acceptance commands.
+6. `doc/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
+7. `examples/appfs/`: reference fixtures and bridge examples.
+8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
+9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
+10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
 
 ## Current Status
 
