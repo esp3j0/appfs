@@ -44,7 +44,7 @@
     },
     "contacts/{contact_id}/send_message.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 2000,
       "input_schema": "_meta/schemas/send_message.input.schema.json",
@@ -56,7 +56,7 @@
         "action.completed",
         "action.failed"
       ],
-      "example": "echo \"hi\" > /app/aiim/contacts/zhangsan/send_message.act"
+      "example": "echo '{\"text\":\"hi\"}' >> /app/aiim/contacts/zhangsan/send_message.act"
     },
     "files/{file_id}/download.act": {
       "kind": "action",
@@ -76,11 +76,11 @@
         "action.completed",
         "action.failed"
       ],
-      "example": "echo '{\"target\":\"C:/tmp/file-001.bin\"}' > /app/aiim/files/file-001/download.act"
+      "example": "echo '{\"target\":\"C:/tmp/file-001.bin\"}' >> /app/aiim/files/file-001/download.act"
     },
     "_paging/fetch_next.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 500,
       "input_schema": "_meta/schemas/paging.fetch_next.input.schema.json",
@@ -93,7 +93,7 @@
     },
     "_paging/close.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 500,
       "input_schema": "_meta/schemas/paging.close.input.schema.json",

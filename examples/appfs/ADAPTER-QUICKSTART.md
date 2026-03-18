@@ -31,7 +31,7 @@ What it runs:
 
 1. Mount AgentFS live filesystem.
 2. Start adapter runtime (or runtime + bridge endpoint).
-3. Execute `CT-001` to `CT-017` via `cli/tests/appfs/run-live-with-adapter.sh`.
+3. Execute `CT-001` to `CT-019` via `cli/tests/appfs/run-live-with-adapter.sh` (`CT-017` runs when bridge resilience probe is enabled).
 
 ## 3. Define Structure Before Writing Handlers
 
@@ -93,7 +93,7 @@ Before running gRPC quickstart:
 
 Before claiming compatibility, verify:
 
-1. `.act` write+close submit semantics.
+1. `.act` append+JSONL submit semantics.
 2. Stream lifecycle and replay surfaces.
 3. Paging handle error mapping (`fetch_next`, `close`).
 4. `AppAdapterV1` contract compliance.

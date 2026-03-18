@@ -31,7 +31,7 @@ sh ./run-conformance.sh grpc-python
 
 1. 挂载 AgentFS live 文件系统。
 2. 启动适配器 runtime（或 runtime + bridge endpoint）。
-3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-017`。
+3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-019`（开启 bridge 韧性探针时会执行 `CT-017`）。
 
 ## 3. 写代码前先定义结构
 
@@ -93,7 +93,7 @@ uv run python bridge_server.py
 
 声明兼容前，请确认：
 
-1. `.act` 的 `write+close` 提交语义正确。
+1. `.act` 的 `append+JSONL` 提交语义正确。
 2. 流生命周期与重放面正确。
 3. 分页句柄错误映射（`fetch_next`、`close`）正确。
 4. `AppAdapterV1` 契约符合规范。

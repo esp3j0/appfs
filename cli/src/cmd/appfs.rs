@@ -7,13 +7,13 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::Duration;
 use uuid::Uuid;
 
 mod bridge_resilience;
@@ -26,9 +26,8 @@ use http_bridge_adapter::HttpBridgeAdapterV1;
 
 const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
-#[cfg(unix)]
-const ACTION_COOLDOWN_MS: u64 = 1500;
-const SUBMIT_STABLE_MS: u64 = 1100;
+const ACTION_CURSORS_FILENAME: &str = "action-cursors.res.json";
+const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -36,7 +35,6 @@ const ERR_PAGER_HANDLE_CLOSED: &str = "PAGER_HANDLE_CLOSED";
 const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
-const ERR_INTERNAL: &str = "INTERNAL";
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
@@ -132,8 +130,8 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProcessOutcome {
-    Submitted,
-    Rejected,
+    Consumed,
+    RetryPending,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,21 +142,7 @@ enum ExecutionMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputMode {
-    Text,
     Json,
-    TextOrJson,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActionFingerprint {
-    len: u64,
-    modified_ns: u128,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingSubmit {
-    fingerprint: ActionFingerprint,
-    first_seen: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +205,20 @@ struct StreamingJob {
     stage: u8,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct ActionCursorState {
+    #[serde(default)]
+    offset: u64,
+    #[serde(default)]
+    boundary_probe: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ActionCursorDoc {
+    #[serde(default)]
+    actions: HashMap<String, ActionCursorState>,
+}
+
 struct AppfsAdapter {
     app_id: String,
     session_id: String,
@@ -230,11 +228,10 @@ struct AppfsAdapter {
     cursor_path: PathBuf,
     replay_dir: PathBuf,
     jobs_path: PathBuf,
+    action_cursors_path: PathBuf,
     cursor: CursorState,
     next_seq: i64,
-    last_fingerprint_by_action: HashMap<PathBuf, ActionFingerprint>,
-    pending_submit_by_action: HashMap<PathBuf, PendingSubmit>,
-    blocked_actions: HashMap<PathBuf, Instant>,
+    action_cursors: HashMap<String, ActionCursorState>,
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
     streaming_jobs: Vec<StreamingJob>,
@@ -254,6 +251,7 @@ impl AppfsAdapter {
         let cursor_path = app_dir.join("_stream").join("cursor.res.json");
         let replay_dir = app_dir.join("_stream").join("from-seq");
         let jobs_path = app_dir.join("_stream").join("inflight.jobs.res.json");
+        let action_cursors_path = app_dir.join("_stream").join(ACTION_CURSORS_FILENAME);
 
         if !app_dir.exists() {
             anyhow::bail!("App directory not found: {}", app_dir.display());
@@ -334,11 +332,10 @@ impl AppfsAdapter {
             cursor_path,
             replay_dir,
             jobs_path: jobs_path.clone(),
+            action_cursors_path: action_cursors_path.clone(),
             cursor,
             next_seq,
-            last_fingerprint_by_action: HashMap::new(),
-            pending_submit_by_action: HashMap::new(),
-            blocked_actions: HashMap::new(),
+            action_cursors: Self::load_action_cursors(&action_cursors_path)?,
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
@@ -351,117 +348,154 @@ impl AppfsAdapter {
     fn prepare_action_sinks(&mut self) -> Result<()> {
         let actions = self.collect_action_files()?;
         for action in actions {
+            #[cfg(not(unix))]
+            let _ = &action;
             #[cfg(unix)]
             {
-                // Keep sink readable for adapter polling; submit cooldown enforces
-                // temporary deny semantics for compatibility checks.
                 let perms = fs::Permissions::from_mode(0o666);
                 fs::set_permissions(&action, perms).with_context(|| {
                     format!("Failed to set write permissions on {}", action.display())
                 })?;
-            }
-
-            if let Some(fp) = action_fingerprint(&action) {
-                self.last_fingerprint_by_action.insert(action, fp);
             }
         }
         Ok(())
     }
 
     fn poll_once(&mut self) -> Result<()> {
-        self.restore_blocked_actions();
         self.drain_streaming_jobs()?;
 
         let mut actions = self.collect_action_files()?;
         actions.sort();
-        let mut seen = HashSet::new();
+        let mut cursor_dirty = false;
 
         for action_path in actions {
-            seen.insert(action_path.clone());
-
-            let Some(fingerprint) = action_fingerprint(&action_path) else {
-                continue;
-            };
-            if self
-                .last_fingerprint_by_action
-                .get(&action_path)
-                .is_some_and(|last| *last == fingerprint)
-            {
-                self.pending_submit_by_action.remove(&action_path);
-                continue;
-            }
-
-            let now = Instant::now();
-            match self.pending_submit_by_action.get(&action_path) {
-                Some(pending)
-                    if pending.fingerprint == fingerprint
-                        && now.duration_since(pending.first_seen)
-                            >= Duration::from_millis(SUBMIT_STABLE_MS) => {}
-                Some(pending) if pending.fingerprint == fingerprint => {
-                    continue;
-                }
-                _ => {
-                    self.pending_submit_by_action.insert(
-                        action_path.clone(),
-                        PendingSubmit {
-                            fingerprint,
-                            first_seen: now,
-                        },
-                    );
-                    continue;
-                }
-            }
-            self.pending_submit_by_action.remove(&action_path);
-
-            let payload = match fs::read_to_string(&action_path) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            if payload.trim().is_empty() {
-                self.last_fingerprint_by_action
-                    .insert(action_path.clone(), fingerprint);
-                continue;
-            }
-
-            let outcome = self.process_action(&action_path, &payload)?;
-            self.last_fingerprint_by_action
-                .insert(action_path.clone(), fingerprint);
-
-            if outcome == ProcessOutcome::Submitted {
-                self.enforce_submit_cooldown(&action_path);
-            }
+            cursor_dirty |= self.process_action_sink(&action_path)?;
         }
 
-        self.last_fingerprint_by_action
-            .retain(|path, _| seen.contains(path));
-        self.pending_submit_by_action
-            .retain(|path, _| seen.contains(path));
+        if cursor_dirty {
+            self.save_action_cursors()?;
+        }
 
         Ok(())
     }
 
-    fn process_action(&mut self, action_path: &Path, payload: &str) -> Result<ProcessOutcome> {
-        let rel = action_path
-            .strip_prefix(&self.app_dir)
-            .unwrap_or(action_path)
-            .to_string_lossy()
-            .replace('\\', "/");
+    fn process_action_sink(&mut self, action_path: &Path) -> Result<bool> {
+        let rel = self.rel_path_for_log(action_path);
         if !is_safe_action_rel_path(&rel) {
             eprintln!("AppFS adapter rejected unsafe action path: {rel}");
-            return Ok(ProcessOutcome::Rejected);
+            return Ok(false);
         }
 
         let Some(spec) = self.find_action_spec(&rel).cloned() else {
             eprintln!("AppFS adapter ignored undeclared action path: {rel}");
-            return Ok(ProcessOutcome::Rejected);
+            return Ok(false);
         };
 
-        if let Err(code) = validate_payload(&spec, payload) {
+        let bytes = match fs::read(action_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!(
+                    "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} reason={}",
+                    err
+                );
+                return Ok(false);
+            }
+        };
+
+        let mut cursor = self.action_cursors.get(&rel).cloned().unwrap_or_default();
+        let original_cursor = cursor.clone();
+        let file_len = bytes.len() as u64;
+
+        if cursor.offset > file_len {
+            eprintln!(
+                "AppFS adapter HIGH: illegal action sink truncation detected for {rel}: offset={} file_len={file_len}; skipping rewritten content and waiting for future append",
+                cursor.offset
+            );
+            cursor.offset = file_len;
+            cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+        } else if cursor.offset > 0 && cursor.boundary_probe.is_some() {
+            let expected = cursor.boundary_probe.as_deref().unwrap_or_default();
+            let current = boundary_probe_from_bytes(&bytes, cursor.offset);
+            if current.as_deref() != Some(expected) {
+                eprintln!(
+                    "AppFS adapter HIGH: illegal action sink overwrite detected for {rel}: offset={} (probe mismatch); skipping rewritten content and waiting for future append",
+                    cursor.offset
+                );
+                cursor.offset = file_len;
+                cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+            }
+        }
+
+        let mut position = cursor.offset as usize;
+        while position < bytes.len() {
+            let Some(rel_idx) = bytes[position..].iter().position(|b| *b == b'\n') else {
+                break;
+            };
+            let line_end = position + rel_idx + 1;
+            let line_bytes = &bytes[position..line_end];
+            let payload = match decode_jsonl_line(line_bytes, position == 0) {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    cursor.offset = line_end as u64;
+                    cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    position = line_end;
+                    continue;
+                }
+                Err(reason) => {
+                    let len = line_bytes.len();
+                    eprintln!(
+                        "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} len={len} reason={reason}"
+                    );
+                    cursor.offset = line_end as u64;
+                    cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    position = line_end;
+                    continue;
+                }
+            };
+
+            match self.process_action(&rel, &spec, &payload)? {
+                ProcessOutcome::Consumed => {
+                    cursor.offset = line_end as u64;
+                    cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    position = line_end;
+                }
+                ProcessOutcome::RetryPending => {
+                    eprintln!(
+                        "AppFS adapter deferred action retry for {rel} at offset={}",
+                        cursor.offset
+                    );
+                    break;
+                }
+            }
+        }
+
+        let changed = cursor != original_cursor;
+        if changed {
+            self.action_cursors.insert(rel, cursor);
+        }
+        Ok(changed)
+    }
+
+    fn rel_path_for_log(&self, action_path: &Path) -> String {
+        action_path
+            .strip_prefix(&self.app_dir)
+            .unwrap_or(action_path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    fn process_action(
+        &mut self,
+        rel: &str,
+        spec: &ActionSpec,
+        payload: &str,
+    ) -> Result<ProcessOutcome> {
+        if let Err(code) = validate_payload(spec, payload) {
             eprintln!(
                 "AppFS adapter rejected action payload for {rel}: validation={code} len={}",
                 payload.len()
             );
-            return Ok(ProcessOutcome::Rejected);
+            return Ok(ProcessOutcome::Consumed);
         }
 
         let normalized_path = format!("/{}", rel);
@@ -473,28 +507,25 @@ impl AppfsAdapter {
                 Ok(request) => {
                     if !is_handle_format_valid(&request.handle_id) {
                         eprintln!(
-                            "AppFS adapter rejected invalid handle format at close-time: {}",
+                            "AppFS adapter rejected invalid handle format at submit-time: {}",
                             normalized_path
                         );
-                        return Ok(ProcessOutcome::Rejected);
+                        return Ok(ProcessOutcome::Consumed);
                     }
-                    self.handle_fetch_next(
+                    return self.handle_fetch_next(
                         &normalized_path,
                         &request_id,
                         &request.handle_id,
                         request.session_id.as_deref(),
                         client_token,
-                    )?;
-                    return Ok(ProcessOutcome::Submitted);
+                    );
                 }
                 Err(_) => {
-                    // v0.1 Core expects malformed handle to fail at close-time (EINVAL)
-                    // and not be accepted into the async stream lifecycle.
                     eprintln!(
-                        "AppFS adapter rejected malformed paging handle at close-time: {}",
+                        "AppFS adapter rejected malformed paging handle at submit-time: {}",
                         normalized_path
                     );
-                    return Ok(ProcessOutcome::Rejected);
+                    return Ok(ProcessOutcome::Consumed);
                 }
             };
         }
@@ -504,26 +535,25 @@ impl AppfsAdapter {
                 Ok(request) => {
                     if !is_handle_format_valid(&request.handle_id) {
                         eprintln!(
-                            "AppFS adapter rejected invalid close handle format at close-time: {}",
+                            "AppFS adapter rejected invalid close handle format at submit-time: {}",
                             normalized_path
                         );
-                        return Ok(ProcessOutcome::Rejected);
+                        return Ok(ProcessOutcome::Consumed);
                     }
-                    self.handle_close_handle(
+                    return self.handle_close_handle(
                         &normalized_path,
                         &request_id,
                         &request.handle_id,
                         request.session_id.as_deref(),
                         client_token,
-                    )?;
-                    return Ok(ProcessOutcome::Submitted);
+                    );
                 }
                 Err(_) => {
                     eprintln!(
-                        "AppFS adapter rejected malformed paging close handle at close-time: {}",
+                        "AppFS adapter rejected malformed paging close handle at submit-time: {}",
                         normalized_path
                     );
-                    return Ok(ProcessOutcome::Rejected);
+                    return Ok(ProcessOutcome::Consumed);
                 }
             };
         }
@@ -535,9 +565,7 @@ impl AppfsAdapter {
             client_token: client_token.clone(),
         };
         let adapter_input_mode = match spec.input_mode {
-            InputMode::Text => AdapterInputModeV1::Text,
             InputMode::Json => AdapterInputModeV1::Json,
-            InputMode::TextOrJson => AdapterInputModeV1::TextOrJson,
         };
         let adapter_execution_mode = match spec.execution_mode {
             ExecutionMode::Inline => AdapterExecutionModeV1::Inline,
@@ -560,9 +588,11 @@ impl AppfsAdapter {
                     None,
                     client_token,
                 )?;
+                Ok(ProcessOutcome::Consumed)
             }
             Ok(AdapterSubmitOutcomeV1::Streaming { plan }) => {
                 self.enqueue_streaming_job(&normalized_path, &request_id, client_token, plan)?;
+                Ok(ProcessOutcome::Consumed)
             }
             Err(AdapterErrorV1::Rejected {
                 code,
@@ -577,19 +607,15 @@ impl AppfsAdapter {
                     retryable,
                     client_token,
                 )?;
+                Ok(ProcessOutcome::Consumed)
             }
             Err(AdapterErrorV1::Internal { message }) => {
-                self.emit_failed_with_retryable(
-                    &normalized_path,
-                    &request_id,
-                    ERR_INTERNAL,
-                    &message,
-                    true,
-                    client_token,
-                )?;
+                eprintln!(
+                    "AppFS adapter transient bridge failure for {normalized_path}: {message}; will retry without advancing cursor"
+                );
+                Ok(ProcessOutcome::RetryPending)
             }
         }
-        Ok(ProcessOutcome::Submitted)
     }
 
     fn handle_fetch_next(
@@ -599,50 +625,54 @@ impl AppfsAdapter {
         handle_id: &str,
         requester_session_id: Option<&str>,
         client_token: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<ProcessOutcome> {
         if !is_handle_format_valid(handle_id) {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_INVALID_ARGUMENT,
                 "invalid handle_id format",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         let handle_key = self.resolve_handle_key(handle_id);
         let (owner_session, expires_at_ts, closed) = match self.handles.get(&handle_key) {
             Some(h) => (h.owner_session.clone(), h.expires_at_ts, h.closed),
             None => {
-                return self.emit_failed(
+                self.emit_failed(
                     action_path,
                     request_id,
                     ERR_PAGER_HANDLE_NOT_FOUND,
                     "handle not found",
                     client_token,
-                );
+                )?;
+                return Ok(ProcessOutcome::Consumed);
             }
         };
 
         let effective_session = requester_session_id.unwrap_or(self.session_id.as_str());
         if effective_session != owner_session {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PERMISSION_DENIED,
                 "cross-session handle access denied",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         if closed {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PAGER_HANDLE_CLOSED,
                 "handle already closed",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         if expires_at_ts.is_some_and(|expiry| Utc::now().timestamp() >= expiry) {
@@ -651,21 +681,22 @@ impl AppfsAdapter {
                 // subsequent fetch observes deterministic CLOSED semantics.
                 handle.closed = true;
             }
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PAGER_HANDLE_EXPIRED,
                 "handle expired",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
-        let handle = self
+        let current_page_no = self
             .handles
-            .get_mut(&handle_key)
-            .expect("paging handle should exist after precheck");
-        handle.page_no += 1;
-        let page_no = handle.page_no;
+            .get(&handle_key)
+            .expect("paging handle should exist after precheck")
+            .page_no;
+        let page_no = current_page_no + 1;
         let has_more = page_no < 3;
         let request_ctx = RequestContextV1 {
             app_id: self.app_id.clone(),
@@ -682,15 +713,41 @@ impl AppfsAdapter {
             },
             &request_ctx,
         ) {
-            Ok(AdapterControlOutcomeV1::Completed { content }) => self.emit_event(
-                action_path,
-                request_id,
-                "action.completed",
-                Some(content),
-                None,
-                client_token,
-            ),
-            Err(err) => self.emit_adapter_error(action_path, request_id, err, client_token),
+            Ok(AdapterControlOutcomeV1::Completed { content }) => {
+                if let Some(handle) = self.handles.get_mut(&handle_key) {
+                    handle.page_no = page_no;
+                }
+                self.emit_event(
+                    action_path,
+                    request_id,
+                    "action.completed",
+                    Some(content),
+                    None,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(AdapterErrorV1::Rejected {
+                code,
+                message,
+                retryable,
+            }) => {
+                self.emit_failed_with_retryable(
+                    action_path,
+                    request_id,
+                    &code,
+                    &message,
+                    retryable,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(AdapterErrorV1::Internal { message }) => {
+                eprintln!(
+                    "AppFS adapter transient bridge failure for {action_path}: {message}; will retry without advancing cursor"
+                );
+                Ok(ProcessOutcome::RetryPending)
+            }
         }
     }
 
@@ -701,67 +758,67 @@ impl AppfsAdapter {
         handle_id: &str,
         requester_session_id: Option<&str>,
         client_token: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<ProcessOutcome> {
         if !is_handle_format_valid(handle_id) {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_INVALID_ARGUMENT,
                 "invalid handle_id format",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         let handle_key = self.resolve_handle_key(handle_id);
         let (owner_session, expires_at_ts, closed) = match self.handles.get(&handle_key) {
             Some(h) => (h.owner_session.clone(), h.expires_at_ts, h.closed),
             None => {
-                return self.emit_failed(
+                self.emit_failed(
                     action_path,
                     request_id,
                     ERR_PAGER_HANDLE_NOT_FOUND,
                     "handle not found",
                     client_token,
-                );
+                )?;
+                return Ok(ProcessOutcome::Consumed);
             }
         };
 
         let effective_session = requester_session_id.unwrap_or(self.session_id.as_str());
         if effective_session != owner_session {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PERMISSION_DENIED,
                 "cross-session handle access denied",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         if closed {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PAGER_HANDLE_CLOSED,
                 "handle already closed",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
         if expires_at_ts.is_some_and(|expiry| Utc::now().timestamp() >= expiry) {
-            return self.emit_failed(
+            self.emit_failed(
                 action_path,
                 request_id,
                 ERR_PAGER_HANDLE_EXPIRED,
                 "handle expired",
                 client_token,
-            );
+            )?;
+            return Ok(ProcessOutcome::Consumed);
         }
 
-        let handle = self
-            .handles
-            .get_mut(&handle_key)
-            .expect("paging handle should exist after precheck");
-        handle.closed = true;
         let request_ctx = RequestContextV1 {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
@@ -771,19 +828,45 @@ impl AppfsAdapter {
         match self.business_adapter.submit_control_action(
             action_path,
             AdapterControlActionV1::PagingClose {
-                handle_id: handle_key,
+                handle_id: handle_key.clone(),
             },
             &request_ctx,
         ) {
-            Ok(AdapterControlOutcomeV1::Completed { content }) => self.emit_event(
-                action_path,
-                request_id,
-                "action.completed",
-                Some(content),
-                None,
-                client_token,
-            ),
-            Err(err) => self.emit_adapter_error(action_path, request_id, err, client_token),
+            Ok(AdapterControlOutcomeV1::Completed { content }) => {
+                if let Some(handle) = self.handles.get_mut(&handle_key) {
+                    handle.closed = true;
+                }
+                self.emit_event(
+                    action_path,
+                    request_id,
+                    "action.completed",
+                    Some(content),
+                    None,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(AdapterErrorV1::Rejected {
+                code,
+                message,
+                retryable,
+            }) => {
+                self.emit_failed_with_retryable(
+                    action_path,
+                    request_id,
+                    &code,
+                    &message,
+                    retryable,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(AdapterErrorV1::Internal { message }) => {
+                eprintln!(
+                    "AppFS adapter transient bridge failure for {action_path}: {message}; will retry without advancing cursor"
+                );
+                Ok(ProcessOutcome::RetryPending)
+            }
         }
     }
 
@@ -859,45 +942,6 @@ impl AppfsAdapter {
         self.save_streaming_jobs()
     }
 
-    fn restore_blocked_actions(&mut self) {
-        if self.blocked_actions.is_empty() {
-            return;
-        }
-
-        let now = Instant::now();
-        let mut to_unblock = Vec::new();
-        for (path, until) in &self.blocked_actions {
-            if now >= *until {
-                to_unblock.push(path.clone());
-            }
-        }
-
-        for path in to_unblock {
-            #[cfg(unix)]
-            {
-                let perms = fs::Permissions::from_mode(0o666);
-                let _ = fs::set_permissions(&path, perms);
-            }
-            self.blocked_actions.remove(&path);
-        }
-    }
-
-    fn enforce_submit_cooldown(&mut self, action_path: &Path) {
-        #[cfg(not(unix))]
-        let _ = action_path;
-        #[cfg(unix)]
-        {
-            // Short cooldown window keeps CT-002 deterministic while still allowing
-            // later submissions to the same action sink.
-            let perms = fs::Permissions::from_mode(0o000);
-            let _ = fs::set_permissions(action_path, perms);
-            self.blocked_actions.insert(
-                action_path.to_path_buf(),
-                Instant::now() + Duration::from_millis(ACTION_COOLDOWN_MS),
-            );
-        }
-    }
-
     fn find_action_spec(&self, rel_path: &str) -> Option<&ActionSpec> {
         self.action_specs
             .iter()
@@ -917,14 +961,16 @@ impl AppfsAdapter {
             }
 
             let input_mode = match node.input_mode.as_deref() {
-                Some("text") => InputMode::Text,
                 Some("json") => InputMode::Json,
-                Some("text_or_json") | None => InputMode::TextOrJson,
                 Some(other) => {
-                    eprintln!(
-                        "AppFS adapter unknown input_mode='{other}' for action template={template}, defaulting to text_or_json"
+                    anyhow::bail!(
+                        "AppFS adapter requires input_mode=json for all action sinks, template={template}, found input_mode={other}"
                     );
-                    InputMode::TextOrJson
+                }
+                None => {
+                    anyhow::bail!(
+                        "AppFS adapter requires explicit input_mode=json for action template={template}"
+                    );
                 }
             };
 
@@ -997,37 +1043,6 @@ impl AppfsAdapter {
             })),
             client_token,
         )
-    }
-
-    fn emit_adapter_error(
-        &mut self,
-        action_path: &str,
-        request_id: &str,
-        err: AdapterErrorV1,
-        client_token: Option<String>,
-    ) -> Result<()> {
-        match err {
-            AdapterErrorV1::Rejected {
-                code,
-                message,
-                retryable,
-            } => self.emit_failed_with_retryable(
-                action_path,
-                request_id,
-                &code,
-                &message,
-                retryable,
-                client_token,
-            ),
-            AdapterErrorV1::Internal { message } => self.emit_failed_with_retryable(
-                action_path,
-                request_id,
-                ERR_INTERNAL,
-                &message,
-                true,
-                client_token,
-            ),
-        }
     }
 
     fn emit_event(
@@ -1161,6 +1176,50 @@ impl AppfsAdapter {
         Ok(())
     }
 
+    fn load_action_cursors(path: &Path) -> Result<HashMap<String, ActionCursorState>> {
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let doc: ActionCursorDoc = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(doc.actions)
+    }
+
+    fn save_action_cursors(&self) -> Result<()> {
+        let tmp_path = self.action_cursors_path.with_extension("res.json.tmp");
+        let doc = ActionCursorDoc {
+            actions: self.action_cursors.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&doc)?;
+        fs::write(&tmp_path, bytes).with_context(|| {
+            format!(
+                "Failed to write action cursor temp file {}",
+                tmp_path.display()
+            )
+        })?;
+
+        if self.action_cursors_path.exists() {
+            fs::remove_file(&self.action_cursors_path).with_context(|| {
+                format!(
+                    "Failed to remove old action cursor file {}",
+                    self.action_cursors_path.display()
+                )
+            })?;
+        }
+
+        fs::rename(&tmp_path, &self.action_cursors_path).with_context(|| {
+            format!(
+                "Failed to move action cursor temp file {} to {}",
+                tmp_path.display(),
+                self.action_cursors_path.display()
+            )
+        })?;
+        Ok(())
+    }
+
     fn collect_action_files(&self) -> Result<Vec<PathBuf>> {
         let mut out = Vec::new();
         collect_files_with_suffix(&self.app_dir, ".act", &mut out)?;
@@ -1257,18 +1316,44 @@ fn collect_files_with_suffix(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) -
     Ok(())
 }
 
-fn action_fingerprint(path: &Path) -> Option<ActionFingerprint> {
-    let meta = fs::metadata(path).ok()?;
-    let modified = meta
-        .modified()
-        .unwrap_or(UNIX_EPOCH)
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    Some(ActionFingerprint {
-        len: meta.len(),
-        modified_ns: modified,
-    })
+fn boundary_probe_from_bytes(bytes: &[u8], offset: u64) -> Option<String> {
+    if offset == 0 {
+        return None;
+    }
+    let end = offset.min(bytes.len() as u64) as usize;
+    if end == 0 {
+        return None;
+    }
+    let start = end.saturating_sub(ACTION_CURSOR_PROBE_WINDOW);
+    let hash = fnv1a_64(&bytes[start..end]);
+    Some(format!("{hash:016x}"))
+}
+
+fn decode_jsonl_line(
+    line_bytes: &[u8],
+    allow_bom: bool,
+) -> std::result::Result<Option<String>, String> {
+    if line_bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut slice = line_bytes;
+    if allow_bom && slice.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        slice = &slice[3..];
+    }
+    if slice.ends_with(b"\n") {
+        slice = &slice[..slice.len().saturating_sub(1)];
+    }
+    if slice.ends_with(b"\r") {
+        slice = &slice[..slice.len().saturating_sub(1)];
+    }
+    if slice.is_empty() {
+        return Ok(None);
+    }
+
+    let decoded = std::str::from_utf8(slice)
+        .map_err(|err| format!("utf8 decode failed for JSONL line: {err}"))?;
+    Ok(Some(decoded.to_string()))
 }
 
 fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
@@ -1283,28 +1368,11 @@ fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(),
     }
 
     match spec.input_mode {
-        InputMode::Text => validate_text_payload_complete(payload),
         InputMode::Json => {
             serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_PAYLOAD)?;
             Ok(())
         }
-        InputMode::TextOrJson => {
-            let trimmed = payload.trim_start();
-            if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_PAYLOAD)?;
-            } else {
-                validate_text_payload_complete(payload)?;
-            }
-            Ok(())
-        }
     }
-}
-
-fn validate_text_payload_complete(payload: &str) -> std::result::Result<(), &'static str> {
-    if !payload.ends_with('\n') {
-        return Err(ERR_INVALID_PAYLOAD);
-    }
-    Ok(())
 }
 
 fn action_template_matches(template: &str, rel_path: &str) -> bool {
@@ -1401,48 +1469,27 @@ fn is_windows_reserved_name(segment: &str) -> bool {
 }
 
 fn extract_client_token(payload: &str) -> Option<String> {
-    if let Ok(json) = serde_json::from_str::<JsonValue>(payload) {
-        return json
-            .get("client_token")
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned);
-    }
-
-    let first_line = payload.lines().next()?.trim();
-    first_line
-        .strip_prefix("token:")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    let json = serde_json::from_str::<JsonValue>(payload).ok()?;
+    json.get("client_token")
+        .and_then(|v| v.as_str())
         .map(ToOwned::to_owned)
 }
 
 fn parse_paging_request(payload: &str) -> std::result::Result<PagingRequest, &'static str> {
-    let text = payload.trim();
-    if text.is_empty() {
-        return Err(ERR_INVALID_ARGUMENT);
-    }
-
-    if text.starts_with('{') {
-        let json = serde_json::from_str::<JsonValue>(text).map_err(|_| ERR_INVALID_ARGUMENT)?;
-        let handle_id = json
-            .get("handle_id")
-            .and_then(|v| v.as_str())
-            .ok_or(ERR_INVALID_ARGUMENT)?;
-        let session_id = json
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned);
-        return Ok(PagingRequest {
-            handle_id: handle_id.trim().to_string(),
-            session_id,
-        });
-    }
-
+    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
+    let handle_id = json
+        .get("handle_id")
+        .and_then(|v| v.as_str())
+        .ok_or(ERR_INVALID_ARGUMENT)?;
+    let session_id = json
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
     Ok(PagingRequest {
-        handle_id: text.lines().next().unwrap_or("").trim().to_string(),
-        session_id: None,
+        handle_id: handle_id.trim().to_string(),
+        session_id,
     })
 }
 
@@ -1508,15 +1555,19 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_shorten_segment, extract_client_token, is_handle_format_valid,
-        normalize_runtime_handle_id, parse_paging_request, MAX_SEGMENT_BYTES,
+        boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
+        extract_client_token, is_handle_format_valid, normalize_runtime_handle_id,
+        parse_paging_request, validate_payload, ActionSpec, ExecutionMode, InputMode,
+        MAX_SEGMENT_BYTES,
     };
 
-    #[test]
-    fn parse_handle_text_mode() {
-        let req = parse_paging_request("ph_7f2c\n").expect("expected handle");
-        assert_eq!(req.handle_id, "ph_7f2c");
-        assert_eq!(req.session_id, None);
+    fn make_spec() -> ActionSpec {
+        ActionSpec {
+            template: "contacts/{contact_id}/send_message.act".to_string(),
+            input_mode: InputMode::Json,
+            execution_mode: ExecutionMode::Inline,
+            max_payload_bytes: Some(8192),
+        }
     }
 
     #[test]
@@ -1532,12 +1583,6 @@ mod tests {
             .expect("expected handle");
         assert_eq!(req.handle_id, "ph_abc");
         assert_eq!(req.session_id.as_deref(), Some("sess-other"));
-    }
-
-    #[test]
-    fn extract_token_from_text() {
-        let token = extract_client_token("token:msg-001\nhello").expect("token missing");
-        assert_eq!(token, "msg-001");
     }
 
     #[test]
@@ -1567,5 +1612,52 @@ mod tests {
         assert_eq!(shortened_a, shortened_b);
         assert!(shortened_a.starts_with("ph_"));
         assert!(shortened_a.as_bytes().len() <= MAX_SEGMENT_BYTES);
+    }
+
+    #[test]
+    fn json_payload_validation_accepts_object() {
+        let spec = make_spec();
+        let payload = r#"{"text":"hello line 1\nhello line 2"}"#;
+        assert!(validate_payload(&spec, payload).is_ok());
+    }
+
+    #[test]
+    fn json_payload_validation_rejects_non_json() {
+        let spec = make_spec();
+        let payload = "hello line 1";
+        assert!(validate_payload(&spec, payload).is_err());
+    }
+
+    #[test]
+    fn decode_jsonl_line_supports_utf8_bom_on_first_line() {
+        let bytes = b"\xEF\xBB\xBF{\"text\":\"hello\"}\n";
+        let line = decode_jsonl_line(bytes, true).expect("decode should succeed");
+        assert_eq!(line.as_deref(), Some("{\"text\":\"hello\"}"));
+    }
+
+    #[test]
+    fn decode_jsonl_line_trims_crlf() {
+        let bytes = b"{\"text\":\"hello\"}\r\n";
+        let line = decode_jsonl_line(bytes, false).expect("decode should succeed");
+        assert_eq!(line.as_deref(), Some("{\"text\":\"hello\"}"));
+    }
+
+    #[test]
+    fn decode_jsonl_line_rejects_invalid_utf8() {
+        let bytes = [0xFF, 0x00, b'\n'];
+        assert!(decode_jsonl_line(&bytes, false).is_err());
+    }
+
+    #[test]
+    fn parse_handle_rejects_non_json_payload() {
+        assert!(parse_paging_request("ph_7f2c\n").is_err());
+    }
+
+    #[test]
+    fn boundary_probe_is_stable() {
+        let bytes = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let probe_a = boundary_probe_from_bytes(bytes, bytes.len() as u64).expect("probe");
+        let probe_b = boundary_probe_from_bytes(bytes, bytes.len() as u64).expect("probe");
+        assert_eq!(probe_a, probe_b);
     }
 }

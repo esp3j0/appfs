@@ -23,7 +23,7 @@ class AdapterBackend(Protocol):
         ...
 
 ALLOWED_EXECUTION_MODES = {"inline", "streaming"}
-ALLOWED_INPUT_MODES = {"text", "json", "text_or_json"}
+ALLOWED_INPUT_MODES = {"json"}
 
 
 def dispatch_submit_action(
@@ -55,7 +55,7 @@ def dispatch_submit_action(
     if not isinstance(input_mode, str) or input_mode not in ALLOWED_INPUT_MODES:
         return (
             400,
-            rejected_error("INVALID_ARGUMENT", "input_mode must be text, json, or text_or_json"),
+            rejected_error("INVALID_ARGUMENT", "input_mode must be json"),
         )
 
     raw_body = payload.get("payload")
@@ -155,26 +155,52 @@ def _validate_action_payload(
     input_mode: str,
     raw_body: str,
 ) -> tuple[int, dict[str, Any]] | None:
-    if path.endswith("/download.act"):
-        if input_mode != "json":
+    if input_mode != "json":
+        return (
+            400,
+            rejected_error(
+                "INVALID_ARGUMENT",
+                "input_mode must be json",
+            ),
+        )
+
+    try:
+        parsed_payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return (
+            400,
+            rejected_error(
+                "INVALID_PAYLOAD",
+                "payload must be valid JSON",
+            ),
+        )
+
+    if path.endswith("/send_message.act"):
+        if execution_mode != "inline":
             return (
                 400,
-                rejected_error(
-                    "INVALID_ARGUMENT",
-                    "download.act requires input_mode=json",
-                ),
+                rejected_error("INVALID_ARGUMENT", "send_message.act requires execution_mode=inline"),
             )
-        try:
-            parsed = json.loads(raw_body)
-        except json.JSONDecodeError:
+        if not isinstance(parsed_payload, dict):
             return (
                 400,
                 rejected_error(
                     "INVALID_PAYLOAD",
-                    "download.act payload must be valid JSON",
+                    "send_message.act payload must be a JSON object",
                 ),
             )
-        if not isinstance(parsed, dict):
+        text = parsed_payload.get("text")
+        if not isinstance(text, str) or text.strip() == "":
+            return (
+                400,
+                rejected_error(
+                    "INVALID_PAYLOAD",
+                    "send_message.act payload.text must be a non-empty string",
+                ),
+            )
+
+    if path.endswith("/download.act"):
+        if not isinstance(parsed_payload, dict):
             return (
                 400,
                 rejected_error(
@@ -182,7 +208,7 @@ def _validate_action_payload(
                     "download.act payload must be a JSON object",
                 ),
             )
-        target = parsed.get("target")
+        target = parsed_payload.get("target")
         if not isinstance(target, str) or target.strip() == "":
             return (
                 400,
@@ -191,11 +217,5 @@ def _validate_action_payload(
                     "download.act payload.target must be a non-empty string",
                 ),
             )
-
-    if path.endswith("/send_message.act") and execution_mode != "inline":
-        return (
-            400,
-            rejected_error("INVALID_ARGUMENT", "send_message.act requires execution_mode=inline"),
-        )
 
     return None

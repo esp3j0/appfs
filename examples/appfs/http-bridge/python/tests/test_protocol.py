@@ -28,8 +28,8 @@ class ProtocolTests(unittest.TestCase):
             {
                 "path": "/contacts/zhangsan/send_message.act",
                 "execution_mode": "inline",
-                "input_mode": "text_or_json",
-                "payload": "hello",
+                "input_mode": "json",
+                "payload": '{"text":"hello"}',
             },
             fault_injector=self.fault,
             backend=self.backend,
@@ -57,8 +57,8 @@ class ProtocolTests(unittest.TestCase):
             {
                 "path": "/contacts/zhangsan/send_message.act",
                 "execution_mode": "background",
-                "input_mode": "text",
-                "payload": "hello",
+                "input_mode": "json",
+                "payload": '{"text":"hello"}',
             },
             fault_injector=self.fault,
             backend=self.backend,

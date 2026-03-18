@@ -23,7 +23,7 @@ while [ "$i" -le "$count" ]; do
     mkdir -p "$(dirname "$action")"
     printf '%s\n' "$token" >> "$tokens_file"
     (
-        printf 'token:%s\nstress-%s\n' "$token" "$i" > "$action"
+        printf '{"client_token":"%s","text":"stress-%s"}\n' "$token" "$i" >> "$action"
     ) &
     printf '%s\n' "$!" >> "$pids_file"
     i=$((i + 1))

@@ -4,7 +4,7 @@
 
 **Goal:** Implement a minimal but Core-compatible AppFS adapter runtime that can pass live AppFS contract tests on Linux while preserving static contract behavior, then extract a reusable Adapter SDK abstraction for multi-language implementations.
 
-**Architecture:** Use a runtime-side adapter loop (`agentfs serve appfs`) that watches `.act` submissions under a mounted AppFS tree, validates payload boundaries (`write+close` semantics at runtime), dispatches to app handlers, and publishes events to `_stream/events.evt.jsonl` with replay/cursor consistency updates. Keep implementation language-neutral at protocol level and Rust-native in AgentFS CLI for Phase 1.
+**Architecture:** Use a runtime-side adapter loop (`agentfs serve appfs`) that watches `.act` submissions under a mounted AppFS tree, validates append+JSONL payload boundaries at runtime, dispatches to app handlers, and publishes events to `_stream/events.evt.jsonl` with replay/cursor consistency updates. Keep implementation language-neutral at protocol level and Rust-native in AgentFS CLI for Phase 1.
 
 **Tech Stack:** Rust (`tokio`, `serde_json`, `chrono`, `uuid`), shell contract tests (`cli/tests/appfs/*`), existing AgentFS mount flow.
 

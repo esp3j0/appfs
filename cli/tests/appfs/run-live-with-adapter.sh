@@ -200,16 +200,6 @@ token_terminal_count() {
     grep "$token" "$file" 2>/dev/null | grep -E -c '"type":"action\.(completed|failed|canceled)"' || true
 }
 
-assert_token_failed_internal_retryable() {
-    token="$1"
-    file="$2"
-    line="$(grep "$token" "$file" 2>/dev/null | tail -n 1 || true)"
-    [ -n "$line" ] || fail "missing event line for token: $token"
-    printf '%s\n' "$line" | grep -q '"type":"action.failed"' || fail "token $token did not emit action.failed"
-    printf '%s\n' "$line" | grep -q '"code":"INTERNAL"' || fail "token $token did not emit error.code=INTERNAL"
-    printf '%s\n' "$line" | grep -q '"retryable":true' || fail "token $token did not emit retryable=true"
-}
-
 assert_token_completed() {
     token="$1"
     file="$2"
@@ -284,36 +274,22 @@ EOF
     sleep 1
 
     token_retry_1="ct-resilience-1-$$"
-    printf 'token:%s\nresilience-1\n' "$token_retry_1" > "$resilience_action_1" || fail "resilience request 1 submit failed"
-    wait_token_type_count "$token_retry_1" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 1 missing action.failed"
-    assert_token_failed_internal_retryable "$token_retry_1" "$events_file"
-    pass "request 1 failed with INTERNAL/retryable"
-
-    token_retry_2="ct-resilience-2-$$"
-    printf 'token:%s\nresilience-2\n' "$token_retry_2" > "$resilience_action_2" || fail "resilience request 2 submit failed"
+    printf '{"client_token":"%s","text":"resilience-1"}\n' "$token_retry_1" >> "$resilience_action_1" || fail "resilience request 1 submit failed"
+    wait_log_token "bridge .* retry" "$APPFS_ADAPTER_LOG" "$APPFS_TIMEOUT_SEC" || fail "bridge retry log not observed in adapter log"
     wait_log_token "circuit opened" "$APPFS_ADAPTER_LOG" "$APPFS_TIMEOUT_SEC" || fail "bridge circuit did not open in adapter log"
-    pass "circuit opened observed in adapter log"
+    pass "retry and circuit-open logs observed"
 
-    token_short_circuit="ct-resilience-3-$$"
-    printf 'token:%s\nresilience-3\n' "$token_short_circuit" > "$resilience_action_3" || fail "resilience request 3 submit failed"
-    wait_token_type_count "$token_retry_2" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 2 missing action.failed"
-    assert_token_failed_internal_retryable "$token_retry_2" "$events_file"
-    pass "request 2 failed with INTERNAL/retryable"
-    wait_token_type_count "$token_short_circuit" "action.failed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 3 missing action.failed"
-    assert_token_failed_internal_retryable "$token_short_circuit" "$events_file"
-    pass "request 3 failed with INTERNAL/retryable (short-circuit window)"
-
-    grep -q "bridge .* retry" "$APPFS_ADAPTER_LOG" || fail "bridge retry log not observed in adapter log"
-    grep -q "short-circuit" "$APPFS_ADAPTER_LOG" || fail "bridge short-circuit log not observed in adapter log"
-    pass "retry and short-circuit logs observed"
+    wait_token_type_count "$token_retry_1" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience request 1 missing action.completed after retries"
+    assert_token_completed "$token_retry_1" "$events_file"
+    pass "request 1 completed after transient bridge failures"
 
     sleep "$APPFS_BRIDGE_RESILIENCE_COOLDOWN_WAIT_SEC"
 
     token_recovered="ct-resilience-4-$$"
-    printf 'token:%s\nresilience-4\n' "$token_recovered" > "$resilience_action_4" || fail "resilience request 4 submit failed"
+    printf '{"client_token":"%s","text":"resilience-4"}\n' "$token_recovered" >> "$resilience_action_4" || fail "resilience request 4 submit failed"
     wait_token_type_count "$token_recovered" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "resilience recovery request missing action.completed"
     assert_token_completed "$token_recovered" "$events_file"
-    pass "request 4 recovered with action.completed"
+    pass "request 4 completed after cooldown"
 
     say "CT-017 done"
 }
@@ -429,7 +405,7 @@ events_file="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/_stream/events.evt.jsonl"
 probe_action="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/lifecycle/send_message.act"
 probe_token="ct-lifecycle-$$"
 mkdir -p "$(dirname "$probe_action")"
-printf 'token:%s\nrestart-ok\n' "$probe_token" > "$probe_action" || fail "lifecycle probe submit failed"
+printf '{"client_token":"%s","text":"restart-ok"}\n' "$probe_token" >> "$probe_action" || fail "lifecycle probe submit failed"
 wait_token_in_events "$probe_token" "$events_file" "$APPFS_TIMEOUT_SEC" || fail "lifecycle probe event not observed after adapter restart"
 pass "lifecycle probe passed"
 
@@ -439,7 +415,7 @@ start_adapter "$APPFS_ADAPTER_RECONCILE_POLL_MS"
 reconcile_action="$APPFS_STREAMING_ACTION_LIVE"
 reconcile_token="ct-reconcile-$$"
 wait_writable "$reconcile_action" "$APPFS_TIMEOUT_SEC" || fail "reconcile action sink not writable: $reconcile_action"
-printf '{"target":"/tmp/reconcile.bin","client_token":"%s"}\n' "$reconcile_token" > "$reconcile_action" || fail "reconcile submit failed"
+printf '{"target":"/tmp/reconcile.bin","client_token":"%s"}\n' "$reconcile_token" >> "$reconcile_action" || fail "reconcile submit failed"
 wait_token_type_count "$reconcile_token" "action.accepted" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "reconcile accepted event missing before restart"
 pass "reconcile accepted event observed before restart"
 terminal_before="$(token_terminal_count "$reconcile_token" "$events_file")"
@@ -453,6 +429,23 @@ terminal_after="$(token_terminal_count "$reconcile_token" "$events_file")"
 [ "$terminal_after" -eq 1 ] || fail "reconcile request emitted unexpected terminal count: $terminal_after"
 pass "reconcile emitted progress and single terminal after restart"
 say "CT-016 done"
+
+banner "AppFS CT-019 Restart Cursor Recovery"
+stop_adapter
+recovery_action="$APPFS_TEST_ACTION_LIVE"
+token_rc1="ct-restart-cursor-1-$$"
+token_rc2="ct-restart-cursor-2-$$"
+token_rc3="ct-restart-cursor-3-$$"
+wait_writable "$recovery_action" "$APPFS_TIMEOUT_SEC" || fail "restart-cursor action sink not writable: $recovery_action"
+printf '{"client_token":"%s","text":"restart-cursor-1"}\n' "$token_rc1" >> "$recovery_action" || fail "restart-cursor submit #1 failed"
+printf '{"client_token":"%s","text":"restart-cursor-2"}\n' "$token_rc2" >> "$recovery_action" || fail "restart-cursor submit #2 failed"
+printf '{"client_token":"%s","text":"restart-cursor-3"}\n' "$token_rc3" >> "$recovery_action" || fail "restart-cursor submit #3 failed"
+start_adapter
+wait_token_type_count "$token_rc1" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "restart-cursor token1 not completed after restart"
+wait_token_type_count "$token_rc2" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "restart-cursor token2 not completed after restart"
+wait_token_type_count "$token_rc3" "action.completed" 1 "$events_file" "$APPFS_TIMEOUT_SEC" || fail "restart-cursor token3 not completed after restart"
+pass "restart cursor consumed queued append-jsonl submits after restart"
+say "CT-019 done"
 
 run_bridge_resilience_probe
 

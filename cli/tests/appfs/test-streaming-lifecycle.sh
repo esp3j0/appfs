@@ -17,7 +17,7 @@ assert_file "$action"
 token="ct-stream-$$"
 before_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
 
-printf '{"target":"/tmp/appfs-download.bin","client_token":"%s"}\n' "$token" > "$action" || fail "write+close failed: $action"
+printf '{"target":"/tmp/appfs-download.bin","client_token":"%s"}\n' "$token" >> "$action" || fail "append submit failed: $action"
 pass "streaming action submitted"
 
 deadline=$(( $(date +%s) + $APPFS_TIMEOUT_SEC ))

@@ -47,11 +47,11 @@ before_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
 
 wait_writable "$action" || fail "action sink remained non-writable: $action"
 (
-    exec 3> "$action"
+    exec 3>> "$action"
     # Intentionally write a non-terminated payload chunk, then hang.
-    printf 'token:%s' "$token_partial" >&3
+    printf '{"client_token":"%s","text":"partial' "$token_partial" >&3
     sleep 10
-    printf '\nlate-body\n' >&3
+    printf '-late-body"}\n' >&3
     exec 3>&-
 ) &
 writer_pid=$!
@@ -68,7 +68,7 @@ pass "no event emitted for interrupted write"
 
 token_recover="ct-interrupt-recover-$$"
 wait_writable "$action" || fail "action sink remained non-writable after interrupted write: $action"
-printf 'token:%s\nrecovered\n' "$token_recover" > "$action" || fail "recovery submit failed"
+printf '{"client_token":"%s","text":"recovered"}\n' "$token_recover" >> "$action" || fail "recovery submit failed"
 wait_token_event "$token_recover" || fail "recovery event did not arrive in time"
 pass "subsequent valid submit succeeded"
 

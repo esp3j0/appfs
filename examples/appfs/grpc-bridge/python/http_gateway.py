@@ -19,12 +19,8 @@ def _resp(handler: BaseHTTPRequestHandler, status: int, body: dict) -> None:
 
 def _to_input_mode(mode: str) -> pb2.InputMode:
     mode = (mode or "").strip().lower()
-    if mode == "text":
-        return pb2.INPUT_MODE_TEXT
     if mode == "json":
         return pb2.INPUT_MODE_JSON
-    if mode == "text_or_json":
-        return pb2.INPUT_MODE_TEXT_OR_JSON
     return pb2.INPUT_MODE_UNSPECIFIED
 
 

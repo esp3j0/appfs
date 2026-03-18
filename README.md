@@ -7,7 +7,7 @@ Filesystem-native app protocol for shell-first AI agents.
 AppFS makes different apps look and feel like one filesystem contract, so an agent can use the same primitives across tools:
 
 1. `cat` for reading resources.
-2. `echo > *.act` for triggering actions.
+2. `>> *.act` (append JSONL) for triggering actions.
 3. `tail -f` on stream files for async results.
 
 This repository currently hosts the AppFS spec, adapter contracts, reference fixtures, conformance tests, and runtime implementation on top of AgentFS.
@@ -28,15 +28,15 @@ The design target is practical LLM + bash operation:
 # 1) subscribe app event stream first
 tail -f /app/aiim/_stream/events.evt.jsonl
 
-# 2) trigger an action by write+close
-echo "hello" > /app/aiim/contacts/zhangsan/send_message.act
+# 2) trigger an action by append JSONL
+printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) read resources directly
 cat /app/aiim/contacts/zhangsan/profile.res.json
 
 # 4) page long content via unified paging actions
 cat /app/aiim/chats/chat-001/messages.res.json
-echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
+printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## Available Actions (AIIM Fixture)
@@ -46,7 +46,7 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
 1. `contacts/{contact_id}/send_message.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 2. `files/{file_id}/download.act`
    - `kind`: `action`
    - `execution_mode`: `streaming`
@@ -54,11 +54,11 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
 3. `/_paging/fetch_next.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 4. `/_paging/close.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 
 ## Runtime Quick Start (HTTP Bridge)
 
@@ -98,8 +98,12 @@ cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
 # watch stream (separate terminal)
 Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 
-# trigger action (confirmed PowerShell form)
-'{"test":"hello"}' | Set-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act -NoNewline
+# trigger action (append JSONL, one JSON per line)
+Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
+
+# paging actions are JSON-only as well
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_001"}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_001"}'
 
 # read resource
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
@@ -141,12 +145,22 @@ APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --roo
 # watch stream (separate terminal)
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
-# trigger action
-echo '{"test":"hello"}' > /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+# trigger action (append JSONL)
+printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+
+# paging actions are JSON-only as well
+printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # read resource
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 ```
+
+Notes:
+
+1. `.act` sink semantics are append-only JSONL. Submit with `>>` (or PowerShell `Add-Content`) and write one JSON object per line.
+2. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
+3. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
 
 ## Architecture
 
@@ -219,7 +233,7 @@ Key compatibility commitments:
 7. `examples/appfs/`: reference fixtures and bridge examples.
 8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
 9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
+10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-019`).
 
 ## Current Status
 

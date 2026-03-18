@@ -12,7 +12,7 @@ This guide is the single onboarding entry for adapter developers.
 Success means:
 
 1. You can run `init -> submit -> stream -> paging` locally.
-2. You can pass `CT-001 ~ CT-017`.
+2. You can pass `CT-001 ~ CT-019`.
 3. You know where to debug failures and how to claim compatibility.
 
 ## 2. Read Order (Do This Sequence)
@@ -40,14 +40,14 @@ APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs
 cd ../examples/appfs
 sh ./run-conformance.sh inprocess
 
-# 3) live HTTP bridge checks (uv + CT-017 included)
+# 3) live HTTP bridge checks (uv + CT-017/CT-019 included)
 sh ./run-conformance.sh http-python
 ```
 
 ## 3.2 What Each Run Validates
 
 1. Static mode validates fixture layout/schema/policy (`CT-001`, `CT-003`, `CT-005`).
-2. Live mode validates action and stream behavior, paging, path-safety, resilience (`CT-002` to `CT-017`).
+2. Live mode validates action and stream behavior, paging, path-safety, resilience (`CT-002` to `CT-019`).
 3. HTTP/gRPC bridge modes validate transport parity against the same runtime contract.
 
 ## 4. Choose Implementation Path
@@ -107,8 +107,8 @@ You must implement behavior, not just endpoints.
 
 ## 5.1 Action Submit
 
-1. Trigger on `.act` write+close.
-2. Reject malformed payload at close-time without emitting `action.accepted`.
+1. Trigger on committed JSONL lines appended to `.act`.
+2. Reject malformed payload at submit-time without emitting `action.accepted`.
 3. Emit exactly one terminal event for accepted requests.
 
 ## 5.2 Streaming and Replay
@@ -195,14 +195,15 @@ Actions:
 2. Regenerate stubs before run:
    - `./generate_stubs.sh`
 
-## 8.4 CT-017 failures (`missing action.failed`, no circuit open)
+## 8.4 CT-017 failures (missing retry/circuit logs or missing terminal completion)
 
 Actions:
 
 1. Verify resilience env vars are set.
 2. Verify fault path prefix matches runtime probe path.
 3. Check adapter log for `retry`, `circuit opened`, `short-circuit`.
-4. Ensure breaker cooldown >= probe minimum (default `4000ms`).
+4. Confirm probe requests eventually emit terminal completion after cooldown.
+5. Ensure breaker cooldown >= probe minimum (default `4000ms`).
 
 ## 8.5 Live mount fails or hangs
 
@@ -218,7 +219,7 @@ Actions:
 
 Before claiming `AppFS v0.1 Core`:
 
-1. `CT-001 ~ CT-017` pass on your target path.
+1. `CT-001 ~ CT-019` pass on your target path.
 2. Adapter requirements checklist has evidence links.
 3. Manifest includes conformance block.
 4. CI gate is green for required suites.

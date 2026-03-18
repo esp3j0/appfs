@@ -3,7 +3,7 @@
 - 版本：`0.1-draft-r5`
 - 日期：`2026-03-16`
 - 状态：`Draft`
-- 依赖：`APPFS-v0.1 (r8)`
+- 依赖：`APPFS-v0.1 (r9)`
 - 一致性配置：`APPFS-conformance-v0.1.md`
 
 ## 1. 结论
@@ -12,7 +12,7 @@
 
 理由：
 
-1. 核心交互闭环已建立：`.act` 写入 -> 流事件。
+1. 核心交互闭环已建立：`.act` 追加 JSONL -> 流事件。
 2. Action 模式已定义：`inline` 与 `streaming`。
 3. 发现契约已具备：`_meta/manifest.res.json` + schema。
 4. 重放基线已具备：`cursor` + `from-seq`。
@@ -72,12 +72,12 @@ Adapter 必须提供构建 `_meta/manifest.res.json` 所需数据：
 
 ### AR-003 Action 提交（`*.act`）
 
-1. Runtime 在 `write+close` 时调用 adapter。
+1. Runtime 对 `*.act` 每条已提交的 JSONL 行调用 adapter。
 2. Adapter 必须按 `input_mode` 与声明 schema 校验 payload。
 3. 校验失败必须返回确定性错误（`EINVAL`/`EMSGSIZE`），且不得发出 `action.accepted`。
 4. 已接受请求必须使用 runtime 提供的 `request_id` 产出流事件。
-5. Runtime 必须将 `close` 作为唯一提交边界；`close` 前的部分写入/中断写入必须丢弃且不得产生副作用。
-6. Runtime 应暂存请求字节并原子升级为提交输入，确保 adapter 不会收到截断 payload。
+5. Runtime 必须将“以换行结尾的 JSONL 记录”作为提交边界；尾部未完成行（无 `\n`）必须丢弃且不得产生副作用。
+6. Runtime 应暂存请求字节并原子升级为“行级提交输入”，确保 adapter 不会收到截断 payload。
 
 ### AR-004 执行模式
 
@@ -113,7 +113,7 @@ Adapter 必须提供构建 `_meta/manifest.res.json` 所需数据：
 ### AR-006 关联能力
 
 1. Adapter 必须支持服务端生成 `request_id`。
-2. 若 payload 含 `client_token`（或 text-mode 的 `token:` 前缀），adapter 应在事件 payload 回显该 token 便于关联。
+2. 若 payload 含 `client_token`，adapter 应在事件 payload 回显该 token 便于关联。
 
 ### AR-007 与重放支持协作
 
@@ -164,7 +164,7 @@ Adapter 应暴露或提供 `/app/<app_id>/_meta/observer.res.json` 数据：
 
 `/_paging/fetch_next.act` 与 `/_paging/close.act` 必须满足确定性映射：
 
-1. `handle_id` 格式错误：close-time 失败，返回 `EINVAL`，且不得发出 `action.accepted`。
+1. `handle_id` 格式错误：提交时失败，返回 `EINVAL`，且不得发出 `action.accepted`。
 2. 未知 handle：发 `action.failed`，`error.code = "PAGER_HANDLE_NOT_FOUND"`。
 3. 过期 handle：发 `action.failed`，`error.code = "PAGER_HANDLE_EXPIRED"`。
 4. 已关闭 handle：发 `action.failed`，`error.code = "PAGER_HANDLE_CLOSED"`。
@@ -173,7 +173,7 @@ Adapter 应暴露或提供 `/app/<app_id>/_meta/observer.res.json` 数据：
 ### AR-015 并发提交顺序
 
 1. Runtime 必须在每个 `request_id` 内保持因果顺序。
-2. 对同一 `(app_id, session_id, action_path)`，`action.accepted` 顺序必须与 `close` 提交顺序一致。
+2. 对同一 `(app_id, session_id, action_path)`，`action.accepted` 顺序必须与观测到的 append JSONL 行顺序一致。
 3. 并发提交下，每个已接受请求仍必须且仅有一个终态事件。
 
 ### AR-016 流表面原子性

@@ -4,7 +4,7 @@
 - 日期：`2026-03-16`
 - 状态：`Draft`
 - 依赖：
-  - `APPFS-v0.1 (r8)`
+  - `APPFS-v0.1 (r9)`
   - `APPFS-adapter-requirements-v0.1 (r2)`
 
 ## 1. 目的
@@ -28,7 +28,7 @@
 仅当满足全部 Core 要求，才可声明 **AppFS v0.1 Core compatible**：
 
 1. 必需命名空间与每个 app 的布局。
-2. `.act` 的 `write+close` 语义。
+2. `.act` 的 append+JSONL 语义。
 3. 含稳定 `event_id` 的流事件契约。
 4. 重放面：`cursor` 与 `from-seq`。
 5. 分页协议（`fetch_next.act`、`close.act`）及错误映射。

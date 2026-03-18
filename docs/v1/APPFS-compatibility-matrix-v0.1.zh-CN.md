@@ -45,7 +45,7 @@ Informational CI：
 任一矩阵单元要声明 Core，至少提供：
 
 1. 最小验收命令输出
-2. 合约套件汇总（`CT-001` 到 `CT-017`）
+2. 合约套件汇总（`CT-001` 到 `CT-019`，开启 bridge 韧性探针时应包含 `CT-017`）
 3. manifest conformance block 快照
 
 声明 Recommended/Extension 还需：

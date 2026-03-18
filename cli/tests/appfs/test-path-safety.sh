@@ -16,7 +16,7 @@ submit_unsafe_expect_no_event() {
 
     mkdir -p "$(dirname "$action_path")"
     before_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
-    printf 'token:%s\nunsafe-probe\n' "$token" > "$action_path" || fail "unsafe submit write failed: $action_path"
+    printf '{"client_token":"%s","text":"unsafe-probe"}\n' "$token" >> "$action_path" || fail "unsafe submit write failed: $action_path"
     sleep 2
     after_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
     [ "$after_lines" -eq "$before_lines" ] || fail "unsafe path unexpectedly produced stream event: $action_path"

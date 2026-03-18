@@ -4,7 +4,7 @@
 - Date: `2026-03-16`
 - Status: `Draft`
 - Depends on:
-  - `APPFS-v0.1 (r8)`
+  - `APPFS-v0.1 (r9)`
   - `APPFS-adapter-requirements-v0.1 (r2)`
 
 ## 1. Purpose
@@ -28,7 +28,7 @@ Compatibility implementation coverage by language/transport/capability is tracke
 An implementation is **AppFS v0.1 Core compatible** only if all Core requirements are met:
 
 1. Required namespace and per-app layout.
-2. `.act` write+close semantics.
+2. `.act` append+JSONL semantics.
 3. Stream event contract with stable `event_id`.
 4. Replay surfaces: `cursor` and `from-seq`.
 5. Paging protocol (`fetch_next.act`, `close.act`) and error mapping.

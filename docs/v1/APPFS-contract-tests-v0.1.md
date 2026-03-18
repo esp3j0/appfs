@@ -3,7 +3,7 @@
 - Version: `0.1-draft-r10`
 - Date: `2026-03-17`
 - Status: `Draft`
-- Depends on: `APPFS-v0.1 (r8)`, `APPFS-adapter-requirements-v0.1`
+- Depends on: `APPFS-v0.1 (r9)`, `APPFS-adapter-requirements-v0.1`
 
 ## 1. Purpose
 
@@ -94,7 +94,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. Contract Suite
 
-Note: `cli/tests/appfs/` currently contains CT-001 through CT-016 as direct scripts, and `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`) plus optional bridge resilience probe (`CT-017`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` close-time reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance).
+Note: `cli/tests/appfs/` includes direct scripts for baseline and extended checks (`CT-001`..`CT-015` plus `CT-018` burst append queueing), while `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`), optional bridge resilience probe (`CT-017`), and restart cursor recovery (`CT-019`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` submit-time malformed/invalid JSONL reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance, `CT-018` burst append queueing, `CT-019` restart cursor recovery).
 
 ### CT-001 Layout and Required Nodes
 
@@ -123,11 +123,10 @@ Spec refs:
 
 Assertions:
 
-1. `write+close` to `.act` succeeds.
+1. Append JSONL line (`>>`) to `.act` succeeds.
 2. Event stream grows after action submission.
-3. `.act` read (`cat`) fails.
-4. `.act` append (`>>`) fails.
-5. New terminal event contains `request_id` and `type` (when `jq` is available).
+3. `>` overwrite/truncate does not create a committed request.
+4. New terminal event contains `request_id` and `type` (when `jq` is available).
 
 Script:
 

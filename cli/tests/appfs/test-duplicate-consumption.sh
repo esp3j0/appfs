@@ -46,7 +46,7 @@ wait_token_event() {
 
 token="ct-dup-$$"
 wait_writable "$action" || fail "action sink remained non-writable: $action"
-printf 'token:%s\ndup-check\n' "$token" > "$action" || fail "duplicate-consumption submit failed"
+printf '{"client_token":"%s","text":"dup-check"}\n' "$token" >> "$action" || fail "duplicate-consumption submit failed"
 wait_token_event "$token" || fail "token event did not arrive in time"
 pass "live event observed for duplicate-consumption probe"
 

@@ -3,7 +3,7 @@
 - 版本：`0.1-draft-r10`
 - 日期：`2026-03-17`
 - 状态：`Draft`
-- 依赖：`APPFS-v0.1 (r8)`、`APPFS-adapter-requirements-v0.1`
+- 依赖：`APPFS-v0.1 (r9)`、`APPFS-adapter-requirements-v0.1`
 
 ## 1. 目的
 
@@ -94,7 +94,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. 合约测试套件
 
-说明：`cli/tests/appfs/` 当前包含 CT-001 到 CT-016 的直接脚本，`run-live-with-adapter.sh` 还会额外执行生命周期探针（CT-016）和可选 bridge 韧性探针（CT-017）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` close-time 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错）。
+说明：`cli/tests/appfs/` 的直接脚本包含基线与扩展检查（`CT-001`..`CT-015` 以及 `CT-018` 连续追加提交排队），`run-live-with-adapter.sh` 还会额外执行生命周期探针（`CT-016`）、可选 bridge 韧性探针（`CT-017`）和重启后游标恢复（`CT-019`）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` 提交时 malformed/invalid JSONL 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错、`CT-018` 连续追加提交排队、`CT-019` 重启后游标恢复）。
 
 ### CT-001 布局与必需节点
 
@@ -123,11 +123,10 @@ cli/tests/appfs/test-layout.sh
 
 断言：
 
-1. 对 `.act` 执行 `write+close` 成功。
+1. 对 `.act` 执行 JSONL 追加（`>>`）成功。
 2. 动作提交后事件流增长。
-3. `.act` 读（`cat`）失败。
-4. `.act` 追加写（`>>`）失败。
-5. 新终态事件包含 `request_id` 与 `type`（若系统有 `jq`）。
+3. 使用 `>` 覆写/截断不会生成已提交请求。
+4. 新终态事件包含 `request_id` 与 `type`（若系统有 `jq`）。
 
 脚本：
 

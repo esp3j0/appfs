@@ -3,7 +3,7 @@
 - Version: `0.1-draft-r5`
 - Date: `2026-03-16`
 - Status: `Draft`
-- Depends on: `APPFS-v0.1 (r8)`
+- Depends on: `APPFS-v0.1 (r9)`
 - Conformance profile: `APPFS-conformance-v0.1.md`
 
 ## 1. Decision
@@ -12,7 +12,7 @@ Current AppFS v0.1 design is sufficient to start adapter implementation.
 
 Reason:
 
-1. Core interaction loop is closed: `.act` write -> stream events.
+1. Core interaction loop is closed: `.act` append JSONL -> stream events.
 2. Action modes are defined: `inline` and `streaming`.
 3. Discovery contract exists: `_meta/manifest.res.json` + schemas.
 4. Replay baseline exists: `cursor` + `from-seq`.
@@ -72,12 +72,12 @@ Adapter MUST provide data required to produce `_meta/manifest.res.json`:
 
 ### AR-003 Action Submit (`*.act`)
 
-1. Runtime calls adapter on `write+close`.
+1. Runtime calls adapter for each committed JSONL line appended to `*.act`.
 2. Adapter MUST validate payload according to `input_mode` and declared schema.
 3. Validation failure MUST return a deterministic error (`EINVAL`/`EMSGSIZE`) and MUST NOT emit `action.accepted`.
 4. Accepted requests MUST produce stream events with runtime-provided `request_id`.
-5. Runtime MUST treat `close` as the only submission boundary. Partial or interrupted writes before `close` MUST be discarded and MUST NOT trigger side effects.
-6. Runtime SHOULD stage request bytes and atomically promote them to submission input so adapter never receives truncated payload.
+5. Runtime MUST treat newline-terminated JSONL records as submission boundaries. Partial or interrupted trailing lines (without `\n`) MUST be discarded and MUST NOT trigger side effects.
+6. Runtime SHOULD stage request bytes and atomically promote line records to submission input so adapter never receives truncated payload.
 
 ### AR-004 Execution Modes
 
@@ -113,7 +113,7 @@ For `action.failed`, `error.code` and `error.message` MUST be present.
 ### AR-006 Correlation
 
 1. Adapter MUST support server-generated `request_id`.
-2. If payload contains `client_token` (or text-mode `token:` prefix), adapter SHOULD echo it in event payload for correlation.
+2. If payload contains `client_token`, adapter SHOULD echo it in event payload for correlation.
 
 ### AR-007 Replay Support Cooperation
 
@@ -164,7 +164,7 @@ Adapter SHOULD expose or feed data for `/app/<app_id>/_meta/observer.res.json`:
 
 `/_paging/fetch_next.act` and `/_paging/close.act` MUST follow deterministic error mapping:
 
-1. Malformed `handle_id` format MUST fail at close-time with `EINVAL` and MUST NOT emit `action.accepted`.
+1. Malformed `handle_id` format MUST fail at submit-time with `EINVAL` and MUST NOT emit `action.accepted`.
 2. Unknown handle MUST emit `action.failed` with `error.code = "PAGER_HANDLE_NOT_FOUND"`.
 3. Expired handle MUST emit `action.failed` with `error.code = "PAGER_HANDLE_EXPIRED"`.
 4. Already-closed handle MUST emit `action.failed` with `error.code = "PAGER_HANDLE_CLOSED"`.
@@ -173,7 +173,7 @@ Adapter SHOULD expose or feed data for `/app/<app_id>/_meta/observer.res.json`:
 ### AR-015 Concurrent Submit Ordering
 
 1. Runtime MUST preserve causal ordering within each `request_id`.
-2. For the same `(app_id, session_id, action_path)`, `action.accepted` sequence MUST follow `close` commit order.
+2. For the same `(app_id, session_id, action_path)`, `action.accepted` sequence MUST follow observed append JSONL line order.
 3. Exactly one terminal event MUST be emitted per accepted request even under concurrent submissions.
 
 ### AR-016 Stream Surface Atomicity

@@ -42,8 +42,8 @@ class ServerTests(unittest.TestCase):
                 {
                     "path": "/contacts/zhangsan/send_message.act",
                     "execution_mode": "inline",
-                    "input_mode": "text",
-                    "payload": "hello",
+                    "input_mode": "json",
+                    "payload": '{"text":"hello"}',
                 }
             ),
         )

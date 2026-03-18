@@ -45,9 +45,17 @@ class JsonPlaceholderBackend:
 
     def _submit_inline(self, path: str, payload: str) -> dict[str, object]:
         if path.endswith("/send_message.act"):
+            message = payload.strip()
+            try:
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+                    message = parsed["text"].strip()
+            except Exception:
+                message = payload.strip()
+
             body = {
                 "title": "appfs-send-message",
-                "body": payload.strip(),
+                "body": message,
                 "contact_id": self._extract_contact_id(path),
                 "userId": 1,
             }

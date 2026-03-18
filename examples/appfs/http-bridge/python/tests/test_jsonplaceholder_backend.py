@@ -14,7 +14,11 @@ class JsonPlaceholderBackendTests(unittest.TestCase):
         backend = JsonPlaceholderBackend()
         backend._post_json = lambda _path, _body: {"id": 123}  # type: ignore[method-assign]
 
-        out = backend.submit_action("/contacts/zhangsan/send_message.act", "inline", "hello")
+        out = backend.submit_action(
+            "/contacts/zhangsan/send_message.act",
+            "inline",
+            '{"text":"hello"}',
+        )
         self.assertEqual(out["kind"], "completed")
         content = out["content"]
         self.assertEqual(content["provider"], "jsonplaceholder")

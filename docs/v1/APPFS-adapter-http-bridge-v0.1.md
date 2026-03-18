@@ -148,10 +148,10 @@ Runtime behavior:
 
 This bridge only changes transport. AppFS protocol guarantees still stay in runtime:
 
-1. write+close submit boundary
+1. append+JSONL submit boundary
 2. event persistence/order
 3. cursor/replay atomicity
-4. paging close-time error semantics
+4. paging submit-time error semantics
 
 ## 7. Bridge Resilience and Metrics
 

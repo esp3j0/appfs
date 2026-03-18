@@ -7,7 +7,7 @@
 AppFS 的目标是把不同应用统一成一套文件系统交互模型，让 agent 用一致命令操作不同 app：
 
 1. 用 `cat` 读取资源。
-2. 用 `echo > *.act` 触发动作。
+2. 用 `>> *.act`（append JSONL）触发动作。
 3. 用 `tail -f` 订阅异步事件流。
 
 本仓库当前包含 AppFS 规范、适配器契约、参考夹具、一致性测试，以及基于 AgentFS 的 runtime 实现。
@@ -28,15 +28,15 @@ AppFS 的目标是把不同应用统一成一套文件系统交互模型，让 a
 # 1) 先订阅事件流
 tail -f /app/aiim/_stream/events.evt.jsonl
 
-# 2) write+close 触发动作
-echo "hello" > /app/aiim/contacts/zhangsan/send_message.act
+# 2) 以 append JSONL 触发动作
+printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) 直接读取资源
 cat /app/aiim/contacts/zhangsan/profile.res.json
 
 # 4) 用统一分页动作读取长内容
 cat /app/aiim/chats/chat-001/messages.res.json
-echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
+printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## 可用动作（AIIM 夹具）
@@ -46,7 +46,7 @@ echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 1. `contacts/{contact_id}/send_message.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 2. `files/{file_id}/download.act`
    - `kind`: `action`
    - `execution_mode`: `streaming`
@@ -54,11 +54,11 @@ echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 3. `/_paging/fetch_next.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 4. `/_paging/close.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
-   - `input_mode`: `text_or_json`
+   - `input_mode`: `json`
 
 ## 运行时快速开始（HTTP Bridge）
 
@@ -98,8 +98,12 @@ cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
 # 订阅事件流（单独终端）
 Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 
-# 触发动作（你确认的 PowerShell 形式）
-'{"test":"hello"}' | Set-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act -NoNewline
+# 触发动作（append JSONL，一行一个 JSON）
+Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
+
+# 分页动作同样是 JSON-only
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_001"}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_001"}'
 
 # 读取资源
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
@@ -141,12 +145,22 @@ APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --roo
 # 订阅事件流（单独终端）
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
-# 触发动作
-echo '{"test":"hello"}' > /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+# 触发动作（append JSONL）
+printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+
+# 分页动作同样是 JSON-only
+printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # 读取资源
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 ```
+
+注意：
+
+1. `.act` 统一为 append-only JSONL：使用 `>>`（或 PowerShell `Add-Content`）提交，一行一个 JSON。
+2. 对 `.act` 使用 `>` 覆写/截断会被视为非法变更，runtime 只记录诊断日志并跳过该批内容。
+3. 运行时语义为 `at-least-once`，建议业务层基于 `client_token`/`request_id` 做幂等去重。
 
 ## 架构
 
@@ -220,7 +234,7 @@ sh ./run-conformance.sh grpc-python
 8. `docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
 9. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
 10. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
-11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-017`）。
+11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-019`）。
 
 ## 当前状态
 

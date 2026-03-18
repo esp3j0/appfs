@@ -28,6 +28,7 @@ else
     $DIR/appfs/test-streaming-lifecycle.sh
     $DIR/appfs/test-submit-reject.sh
     $DIR/appfs/test-submit-order.sh
+    $DIR/appfs/test-submit-burst.sh
     $DIR/appfs/test-submit-atomicity.sh
     $DIR/appfs/test-submit-interrupt.sh
     $DIR/appfs/test-path-safety.sh

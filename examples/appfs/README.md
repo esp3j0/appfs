@@ -1,6 +1,6 @@
 ﻿# AppFS Example Tree
 
-This directory contains AppFS v0.1 reference fixtures and adapter examples aligned with `APPFS-v0.1 (r8)`.
+This directory contains AppFS v0.1 reference fixtures and adapter examples aligned with `APPFS-v0.1 (r9)`.
 
 ## Layout
 

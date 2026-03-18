@@ -48,7 +48,7 @@ token2="ct-order-2-$$"
 before_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
 
 wait_writable "$action" || fail "action sink remained non-writable: $action"
-printf 'token:%s\nhello-1\n' "$token1" > "$action" || fail "first submit failed"
+printf '{"client_token":"%s","text":"hello-1"}\n' "$token1" >> "$action" || fail "first submit failed"
 pass "first submit accepted by filesystem"
 
 # Ensure first submit is already ingested before writing a second payload to
@@ -57,7 +57,7 @@ wait_token_event "$token1" || fail "first submit event did not arrive in time"
 pass "first submit event observed"
 
 wait_writable "$action" || fail "action sink remained non-writable before second submit: $action"
-printf 'token:%s\nhello-2\n' "$token2" > "$action" || fail "second submit failed"
+printf '{"client_token":"%s","text":"hello-2"}\n' "$token2" >> "$action" || fail "second submit failed"
 pass "second submit accepted by filesystem"
 
 wait_token_event "$token2" || fail "second submit event did not arrive in time"

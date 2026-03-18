@@ -12,7 +12,7 @@
 完成本指南后，你应当可以：
 
 1. 在本地跑通 `init -> submit -> stream -> paging`。
-2. 通过 `CT-001 ~ CT-017`。
+2. 通过 `CT-001 ~ CT-019`。
 3. 快速定位失败原因，并给出兼容性声明所需证据。
 
 ## 2. 建议阅读顺序
@@ -38,14 +38,14 @@ APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs
 cd ../examples/appfs
 sh ./run-conformance.sh inprocess
 
-# 3) live（HTTP bridge，包含 CT-017）
+# 3) live（HTTP bridge，包含 CT-017/CT-019）
 sh ./run-conformance.sh http-python
 ```
 
 说明：
 
 1. 静态模式覆盖布局/Schema/策略类校验（`CT-001`、`CT-003`、`CT-005`）。
-2. live 模式覆盖动作、流、分页、安全与恢复（`CT-002` 到 `CT-017`）。
+2. live 模式覆盖动作、流、分页、安全与恢复（`CT-002` 到 `CT-019`）。
 3. HTTP/gRPC bridge 模式用于验证跨传输一致性。
 
 ## 4. 选择实现路径
@@ -103,8 +103,8 @@ sh ./run-conformance.sh http-python
 
 ### 5.1 Action 提交
 
-1. `.act` 以 `write+close` 作为提交边界。
-2. close-time 校验失败时，不得发出 `action.accepted`。
+1. `.act` 以“追加 JSONL 完整行”为提交边界。
+2. submit-time 校验失败时，不得发出 `action.accepted`。
 3. 已接受请求必须且仅有一个终态事件。
 
 ### 5.2 流与重放
@@ -172,14 +172,15 @@ CT-017 相关：
 1. `python3 -m pip install -r requirements.txt`
 2. `./generate_stubs.sh`
 
-### 8.4 CT-017 失败（缺少 `action.failed` 或断路器未开启）
+### 8.4 CT-017 失败（缺少重试/断路日志或未出现终态完成）
 
 处理步骤：
 
 1. 检查 resilience 环境变量是否生效。
 2. 检查 fault path prefix 是否匹配探测路径。
 3. 查看日志关键字：`retry`、`circuit opened`、`short-circuit`。
-4. 确认 cooldown 不低于最小阈值（默认 `4000ms`）。
+4. 确认探测请求在 cooldown 后最终出现终态完成事件。
+5. 确认 cooldown 不低于最小阈值（默认 `4000ms`）。
 
 ### 8.5 live 挂载失败或卡住
 
@@ -195,7 +196,7 @@ CT-017 相关：
 
 声明 `AppFS v0.1 Core` 前，至少满足：
 
-1. `CT-001 ~ CT-017` 全通过。
+1. `CT-001 ~ CT-019` 全通过。
 2. 适配器要求文档清单项有证据。
 3. `manifest` 含 conformance block。
 4. required CI 全绿。

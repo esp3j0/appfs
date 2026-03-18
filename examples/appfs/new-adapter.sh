@@ -66,10 +66,10 @@ Fill this table before implementing bridge handlers.
 
 | Node template | Kind | Input/Output mode | Execution mode | Bridge route | Backend handler |
 |---|---|---|---|---|---|
-| contacts/{contact_id}/send_message.act | action | text_or_json | inline | /v1/submit-action | handle_send_message |
+| contacts/{contact_id}/send_message.act | action | json | inline | /v1/submit-action | handle_send_message |
 | files/{file_id}/download.act | action | json | streaming | /v1/submit-action | handle_download |
-| _paging/fetch_next.act | control | text_or_json | inline | /v1/submit-control-action | handle_paging_fetch_next |
-| _paging/close.act | control | text_or_json | inline | /v1/submit-control-action | handle_paging_close |
+| _paging/fetch_next.act | control | json | inline | /v1/submit-control-action | handle_paging_fetch_next |
+| _paging/close.act | control | json | inline | /v1/submit-control-action | handle_paging_close |
 
 Checklist:
 
@@ -122,7 +122,7 @@ Reference docs:
 1. Fill \`NODE-MAPPING.md\`.
 2. Modify \`appfs_http_bridge/mock_aiim.py\` for your domain logic.
 3. Keep \`appfs_http_bridge/protocol.py\` behavior aligned with AppFS contracts.
-4. Verify \`CT-001 ~ CT-017\` before compatibility claim.
+4. Verify \`CT-001 ~ CT-019\` before compatibility claim (enable bridge resilience probe for \`CT-017\`).
 EOF
 
 chmod +x "$TARGET_DIR/run-conformance.sh"

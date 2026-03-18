@@ -1,7 +1,7 @@
-# AppFS v0.1 (Revised Draft r8)
+# AppFS v0.1 (Revised Draft r9)
 
-- Version: `0.1-draft-r8`
-- Date: `2026-03-16`
+- Version: `0.1-draft-r9`
+- Date: `2026-03-18`
 - Status: `Draft`
 - Base Runtime: `AgentFS`
 - Conformance: `APPFS-conformance-v0.1.md`
@@ -12,7 +12,7 @@ AppFS defines a filesystem-native app contract for agents that operate through s
 
 This revision sets a clear priority:
 
-1. Simple mode is Core: write directly to `.act` files.
+1. Simple mode is Core: append JSONL requests directly to `.act` sinks.
 2. Stream-first async is Core: consume result from app event stream.
 3. Runtime-generated request IDs are Core: client does not need to generate UUID/ULID.
 4. Action execution mode is metadata-driven: `inline` and `streaming` share the same `.act` path model.
@@ -24,8 +24,8 @@ Target workflow:
 # subscribe stream first
 tail -f /app/aiim/_stream/events.evt.jsonl
 
-# then trigger action by write+close
-echo "hi" > /app/aiim/contacts/zhangsan/send_message.act
+# then trigger action by append JSONL
+printf '{"text":"hi"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 ```
 
 ## 2. Goals and Non-Goals
@@ -137,8 +137,8 @@ Example:
 
 Core behavior:
 
-1. Client writes payload and closes file.
-2. Runtime treats `write+close` as one action submission.
+1. Client appends one JSON line per request (`append + '\n'`).
+2. Runtime treats each complete JSONL line as one action submission.
 3. Runtime immediately generates `request_id` (server-side).
 4. Runtime/app emits result lifecycle events to `_stream/events.evt.jsonl`.
 
@@ -151,34 +151,35 @@ Each action MUST declare `execution_mode` in `manifest.res.json`:
 
 Submission timing rules:
 
-1. If close-time basic checks fail (malformed payload, size limit), close MUST return error (`EINVAL`, `EMSGSIZE`, etc.) and MUST NOT emit `action.accepted`.
+1. If submit-time basic checks fail (malformed payload, size limit), runtime MUST reject and MUST NOT emit `action.accepted`.
 2. For `streaming` actions, if close succeeds, runtime MUST emit `action.accepted` within a bounded time (recommended <= 1s).
 3. For `inline` actions:
    - runtime MAY finish inside close and return success/failure synchronously.
    - runtime SHOULD still emit a terminal event for audit (`action.completed` or `action.failed`).
    - if not completed within `inline_timeout_ms`, runtime MAY degrade to async handling, MUST emit `action.accepted`, and then terminal event later.
 4. For any accepted request, terminal event MUST be exactly one of `action.completed`, `action.failed`, or `action.canceled` (if cancellation is supported by app policy).
-5. Runtime MUST treat `close` as the only commit boundary. Interrupted/partial writes before `close` MUST NOT create requests or side effects.
+5. Runtime MUST treat newline-terminated JSONL records as commit boundaries. Interrupted/partial writes (missing trailing newline) MUST NOT create requests or side effects.
 
 Input format:
 
-1. Default: plain text payload (for minimal shell usage).
-2. Optional: JSON payload when app declares it in schema.
+1. `*.act` payload is JSON-only in v0.1 runtime profile.
+2. Each submission MUST be one JSON object line (`JSONL`).
+3. Multi-line user content MUST be encoded inside JSON strings (for example `\\n`).
 
 Examples:
 
 ```bash
-echo "hi" > /app/aiim/contacts/zhangsan/send_message.act
-echo '{"text":"hi","priority":"high"}' > /app/aiim/contacts/zhangsan/send_message.act
+printf '{"text":"hi"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
+printf '{"text":"hi","priority":"high"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 ```
 
 Operation matrix for `.act`:
 
-1. `write` + `close`: MUST submit exactly one request.
-2. Multiple writes before one close: MUST be concatenated into one payload and submitted once.
-3. `append` (`>>`, `O_APPEND`): MUST fail with `EOPNOTSUPP`.
+1. `append` (`>>`, `O_APPEND`) with complete JSON lines: MUST submit in observed line order.
+2. Partial trailing line (no newline): MUST stay pending and MUST NOT submit until line is complete.
+3. Runtime MUST process committed lines with `at-least-once` delivery semantics.
 4. `read` (`cat`): MUST fail with `EACCES` (command sink is write-only).
-5. `truncate` without data: MUST fail with `EINVAL` (empty command is invalid unless app explicitly allows it).
+5. `>` overwrite/truncate on `.act`: treated as illegal mutation and MUST NOT submit overwritten bytes.
 6. `rename`/`move` of `.act`: MUST fail with `EOPNOTSUPP`.
 7. `delete` of `.act`: MUST fail with `EOPNOTSUPP`.
 
@@ -256,18 +257,6 @@ If present, app SHOULD echo `client_token` in events for easier correlation.
 
 No UUID generation is required from the LLM client.
 
-Text-mode correlation shortcut:
-
-1. In text mode, client MAY prefix payload with `token:<value>` on first line.
-2. If present, adapter SHOULD map it to `client_token` in emitted events.
-
-Example:
-
-```text
-token:msg-001
-hi
-```
-
 ## 10. Polling Policy
 
 Core spec does not require polling status files.
@@ -327,13 +316,13 @@ Next page is fetched by action sink:
 
 Payload format:
 
-1. Text mode: `handle_id` only (recommended for minimal token usage).
-2. JSON mode: `{ "handle_id": "...", "max_items": 20 }` (optional extension).
+1. JSON-only: `{ "handle_id": "..." }`.
+2. Optional extension fields MAY be included (for example `max_items`).
 
 Example:
 
 ```bash
-echo "ph_7f2c" > /app/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 Result delivery:
@@ -352,8 +341,8 @@ Handle cleanup action:
 
 Payload:
 
-```text
-ph_7f2c
+```json
+{"handle_id":"ph_7f2c"}
 ```
 
 If client does not close explicitly, runtime/app MAY expire handles by TTL.
@@ -371,7 +360,7 @@ If client does not close explicitly, runtime/app MAY expire handles by TTL.
 
 For both `/_paging/fetch_next.act` and `/_paging/close.act`:
 
-1. Malformed `handle_id` format: close-time filesystem error `EINVAL`, and MUST NOT emit `action.accepted`.
+1. Malformed `handle_id` format: submit-time filesystem error `EINVAL`, and MUST NOT emit `action.accepted`.
 2. Unknown handle: terminal `action.failed` with `error.code = "PAGER_HANDLE_NOT_FOUND"`.
 3. Expired handle: terminal `action.failed` with `error.code = "PAGER_HANDLE_EXPIRED"`.
 4. Already-closed handle: terminal `action.failed` with `error.code = "PAGER_HANDLE_CLOSED"`.
@@ -491,7 +480,7 @@ Example:
     },
     "contacts/{contact_id}/send_message.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 2000,
       "input_schema": "_meta/schemas/send_message.input.schema.json",
@@ -511,7 +500,7 @@ Example:
     },
     "_paging/fetch_next.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 500,
       "input_schema": "_meta/schemas/paging.fetch_next.input.schema.json",
@@ -519,7 +508,7 @@ Example:
     },
     "_paging/close.act": {
       "kind": "action",
-      "input_mode": "text_or_json",
+      "input_mode": "json",
       "execution_mode": "inline",
       "inline_timeout_ms": 500,
       "input_schema": "_meta/schemas/paging.close.input.schema.json",
@@ -626,16 +615,16 @@ Usage:
 tail -f /app/aiim/_stream/events.evt.jsonl
 
 # terminal 2
-echo "hi" > /app/aiim/contacts/zhangsan/send_message.act
+printf '{"text":"hi"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # terminal 3
-echo '{"target":"C:/tmp/file-001.bin"}' > /app/aiim/files/file-001/download.act
+printf '{"target":"C:/tmp/file-001.bin"}\n' >> /app/aiim/files/file-001/download.act
 
 # terminal 4: first page by cat
 cat /app/aiim/chats/chat-001/messages.res.json
 
 # terminal 5: next page by handle
-echo "ph_7f2c" > /app/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 Expected events:

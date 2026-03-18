@@ -45,7 +45,7 @@ Informational CI gates:
 For any matrix cell claiming Core:
 
 1. command output for minimum acceptance command
-2. contract suite summary (`CT-001` to `CT-017`)
+2. contract suite summary (`CT-001` to `CT-019`, with `CT-017` expected when bridge resilience probe is enabled)
 3. manifest conformance block snapshot
 
 For Recommended/Extension:

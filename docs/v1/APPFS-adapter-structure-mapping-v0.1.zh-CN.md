@@ -72,9 +72,10 @@ AppFS 是能力模型，不是 UI 截图模型。
 当前 runtime 规则：
 
 1. 从 `_meta/manifest.res.json` 加载 action 规格。
-2. 轮询 `/app/<app_id>/...` 下的 `*.act` 文件。
-3. 只有内容变化且通过 close-time 校验才会提交。
-4. 未在 manifest 声明的 `.act` 会被忽略（无副作用）。
+2. 将 `/app/<app_id>/...` 下的 `*.act` 视为 append-only JSONL sink，并维护每个 sink 的游标偏移。
+3. 按观测顺序提交每条“以换行结尾”的完整 JSON 行。
+4. 尾部不完整行（无 `\n`）延迟到补齐后再提交。
+5. 未在 manifest 声明的 `.act` 会被忽略（无副作用）。
 
 直接结论：
 
@@ -121,12 +122,12 @@ AppFS 是能力模型，不是 UI 截图模型。
 5. 在 bridge backend 实现 handler。
 6. 跑测试：
    - 协议层/后端单测
-   - `CT-001 ~ CT-017` live 一致性
+   - `CT-001 ~ CT-019` live 一致性（开启 bridge 韧性探针时执行 `CT-017`）
 
 ## 7. 常见失败模式
 
 1. 模板与实际路径不匹配 -> 动作被忽略。
-2. `input_mode=json` 但按文本处理 -> close-time 拒绝或后端报错。
+2. `input_mode=json` 但按文本处理 -> 提交时拒绝或后端报错。
 3. `execution_mode` 实现不一致（例如应 inline 却做成 streaming）-> 合约失败。
 4. 声明可分页资源却缺 `_paging/*` 动作 -> 一致性失败。
 

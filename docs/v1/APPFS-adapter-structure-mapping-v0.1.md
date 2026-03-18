@@ -71,9 +71,10 @@ Example:
 Current runtime behavior (important for adapter authors):
 
 1. Runtime loads action specs from `_meta/manifest.res.json`.
-2. Runtime polls `*.act` files under `/app/<app_id>/...`.
-3. A write is submitted only when file content changes and passes close-time validation.
-4. An undeclared `.act` path is ignored (no side effect).
+2. Runtime treats `*.act` as append-only JSONL sinks under `/app/<app_id>/...` and tracks per-sink cursor offsets.
+3. Runtime submits each complete newline-terminated JSON line in observed order.
+4. Runtime defers incomplete tail lines (no trailing `\n`) until completion.
+5. An undeclared `.act` path is ignored (no side effect).
 
 Practical implication:
 
@@ -120,12 +121,12 @@ For each declared action template:
 5. Implement handlers in bridge backend.
 6. Run:
    - unit tests for protocol/backend
-   - `CT-001 ~ CT-017` live conformance
+   - `CT-001 ~ CT-019` live conformance (`CT-017` when bridge resilience probe is enabled)
 
 ## 7. Common Failure Modes
 
 1. Declared template does not match real sink path -> action ignored.
-2. `input_mode` says `json` but handler treats payload as text -> close-time reject or backend failure.
+2. `input_mode` says `json` but handler treats payload as text -> submit-time reject or backend failure.
 3. `execution_mode` mismatch (`send_message` should be inline but implemented as streaming) -> contract failure.
 4. Missing `_paging/*` control actions while claiming pageable resources -> conformance failure.
 

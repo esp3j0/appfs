@@ -29,14 +29,14 @@ handle_id="$(printf '%s\n' "$page_json" | jq -r '.page.handle_id')"
 pass "handle_id: $handle_id"
 
 before_lines="$(wc -l < "$events" 2>/dev/null || echo 0)"
-printf '%s\n' "$handle_id" > "$fetch_next" || fail "fetch_next action failed"
+printf '{"handle_id":"%s"}\n' "$handle_id" >> "$fetch_next" || fail "fetch_next action failed"
 pass "fetch_next accepted"
 
 after_lines="$(wait_for_line_growth "$events" "$before_lines" "$APPFS_TIMEOUT_SEC" || true)"
 [ -n "${after_lines:-}" ] || fail "no stream growth after fetch_next"
 pass "stream grew after fetch_next"
 
-printf '%s\n' "$handle_id" > "$close_act" || fail "close paging handle failed"
+printf '{"handle_id":"%s"}\n' "$handle_id" >> "$close_act" || fail "close paging handle failed"
 pass "close handle submitted"
 
 say "CT-004 done"

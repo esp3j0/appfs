@@ -58,7 +58,7 @@ submit_fetch() {
     handle="$1"
     token="$2"
     wait_writable "$fetch_next" || fail "action sink remained non-writable: $fetch_next"
-    printf '{"handle_id":"%s","client_token":"%s"}\n' "$handle" "$token" > "$fetch_next" || fail "fetch_next submit failed"
+    printf '{"handle_id":"%s","client_token":"%s"}\n' "$handle" "$token" >> "$fetch_next" || fail "fetch_next submit failed"
     wait_for_token_event "$token" || fail "token event not observed: $token"
 
     tmp_file="$(mktemp)"
@@ -95,7 +95,7 @@ pass "normalization is deterministic"
 
 token_close="ct-long-handle-close-$$"
 wait_writable "$close_act" || fail "action sink remained non-writable: $close_act"
-printf '{"handle_id":"%s","client_token":"%s"}\n' "$long_handle" "$token_close" > "$close_act" || fail "close submit failed"
+printf '{"handle_id":"%s","client_token":"%s"}\n' "$long_handle" "$token_close" >> "$close_act" || fail "close submit failed"
 wait_for_token_event "$token_close" || fail "close token event not observed"
 
 tmp_close="$(mktemp)"

@@ -106,12 +106,12 @@ to avoid inheriting stale shell environment overrides.
 2. Some checks require `jq`; if missing, JSON field-level assertions are skipped.
 3. `APPFS_STATIC_FIXTURE=1` runs only static contract checks (layout/replay/manifest policy).
 4. `run-live-with-adapter.sh` is Linux/FUSE oriented and expects `fusermount` + `mountpoint`.
-5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), and long-handle normalization compatibility (`CT-015`).
-6. `run-live-with-adapter.sh` additionally runs lifecycle restart probes, including accepted-but-not-terminal reconciliation for streaming requests (`CT-016`).
+5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), long-handle normalization compatibility (`CT-015`), and burst append JSONL queueing (`CT-018`).
+6. `run-live-with-adapter.sh` additionally runs lifecycle restart probes, including accepted-but-not-terminal reconciliation for streaming requests (`CT-016`) and restart cursor recovery (`CT-019`).
 7. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1` and bridge mode is enabled, `run-live-with-adapter.sh` also runs `CT-017` (retry + circuit-breaker + cooldown recovery probe) and checks adapter logs for retry/short-circuit observations.
 8. `CT-017` uses multiple action sinks under `contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}{1..4}` to avoid submit cooldown interference.
 9. If bridge-side fault injection is enabled, make sure fault-match prefix aligns with test actions (CI uses `/contacts/resilience-`).
 10. `CT-017` writes runtime fault config to `APPFS_BRIDGE_FAULT_CONFIG_PATH`; bridge examples hot-reload this file for deterministic fault injection.
-11. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1`, the script enforces a minimum circuit-breaker cooldown (`APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS`) to avoid timing races with submit-stability windows.
+11. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1`, the script enforces a minimum circuit-breaker cooldown (`APPFS_BRIDGE_RESILIENCE_MIN_BREAKER_COOLDOWN_MS`) to avoid timing races in retry/short-circuit assertions.
 12. This is a skeleton focused on protocol gates, not full adapter business behavior.
 13. Bridge mode now performs endpoint readiness precheck (`host:port` connect) before starting runtime; unreachable bridge endpoints fail fast.

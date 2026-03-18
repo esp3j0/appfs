@@ -22,7 +22,7 @@
         <mxCell id="4" value="Mounted AppFS Namespace&#xa;/app/&lt;app_id&gt;/...&#xa;_meta / _stream / _paging / domain" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fef3c7;strokeColor=#f59e0b;fontSize=18;" vertex="1" parent="1">
           <mxGeometry x="330" y="240" width="320" height="190" as="geometry"/>
         </mxCell>
-        <mxCell id="5" value="AppFS Runtime (agentfs serve appfs)&#xa;- path safety + normalization&#xa;- action submit (write+close)&#xa;- stream persistence + replay&#xa;- paging handle state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#22c55e;fontSize=18;" vertex="1" parent="1">
+        <mxCell id="5" value="AppFS Runtime (agentfs serve appfs)&#xa;- path safety + normalization&#xa;- action submit (append JSONL)&#xa;- stream persistence + replay&#xa;- paging handle state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#22c55e;fontSize=18;" vertex="1" parent="1">
           <mxGeometry x="700" y="200" width="420" height="300" as="geometry"/>
         </mxCell>
         <mxCell id="6" value="Adapter SDK (AppAdapterV1)&#xa;in-process / HTTP bridge / gRPC bridge" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#ef4444;fontSize=18;" vertex="1" parent="1">
@@ -31,7 +31,7 @@
         <mxCell id="7" value="Real App Backend&#xa;IM / files / CRM / SaaS API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede9fe;strokeColor=#8b5cf6;fontSize=18;" vertex="1" parent="1">
           <mxGeometry x="1160" y="650" width="360" height="170" as="geometry"/>
         </mxCell>
-        <mxCell id="8" value="Contract + Conformance&#xa;APPFS-v0.1 / adapter requirements&#xa;contract tests CT-001 .. CT-017" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3f4f6;strokeColor=#6b7280;fontSize=17;" vertex="1" parent="1">
+        <mxCell id="8" value="Contract + Conformance&#xa;APPFS-v0.1 / adapter requirements&#xa;contract tests CT-001 .. CT-019" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3f4f6;strokeColor=#6b7280;fontSize=17;" vertex="1" parent="1">
           <mxGeometry x="700" y="620" width="420" height="240" as="geometry"/>
         </mxCell>
         <mxCell id="10" value="" style="edgeStyle=orthogonalEdgeStyle;endArrow=classic;html=1;rounded=0;strokeWidth=2;noLabel=1;" edge="1" parent="1" source="3" target="4">
