@@ -142,7 +142,7 @@ APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --roo
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
 # trigger action
-echo '{"test":"hello"}' > /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+echo '{"text":"hello"}' > /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
 # read resource
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
