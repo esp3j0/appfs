@@ -1,11 +1,11 @@
-# AppFS Adapter Quickstart (MVP)
+﻿# AppFS Adapter Quickstart (MVP)
 
 This guide targets adapter authors who want to pass AppFS v0.1 conformance with minimum setup.
 
 For full implementation and troubleshooting details, use:
 
-1. `doc/APPFS-adapter-developer-guide-v0.1.md`
-2. `doc/APPFS-adapter-structure-mapping-v0.1.md`
+1. `docs/v1/APPFS-adapter-developer-guide-v0.1.md`
+2. `docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
 
 ## 1. Choose Adapter Path
 
@@ -43,7 +43,7 @@ Before coding bridge handlers, define:
 
 Reference:
 
-1. `../../doc/APPFS-adapter-structure-mapping-v0.1.md`
+1. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
 
 ## 4. Minimal Rust Adapter Template
 
@@ -102,19 +102,19 @@ Before claiming compatibility, verify:
 
 Reference docs:
 
-1. `../../doc/APPFS-v0.1.md`
-2. `../../doc/APPFS-adapter-requirements-v0.1.md`
-3. `../../doc/APPFS-compatibility-matrix-v0.1.md`
-4. `../../doc/APPFS-conformance-v0.1.md`
-5. `../../doc/APPFS-contract-tests-v0.1.md`
-6. `../../doc/APPFS-adapter-developer-guide-v0.1.md`
-7. `../../doc/APPFS-adapter-structure-mapping-v0.1.md`
+1. `../../docs/v1/APPFS-v0.1.md`
+2. `../../docs/v1/APPFS-adapter-requirements-v0.1.md`
+3. `../../docs/v1/APPFS-compatibility-matrix-v0.1.md`
+4. `../../docs/v1/APPFS-conformance-v0.1.md`
+5. `../../docs/v1/APPFS-contract-tests-v0.1.md`
+6. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`
+7. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
 
 ## 8. Troubleshooting Entry
 
 If you hit runtime/bridge test failures (port conflicts, `uv` issues, gRPC deps, CT-017 failures), start from:
 
-1. `../../doc/APPFS-adapter-developer-guide-v0.1.md#8-troubleshooting-handbook`
+1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md#8-troubleshooting-handbook`
 
 ## 9. Scaffold New Adapter
 
@@ -132,3 +132,4 @@ For custom app fixtures during live conformance, override:
 
 1. `APPFS_FIXTURE_DIR`
 2. `APPFS_APP_ID`
+

@@ -4,8 +4,8 @@
 
 完整实现细节与排障请看：
 
-1. `doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
-2. `doc/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
+1. `docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+2. `docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
 ## 1. 选择适配路径
 
@@ -43,7 +43,7 @@ sh ./run-conformance.sh grpc-python
 
 参考：
 
-1. `../../doc/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
+1. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
 ## 4. 最小 Rust 适配器模板
 
@@ -102,19 +102,19 @@ uv run python bridge_server.py
 
 参考文档：
 
-1. `../../doc/APPFS-v0.1.md`
-2. `../../doc/APPFS-adapter-requirements-v0.1.zh-CN.md`
-3. `../../doc/APPFS-compatibility-matrix-v0.1.zh-CN.md`
-4. `../../doc/APPFS-conformance-v0.1.zh-CN.md`
-5. `../../doc/APPFS-contract-tests-v0.1.zh-CN.md`
-6. `../../doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
-7. `../../doc/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
+1. `../../docs/v1/APPFS-v0.1.md`
+2. `../../docs/v1/APPFS-adapter-requirements-v0.1.zh-CN.md`
+3. `../../docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`
+4. `../../docs/v1/APPFS-conformance-v0.1.zh-CN.md`
+5. `../../docs/v1/APPFS-contract-tests-v0.1.zh-CN.md`
+6. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+7. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
 ## 8. 排障入口
 
 如遇 runtime/bridge 测试失败（端口冲突、`uv`、gRPC 依赖、CT-017），先看：
 
-1. `../../doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md#8-常见问题排障`
+1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md#8-常见问题排障`
 
 ## 9. 生成新适配器脚手架
 
