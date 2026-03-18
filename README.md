@@ -1,4 +1,4 @@
-﻿# AppFS
+# AppFS
 
 Filesystem-native app protocol for shell-first AI agents.
 
@@ -39,6 +39,115 @@ cat /app/aiim/chats/chat-001/messages.res.json
 echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 ```
 
+## Available Actions (AIIM Fixture)
+
+Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
+
+1. `contacts/{contact_id}/send_message.act`
+   - `kind`: `action`
+   - `execution_mode`: `inline`
+   - `input_mode`: `text_or_json`
+2. `files/{file_id}/download.act`
+   - `kind`: `action`
+   - `execution_mode`: `streaming`
+   - `input_mode`: `json`
+3. `/_paging/fetch_next.act`
+   - `kind`: `action`
+   - `execution_mode`: `inline`
+   - `input_mode`: `text_or_json`
+4. `/_paging/close.act`
+   - `kind`: `action`
+   - `execution_mode`: `inline`
+   - `input_mode`: `text_or_json`
+
+## Runtime Quick Start (HTTP Bridge)
+
+### Windows (PowerShell, 4 Steps)
+
+1. Mount AgentFS (Terminal A).
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- init win-real
+cargo run -- mount .agentfs\win-real.db C:\mnt\win-real --foreground
+```
+
+2. Place AIIM fixture into the mountpoint (Terminal B).
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs
+Copy-Item -Recurse -Force .\examples\appfs\aiim C:\mnt\win-real\aiim
+```
+
+3. Start HTTP bridge (Terminal C).
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
+uv run python bridge_server.py
+```
+
+4. Start AppFS runtime and operate files (Terminal D/E).
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+$env:APPFS_ADAPTER_HTTP_ENDPOINT = "http://127.0.0.1:8080"
+cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
+```
+
+```powershell
+# watch stream (separate terminal)
+Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
+
+# trigger action (confirmed PowerShell form)
+'{"test":"hello"}' | Set-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act -NoNewline
+
+# read resource
+Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
+```
+
+### Linux (bash, 4 Steps)
+
+1. Mount AgentFS (Terminal A).
+
+```bash
+cd /path/to/agentfs/cli
+cargo run -- init linux-real
+mkdir -p /tmp/appfs-real
+cargo run -- mount .agentfs/linux-real.db /tmp/appfs-real --foreground
+```
+
+2. Place AIIM fixture into the mountpoint (Terminal B).
+
+```bash
+cd /path/to/agentfs
+cp -R ./examples/appfs/aiim /tmp/appfs-real/aiim
+```
+
+3. Start HTTP bridge (Terminal C).
+
+```bash
+cd /path/to/agentfs/examples/appfs/http-bridge/python
+uv run python bridge_server.py
+```
+
+4. Start AppFS runtime and operate files (Terminal D/E).
+
+```bash
+cd /path/to/agentfs/cli
+APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --root /tmp/appfs-real --app-id aiim
+```
+
+```bash
+# watch stream (separate terminal)
+tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
+
+# trigger action
+echo '{"test":"hello"}' > /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+
+# read resource
+cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
+```
+
 ## Architecture
 
 - Draw.io source: [docs/v1/architecture/appfs-v0.1-architecture.drawio](docs/v1/architecture/appfs-v0.1-architecture.drawio)
@@ -54,7 +163,7 @@ The architecture has four layers:
 
 ![AppFS v0.1 Architecture](docs/v1/architecture/appfs-v0.1-architecture.svg)
 
-## Quick Start
+## Conformance Quick Start
 
 ### 1) Static Contract Checks
 
@@ -132,4 +241,3 @@ For release details, see:
 ## License
 
 MIT
-

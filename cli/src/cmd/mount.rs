@@ -1,5 +1,9 @@
-use agentfs_sdk::{error::Error as SdkError, AgentFSOptions, FileSystem};
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use agentfs_sdk::FileSystem;
+use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use std::{path::PathBuf, sync::Arc};
 
 #[cfg(unix)]
@@ -35,6 +39,7 @@ use crate::fuse::FuseMountOptions;
 pub use crate::opts::MountBackend;
 
 /// Default NFS port to try (use a high port to avoid needing root)
+#[cfg(unix)]
 const DEFAULT_NFS_PORT: u32 = 11111;
 
 /// Arguments for the mount command.
@@ -157,7 +162,7 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
     // Wrap filesystem in parking_lot::Mutex for WinFsp
     let fs: Arc<Mutex<dyn agentfs_sdk::FileSystem + Send>> = Arc::new(Mutex::new(agentfs.fs));
 
-    let mount_opts = crate::mount::MountOpts {
+    let mount_opts = MountOpts {
         mountpoint: mountpoint.clone(),
         backend: MountBackend::Winfsp,
         fsname,

@@ -153,6 +153,9 @@ impl Drop for MountHandle {
             }
             #[cfg(target_os = "windows")]
             MountHandleInner::WinFsp { host_ptr } => {
+                // WinFsp backend/lazy mode fields are currently only meaningful on Unix paths.
+                // Read them here to keep platform-specific builds warning-free.
+                let _ = (&self.backend, self.lazy_unmount);
                 // WinFsp filesystem stops and unmounts when we reconstruct the Box and drop it
                 if let Err(e) = winfsp::unmount_winfsp(*host_ptr) {
                     eprintln!(
@@ -170,14 +173,14 @@ impl Drop for MountHandle {
 ///
 /// This function handles unmounting for both FUSE and NFS backends.
 /// If `lazy` is true, uses lazy unmount which detaches immediately even if busy.
-pub fn unmount(mountpoint: &Path, backend: MountBackend, lazy: bool) -> Result<()> {
+pub fn unmount(_mountpoint: &Path, backend: MountBackend, _lazy: bool) -> Result<()> {
     match backend {
         #[cfg(target_os = "linux")]
-        MountBackend::Fuse => fuse::unmount_fuse(mountpoint, lazy),
+        MountBackend::Fuse => fuse::unmount_fuse(_mountpoint, _lazy),
         #[cfg(not(target_os = "linux"))]
         MountBackend::Fuse => anyhow::bail!("FUSE is not supported on this platform"),
         #[cfg(unix)]
-        MountBackend::Nfs => nfs::unmount_nfs(mountpoint, lazy),
+        MountBackend::Nfs => nfs::unmount_nfs(_mountpoint, _lazy),
         #[cfg(not(unix))]
         MountBackend::Nfs => anyhow::bail!("NFS mounting is not supported on this platform."),
         #[cfg(target_os = "windows")]
