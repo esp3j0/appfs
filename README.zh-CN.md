@@ -63,6 +63,7 @@ sh ./run-conformance.sh grpc-python
 4. [APPFS-compatibility-matrix-v0.1.zh-CN.md](doc/APPFS-compatibility-matrix-v0.1.zh-CN.md)
 5. [APPFS-conformance-v0.1.zh-CN.md](doc/APPFS-conformance-v0.1.zh-CN.md)
 6. [APPFS-contract-tests-v0.1.zh-CN.md](doc/APPFS-contract-tests-v0.1.zh-CN.md)
+7. [APPFS-adapter-structure-mapping-v0.1.zh-CN.md](doc/APPFS-adapter-structure-mapping-v0.1.zh-CN.md)
 
 兼容性承诺：
 
@@ -77,11 +78,13 @@ sh ./run-conformance.sh grpc-python
 2. `doc/APPFS-adapter-requirements-v0.1.md`：适配器要求。
 3. `doc/APPFS-adapter-developer-guide-v0.1.md`：英文开发指南。
 4. `doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md`：中文开发指南。
-5. `doc/APPFS-compatibility-matrix-v0.1.md`：兼容性矩阵（英文）。
-6. `doc/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
-7. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
-8. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
-9. `cli/tests/appfs/`：live 合约与韧性测试（`CT-001` 到 `CT-017`）。
+5. `doc/APPFS-adapter-structure-mapping-v0.1.md`：结构定义与桥接映射（英文）。
+6. `doc/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`：结构定义与桥接映射（中文）。
+7. `doc/APPFS-compatibility-matrix-v0.1.md`：兼容性矩阵（英文）。
+8. `doc/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
+9. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
+10. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
+11. `cli/tests/appfs/`：live 合约与韧性测试（`CT-001` 到 `CT-017`）。
 
 ## 许可证
 
