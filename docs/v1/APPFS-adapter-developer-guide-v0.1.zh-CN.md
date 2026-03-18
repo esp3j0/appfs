@@ -17,14 +17,15 @@
 
 ## 2. 建议阅读顺序
 
-1. 协议基线：`doc/APPFS-v0.1.md`
-2. 适配器要求：`doc/APPFS-adapter-requirements-v0.1.md`
-3. 本文：实现路径与排障
-4. 一致性与测试定义：
-   - `doc/APPFS-conformance-v0.1.md`
-   - `doc/APPFS-contract-tests-v0.1.md`
-5. 兼容性矩阵：
-   - `doc/APPFS-compatibility-matrix-v0.1.md`
+1. 协议基线：`docs/v1/APPFS-v0.1.md`
+2. 适配器要求：`docs/v1/APPFS-adapter-requirements-v0.1.zh-CN.md`
+3. 结构与桥接映射：`docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
+4. 本文：实现路径与排障
+5. 一致性与测试定义：
+   - `docs/v1/APPFS-conformance-v0.1.zh-CN.md`
+   - `docs/v1/APPFS-contract-tests-v0.1.zh-CN.md`
+6. 兼容性矩阵：
+   - `docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`
 
 ## 3. 30 分钟最小闭环
 
@@ -45,7 +46,7 @@ sh ./run-conformance.sh http-python
 
 1. 静态模式覆盖布局/Schema/策略类校验（`CT-001`、`CT-003`、`CT-005`）。
 2. live 模式覆盖动作、流、分页、安全与恢复（`CT-002` 到 `CT-017`）。
-3. HTTP/gRPC bridge 模式用于验证跨传输的一致性。
+3. HTTP/gRPC bridge 模式用于验证跨传输一致性。
 
 ## 4. 选择实现路径
 
@@ -72,7 +73,7 @@ sh ./run-conformance.sh http-python
 参考：
 
 1. `examples/appfs/http-bridge/python/`
-2. `doc/APPFS-adapter-http-bridge-v0.1.md`
+2. `docs/v1/APPFS-adapter-http-bridge-v0.1.md`
 
 ### 4.3 gRPC bridge
 
@@ -84,7 +85,19 @@ sh ./run-conformance.sh http-python
 参考：
 
 1. `examples/appfs/grpc-bridge/python/`
-2. `doc/APPFS-adapter-grpc-bridge-v0.1.md`
+2. `docs/v1/APPFS-adapter-grpc-bridge-v0.1.md`
+
+### 4.4 先定义结构，再写 handler
+
+在写 bridge 业务代码前，先锁定三层：
+
+1. `manifest.res.json` 中的节点模板。
+2. `/app/<app_id>/...` 下的真实 sink/resource 文件。
+3. 节点模板到 handler 的 1:1 映射表。
+
+参考：
+
+1. `docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
 ## 5. 适配器必须保证的行为
 
@@ -142,7 +155,7 @@ CT-017 相关：
 
 1. `ss -ltnp | grep ':8080'`
 2. `APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:9000 sh ./run-conformance.sh`
-3. 确认脚本会将 endpoint 映射到 bridge 实际监听端口。
+3. 确认脚本会把 endpoint 映射到 bridge 实际监听端口。
 
 ### 8.2 Python 3.12 报 `Start directory is not importable: tests`
 

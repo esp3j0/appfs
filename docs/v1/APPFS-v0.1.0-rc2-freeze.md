@@ -1,4 +1,4 @@
-# AppFS v0.1.0-rc2 Freeze Declaration
+﻿# AppFS v0.1.0-rc2 Freeze Declaration
 
 - Version: `v0.1.0-rc2`
 - Date: `2026-03-17`
@@ -19,12 +19,12 @@ Goal:
 
 The following files are part of the `rc2` frozen set:
 
-1. `doc/APPFS-v0.1.md`
-2. `doc/APPFS-adapter-requirements-v0.1.md`
-3. `doc/APPFS-conformance-v0.1.md`
-4. `doc/APPFS-contract-tests-v0.1.md`
-5. `doc/APPFS-adapter-http-bridge-v0.1.md`
-6. `doc/APPFS-adapter-grpc-bridge-v0.1.md`
+1. `docs/v1/APPFS-v0.1.md`
+2. `docs/v1/APPFS-adapter-requirements-v0.1.md`
+3. `docs/v1/APPFS-conformance-v0.1.md`
+4. `docs/v1/APPFS-contract-tests-v0.1.md`
+5. `docs/v1/APPFS-adapter-http-bridge-v0.1.md`
+6. `docs/v1/APPFS-adapter-grpc-bridge-v0.1.md`
 
 ## 3. Frozen Core Semantics
 
@@ -70,4 +70,5 @@ For freeze-period changes:
 2. AppFS bridge-mode gates (HTTP and gRPC) are green.
 3. No open P0/P1 defects for Core semantics.
 4. Migration note is published and validated.
+
 

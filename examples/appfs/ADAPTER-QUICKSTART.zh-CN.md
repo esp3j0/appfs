@@ -1,10 +1,11 @@
 # AppFS 适配器快速开始（MVP）
 
-本指南面向希望以最小配置通过 AppFS v0.1 一致性测试的适配器开发者。
+这份文档面向希望以最小配置通过 AppFS v0.1 一致性测试的适配器开发者。
 
 完整实现细节与排障请看：
 
-1. `doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+1. `docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+2. `docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
 ## 1. 选择适配路径
 
@@ -15,7 +16,7 @@
 3. 进程外 gRPC bridge：
    - 传输契约更强类型化，适合多语言团队。
 
-## 2. 一条命令跑一致性
+## 2. 一键一致性
 
 在该目录执行：
 
@@ -32,7 +33,19 @@ sh ./run-conformance.sh grpc-python
 2. 启动适配器 runtime（或 runtime + bridge endpoint）。
 3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-017`。
 
-## 3. 最小 Rust 适配器模板
+## 3. 写代码前先定义结构
+
+先完成三件事：
+
+1. 在 `manifest.res.json` 声明节点模板（`*.res.json`、`*.act`）。
+2. 在 `/app/<app_id>/...` 落地对应 sink/resource 文件。
+3. 建立“节点模板 -> handler”映射表。
+
+参考：
+
+1. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
+
+## 4. 最小 Rust 适配器模板
 
 模板位置：
 
@@ -50,7 +63,7 @@ cargo test
 1. `run_required_case_matrix_v1`
 2. `run_error_case_matrix_v1`
 
-## 4. HTTP Bridge 起步
+## 5. HTTP Bridge 起步
 
 入口位置：
 
@@ -64,7 +77,7 @@ cd examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
-## 5. gRPC Bridge 起步
+## 6. gRPC Bridge 起步
 
 入口位置：
 
@@ -76,7 +89,7 @@ uv run python bridge_server.py
 1. 安装 `examples/appfs/grpc-bridge/python/requirements.txt` 依赖。
 2. 执行 `./generate_stubs.sh` 生成 stubs。
 
-## 6. 兼容性最小检查清单
+## 7. 兼容性最小检查清单
 
 声明兼容前，请确认：
 
@@ -85,23 +98,25 @@ uv run python bridge_server.py
 3. 分页句柄错误映射（`fetch_next`、`close`）正确。
 4. `AppAdapterV1` 契约符合规范。
 5. CI/static/live 一致性证据齐全。
+6. 声明节点与桥接 handler 1:1 映射完成。
 
 参考文档：
 
-1. `../../doc/APPFS-v0.1.md`
-2. `../../doc/APPFS-adapter-requirements-v0.1.md`
-3. `../../doc/APPFS-compatibility-matrix-v0.1.md`
-4. `../../doc/APPFS-conformance-v0.1.md`
-5. `../../doc/APPFS-contract-tests-v0.1.md`
-6. `../../doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+1. `../../docs/v1/APPFS-v0.1.md`
+2. `../../docs/v1/APPFS-adapter-requirements-v0.1.zh-CN.md`
+3. `../../docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`
+4. `../../docs/v1/APPFS-conformance-v0.1.zh-CN.md`
+5. `../../docs/v1/APPFS-contract-tests-v0.1.zh-CN.md`
+6. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md`
+7. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`
 
-## 7. 排障入口
+## 8. 排障入口
 
-如果遇到 runtime/bridge 测试失败（端口冲突、`uv` 问题、gRPC 依赖、CT-017 失败），先看：
+如遇 runtime/bridge 测试失败（端口冲突、`uv`、gRPC 依赖、CT-017），先看：
 
-1. `../../doc/APPFS-adapter-developer-guide-v0.1.zh-CN.md#8-常见问题排障`
+1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md#8-常见问题排障`
 
-## 8. 生成新适配器脚手架
+## 9. 生成新适配器脚手架
 
 生成一个新的 Python HTTP bridge 脚手架：
 
@@ -112,3 +127,8 @@ sh ./new-adapter.sh myapp
 生成目录：
 
 1. `./adapters/myapp/python`
+
+如果要使用自定义 app fixture 跑 live 测试，覆盖以下环境变量：
+
+1. `APPFS_FIXTURE_DIR`
+2. `APPFS_APP_ID`

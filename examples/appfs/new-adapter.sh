@@ -1,4 +1,4 @@
-#!/bin/sh
+﻿#!/bin/sh
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -59,6 +59,25 @@ dependencies = []
 package = false
 EOF
 
+cat >"$TARGET_DIR/NODE-MAPPING.md" <<EOF
+# AppFS Node Mapping (${ADAPTER_ID})
+
+Fill this table before implementing bridge handlers.
+
+| Node template | Kind | Input/Output mode | Execution mode | Bridge route | Backend handler |
+|---|---|---|---|---|---|
+| contacts/{contact_id}/send_message.act | action | text_or_json | inline | /v1/submit-action | handle_send_message |
+| files/{file_id}/download.act | action | json | streaming | /v1/submit-action | handle_download |
+| _paging/fetch_next.act | control | text_or_json | inline | /v1/submit-control-action | handle_paging_fetch_next |
+| _paging/close.act | control | text_or_json | inline | /v1/submit-control-action | handle_paging_close |
+
+Checklist:
+
+1. Every declared \`.act\` template in manifest has one handler mapping.
+2. No handler exists for undeclared action templates.
+3. Control actions and pageable resources are mapped consistently.
+EOF
+
 cat >"$TARGET_DIR/README.md" <<EOF
 # AppFS Adapter Scaffold: ${ADAPTER_ID}
 
@@ -80,11 +99,30 @@ cd examples/appfs/adapters/${ADAPTER_ID}/python
 APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh
 \`\`\`
 
+To run against a custom app fixture tree:
+
+\`\`\`bash
+cd examples/appfs/adapters/${ADAPTER_ID}/python
+APPFS_FIXTURE_DIR=/path/to/appfs-fixture APPFS_APP_ID=${ADAPTER_ID} APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh
+\`\`\`
+
+## Define Structure First
+
+1. Declare node templates in \`<fixture_root>/${ADAPTER_ID}/_meta/manifest.res.json\`.
+2. Create matching \`.act\` sink files and \`.res.json\` resources under \`<fixture_root>/${ADAPTER_ID}/\`.
+3. Fill \`NODE-MAPPING.md\` and keep a 1:1 mapping from node templates to backend handlers.
+
+Reference docs:
+
+1. \`docs/v1/APPFS-adapter-structure-mapping-v0.1.md\`
+2. \`docs/v1/APPFS-adapter-developer-guide-v0.1.md\`
+
 ## Next Edits
 
-1. Modify \`appfs_http_bridge/mock_aiim.py\` for your domain logic.
-2. Keep \`appfs_http_bridge/protocol.py\` behavior aligned with AppFS contracts.
-3. Verify \`CT-001 ~ CT-017\` before compatibility claim.
+1. Fill \`NODE-MAPPING.md\`.
+2. Modify \`appfs_http_bridge/mock_aiim.py\` for your domain logic.
+3. Keep \`appfs_http_bridge/protocol.py\` behavior aligned with AppFS contracts.
+4. Verify \`CT-001 ~ CT-017\` before compatibility claim.
 EOF
 
 chmod +x "$TARGET_DIR/run-conformance.sh"
@@ -92,5 +130,7 @@ chmod +x "$TARGET_DIR/run-conformance.sh"
 printf 'Generated adapter scaffold:\n%s\n' "$TARGET_DIR"
 printf '\nNext:\n'
 printf '1. cd %s\n' "$TARGET_DIR"
-printf '2. uv run python -m unittest discover -s tests -t . -p "test_*.py"\n'
-printf '3. APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh\n'
+printf '2. edit NODE-MAPPING.md and manifest/app fixture nodes first\n'
+printf '3. uv run python -m unittest discover -s tests -t . -p "test_*.py"\n'
+printf '4. APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh\n'
+

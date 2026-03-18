@@ -1,4 +1,4 @@
-# AppFS
+﻿# AppFS
 
 Filesystem-native app protocol for shell-first AI agents.
 
@@ -41,9 +41,9 @@ echo '{"handle_id":"<from-page>"}' > /app/aiim/_paging/fetch_next.act
 
 ## Architecture
 
-- Draw.io source: [docs/architecture/appfs-v0.1-architecture.drawio](docs/architecture/appfs-v0.1-architecture.drawio)
-- SVG preview: [docs/architecture/appfs-v0.1-architecture.svg](docs/architecture/appfs-v0.1-architecture.svg)
-- Spec baseline: [APPFS-v0.1.md](doc/APPFS-v0.1.md)
+- Draw.io source: [docs/v1/architecture/appfs-v0.1-architecture.drawio](docs/v1/architecture/appfs-v0.1-architecture.drawio)
+- SVG preview: [docs/v1/architecture/appfs-v0.1-architecture.svg](docs/v1/architecture/appfs-v0.1-architecture.svg)
+- Spec baseline: [APPFS-v0.1.md](docs/v1/APPFS-v0.1.md)
 
 The architecture has four layers:
 
@@ -52,7 +52,7 @@ The architecture has four layers:
 3. AppFS runtime in `agentfs serve appfs` (routing, validation, stream persistence, replay).
 4. Business adapter implementations (in-process or HTTP/gRPC bridge) that call real app backends.
 
-![AppFS v0.1 Architecture](docs/architecture/appfs-v0.1-architecture.svg)
+![AppFS v0.1 Architecture](docs/v1/architecture/appfs-v0.1-architecture.svg)
 
 ## Quick Start
 
@@ -84,12 +84,13 @@ sh ./run-conformance.sh grpc-python
 
 Start here:
 
-1. [APPFS-adapter-developer-guide-v0.1.md](doc/APPFS-adapter-developer-guide-v0.1.md)
+1. [APPFS-adapter-developer-guide-v0.1.md](docs/v1/APPFS-adapter-developer-guide-v0.1.md)
 2. [examples/appfs/ADAPTER-QUICKSTART.md](examples/appfs/ADAPTER-QUICKSTART.md)
-3. [APPFS-adapter-requirements-v0.1.md](doc/APPFS-adapter-requirements-v0.1.md)
-4. [APPFS-compatibility-matrix-v0.1.md](doc/APPFS-compatibility-matrix-v0.1.md)
-5. [APPFS-conformance-v0.1.md](doc/APPFS-conformance-v0.1.md)
-6. [APPFS-contract-tests-v0.1.md](doc/APPFS-contract-tests-v0.1.md)
+3. [APPFS-adapter-requirements-v0.1.md](docs/v1/APPFS-adapter-requirements-v0.1.md)
+4. [APPFS-compatibility-matrix-v0.1.md](docs/v1/APPFS-compatibility-matrix-v0.1.md)
+5. [APPFS-conformance-v0.1.md](docs/v1/APPFS-conformance-v0.1.md)
+6. [APPFS-contract-tests-v0.1.md](docs/v1/APPFS-contract-tests-v0.1.md)
+7. [APPFS-adapter-structure-mapping-v0.1.md](docs/v1/APPFS-adapter-structure-mapping-v0.1.md)
 
 Key compatibility commitments:
 
@@ -100,15 +101,16 @@ Key compatibility commitments:
 
 ## Repository Map (AppFS-Relevant)
 
-1. `doc/APPFS-v0.1.md`: core protocol.
-2. `doc/APPFS-adapter-requirements-v0.1.md`: adapter requirements.
-3. `doc/APPFS-adapter-developer-guide-v0.1.md`: end-to-end developer workflow and troubleshooting.
-4. `doc/APPFS-compatibility-matrix-v0.1.md`: language/transport/capability compatibility and acceptance commands.
-5. `doc/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
-6. `examples/appfs/`: reference fixtures and bridge examples.
-7. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
-8. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-9. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
+1. `docs/v1/APPFS-v0.1.md`: core protocol.
+2. `docs/v1/APPFS-adapter-requirements-v0.1.md`: adapter requirements.
+3. `docs/v1/APPFS-adapter-developer-guide-v0.1.md`: end-to-end developer workflow and troubleshooting.
+4. `docs/v1/APPFS-adapter-structure-mapping-v0.1.md`: app structure definition and node-to-handler mapping workflow.
+5. `docs/v1/APPFS-compatibility-matrix-v0.1.md`: language/transport/capability compatibility and acceptance commands.
+6. `docs/v1/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
+7. `examples/appfs/`: reference fixtures and bridge examples.
+8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
+9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
+10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-017`).
 
 ## Current Status
 
@@ -120,13 +122,14 @@ Current branch has AppFS v0.1 contract suite and RC closure artifacts, including
 
 For release details, see:
 
-1. [APPFS-release-checklist-v0.1-rc1.md](doc/APPFS-release-checklist-v0.1-rc1.md)
-2. [APPFS-release-notes-v0.1-rc1.md](doc/APPFS-release-notes-v0.1-rc1.md)
-3. [APPFS-rc-closure-v0.1.md](doc/APPFS-rc-closure-v0.1.md)
-4. [APPFS-v0.1.0-rc2-freeze.md](doc/APPFS-v0.1.0-rc2-freeze.md)
-5. [APPFS-migration-note-v0.1.0-rc2.md](doc/APPFS-migration-note-v0.1.0-rc2.md)
-6. [APPFS-project-status-and-roadmap-2026-03-17.md](doc/APPFS-project-status-and-roadmap-2026-03-17.md)
+1. [APPFS-release-checklist-v0.1-rc1.md](docs/v1/APPFS-release-checklist-v0.1-rc1.md)
+2. [APPFS-release-notes-v0.1-rc1.md](docs/v1/APPFS-release-notes-v0.1-rc1.md)
+3. [APPFS-rc-closure-v0.1.md](docs/v1/APPFS-rc-closure-v0.1.md)
+4. [APPFS-v0.1.0-rc2-freeze.md](docs/v1/APPFS-v0.1.0-rc2-freeze.md)
+5. [APPFS-migration-note-v0.1.0-rc2.md](docs/v1/APPFS-migration-note-v0.1.0-rc2.md)
+6. [APPFS-project-status-and-roadmap-2026-03-17.md](docs/v1/APPFS-project-status-and-roadmap-2026-03-17.md)
 
 ## License
 
 MIT
+

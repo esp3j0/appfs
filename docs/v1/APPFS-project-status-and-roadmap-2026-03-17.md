@@ -13,7 +13,7 @@
 3. HTTP and gRPC adapter bridge references are available.
 4. Contract tests (`CT-001`..`CT-017`) are integrated and exercised in CI.
 5. CI pipeline is green on the current branch after recent conflict and lint fixes.
-6. AppFS documentation set has been centralized under `doc/`.
+6. AppFS documentation set has been centralized under `docs/v1/`.
 7. Compatibility matrix and developer troubleshooting path are documented.
 
 ### 1.2 Quality Level

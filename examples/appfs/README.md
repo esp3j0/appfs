@@ -1,4 +1,4 @@
-# AppFS Example Tree
+﻿# AppFS Example Tree
 
 This directory contains AppFS v0.1 reference fixtures and adapter examples aligned with `APPFS-v0.1 (r8)`.
 
@@ -32,4 +32,5 @@ sh ./run-conformance.sh grpc-python
 ```
 
 See `ADAPTER-QUICKSTART.md` for adapter author workflow.
-For full workflow + troubleshooting, see `../../doc/APPFS-adapter-developer-guide-v0.1.md`.
+For full workflow + troubleshooting, see `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`.
+
