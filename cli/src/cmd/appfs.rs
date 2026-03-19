@@ -498,6 +498,7 @@ impl AppfsAdapter {
 
             if matches!(spec.input_mode, InputMode::Json)
                 && serde_json::from_str::<JsonValue>(&payload).is_err()
+                && has_odd_unescaped_quotes(&payload)
             {
                 if let Some((merged_payload, merged_line_end, consumed_lines)) =
                     recover_multiline_json_payload(&bytes, &payload, line_end, &spec)
@@ -1500,7 +1501,6 @@ fn recover_multiline_json_payload(
 
     None
 }
-
 #[derive(Clone, Copy)]
 enum Utf16Endian {
     Le,
@@ -1978,7 +1978,6 @@ mod tests {
             recover_multiline_json_payload(bytes, &first_payload, first_line_end, &spec);
         assert!(recovered.is_none());
     }
-
     #[test]
     fn parse_handle_rejects_non_json_payload() {
         assert!(parse_paging_request("ph_7f2c\n").is_err());
