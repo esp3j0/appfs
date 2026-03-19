@@ -1530,7 +1530,10 @@ fn try_decode_utf16_line(slice: &[u8], allow_bom: bool) -> Option<String> {
 }
 
 fn is_transient_action_sink_busy(err: &std::io::Error) -> bool {
-    if !matches!(err.kind(), ErrorKind::PermissionDenied | ErrorKind::WouldBlock) {
+    if !matches!(
+        err.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::WouldBlock
+    ) {
         return false;
     }
 
@@ -1744,9 +1747,10 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment, extract_client_token,
-        has_odd_unescaped_quotes, is_handle_format_valid, normalize_runtime_handle_id, parse_paging_request, validate_payload,
-        ActionSpec, ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
+        boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
+        extract_client_token, has_odd_unescaped_quotes, is_handle_format_valid,
+        normalize_runtime_handle_id, parse_paging_request, validate_payload, ActionSpec,
+        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -1839,9 +1843,9 @@ mod tests {
     #[test]
     fn decode_jsonl_line_supports_utf16le_ps5_redirection() {
         let bytes = vec![
-            0x7b, 0x00, 0x22, 0x00, 0x74, 0x00, 0x65, 0x00, 0x78, 0x00, 0x74, 0x00, 0x22,
-            0x00, 0x3a, 0x00, 0x22, 0x00, 0x68, 0x00, 0x65, 0x00, 0x6c, 0x00, 0x6c, 0x00,
-            0x6f, 0x00, 0x22, 0x00, 0x7d, 0x00, 0x0d, 0x00, 0x0a,
+            0x7b, 0x00, 0x22, 0x00, 0x74, 0x00, 0x65, 0x00, 0x78, 0x00, 0x74, 0x00, 0x22, 0x00,
+            0x3a, 0x00, 0x22, 0x00, 0x68, 0x00, 0x65, 0x00, 0x6c, 0x00, 0x6c, 0x00, 0x6f, 0x00,
+            0x22, 0x00, 0x7d, 0x00, 0x0d, 0x00, 0x0a,
         ];
         let line = decode_jsonl_line(&bytes, false).expect("decode should succeed");
         assert_eq!(line.as_deref(), Some("{\"text\":\"hello\"}"));
@@ -1850,8 +1854,8 @@ mod tests {
     #[test]
     fn decode_jsonl_line_supports_utf16le_bom() {
         let bytes = vec![
-            0xff, 0xfe, 0x7b, 0x00, 0x22, 0x00, 0x6f, 0x00, 0x6b, 0x00, 0x22, 0x00, 0x3a,
-            0x00, 0x74, 0x00, 0x72, 0x00, 0x75, 0x00, 0x65, 0x00, 0x7d, 0x00, 0x0a,
+            0xff, 0xfe, 0x7b, 0x00, 0x22, 0x00, 0x6f, 0x00, 0x6b, 0x00, 0x22, 0x00, 0x3a, 0x00,
+            0x74, 0x00, 0x72, 0x00, 0x75, 0x00, 0x65, 0x00, 0x7d, 0x00, 0x0a,
         ];
         let line = decode_jsonl_line(&bytes, true).expect("decode should succeed");
         assert_eq!(line.as_deref(), Some("{\"ok\":true}"));
