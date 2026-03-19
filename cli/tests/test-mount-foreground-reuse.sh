@@ -60,7 +60,9 @@ MOUNT_PID2=$!
 
 WAITED=0
 while [ "$WAITED" -lt "$MAX_WAIT" ]; do
-    if mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
+    # Avoid stale-mount races: require both mountpoint readiness and
+    # foreground guidance log from the new process.
+    if mountpoint -q "$MOUNTPOINT" 2>/dev/null && grep -q "Press Ctrl+C to unmount and exit." "$LOG2" 2>/dev/null; then
         break
     fi
     sleep 1
