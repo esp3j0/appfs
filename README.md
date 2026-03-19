@@ -161,6 +161,7 @@ Notes:
 1. `.act` sink semantics are append-only JSONL. Submit with `>>` (or PowerShell `Add-Content`) and write one JSON object per line.
 2. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
 3. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
+4. Runtime also has compatibility recovery for shell-expanded multiline JSON fragments; it may merge adjacent lines back into one JSON request. Preferred client format is still single-line JSON with escaped `\\n`.
 
 ## Architecture
 
@@ -233,7 +234,7 @@ Key compatibility commitments:
 7. `examples/appfs/`: reference fixtures and bridge examples.
 8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
 9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-019`).
+10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-020`).
 
 ## Current Status
 

@@ -94,7 +94,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. 合约测试套件
 
-说明：`cli/tests/appfs/` 的直接脚本包含基线与扩展检查（`CT-001`..`CT-015` 以及 `CT-018` 连续追加提交排队），`run-live-with-adapter.sh` 还会额外执行生命周期探针（`CT-016`）、可选 bridge 韧性探针（`CT-017`）和重启后游标恢复（`CT-019`）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` 提交时 malformed/invalid JSONL 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错、`CT-018` 连续追加提交排队、`CT-019` 重启后游标恢复）。
+说明：`cli/tests/appfs/` 的直接脚本包含基线与扩展检查（`CT-001`..`CT-015`，以及 `CT-018` 连续追加提交排队和 `CT-020` 多行 JSON 恢复），`run-live-with-adapter.sh` 还会额外执行生命周期探针（`CT-016`）、可选 bridge 韧性探针（`CT-017`）和重启后游标恢复（`CT-019`）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` 提交时 malformed/invalid JSONL 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错、`CT-018` 连续追加提交排队、`CT-019` 重启后游标恢复、`CT-020` shell 展开多行 JSON 恢复）。
 
 ### CT-001 布局与必需节点
 
@@ -209,6 +209,25 @@ cli/tests/appfs/test-manifest-policy.sh
 
 ```text
 cli/tests/appfs/run-live-with-adapter.sh (通过 APPFS_BRIDGE_RESILIENCE_CONTRACT=1 启用)
+```
+
+### CT-020 Shell 展开多行 JSON 恢复
+
+规范引用：
+
+1. `APPFS-v0.1` 第 7 节（JSONL 提交边界 + runtime 兼容恢复）。
+2. `APPFS-adapter-requirements-v0.1`（`AR-016`，提交时校验与顺序）。
+
+断言：
+
+1. runtime 能从同一 `.act` sink 的 shell 展开多行 JSON 片段恢复单个请求。
+2. 恢复后的请求会产出确定性的终态事件（`action.completed`），并能通过 token 关联。
+3. 同一路径连续两次多行提交都被处理，且流序号顺序保持一致。
+
+脚本：
+
+```text
+cli/tests/appfs/test-submit-multiline-recovery.sh
 ```
 
 ## 5. 缺口与后续（v0.2 候选）

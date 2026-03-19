@@ -164,7 +164,9 @@ Input format:
 
 1. `*.act` payload is JSON-only in v0.1 runtime profile.
 2. Each submission MUST be one JSON object line (`JSONL`).
-3. Multi-line user content MUST be encoded inside JSON strings (for example `\\n`).
+3. Preferred client format is single-line JSON with escaped newlines in strings (for example `\\n`).
+4. Runtime MAY apply compatibility recovery for shell-expanded multiline JSON fragments by joining adjacent committed lines until one valid JSON object is formed within recovery limits.
+5. Runtime recovery limits in the reference implementation are `MAX_RECOVERY_LINES=32` and `MAX_RECOVERY_BYTES=65536` (effective bytes limit is `min(MAX_RECOVERY_BYTES, action.max_payload_bytes)` when action-level limit exists).
 
 Examples:
 

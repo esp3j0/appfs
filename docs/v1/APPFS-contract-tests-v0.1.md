@@ -94,7 +94,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. Contract Suite
 
-Note: `cli/tests/appfs/` includes direct scripts for baseline and extended checks (`CT-001`..`CT-015` plus `CT-018` burst append queueing), while `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`), optional bridge resilience probe (`CT-017`), and restart cursor recovery (`CT-019`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` submit-time malformed/invalid JSONL reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance, `CT-018` burst append queueing, `CT-019` restart cursor recovery).
+Note: `cli/tests/appfs/` includes direct scripts for baseline and extended checks (`CT-001`..`CT-015` plus `CT-018` burst append queueing and `CT-020` multiline JSON recovery), while `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`), optional bridge resilience probe (`CT-017`), and restart cursor recovery (`CT-019`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` submit-time malformed/invalid JSONL reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance, `CT-018` burst append queueing, `CT-019` restart cursor recovery, `CT-020` shell-expanded multiline JSON recovery).
 
 ### CT-001 Layout and Required Nodes
 
@@ -209,6 +209,25 @@ Entry:
 
 ```text
 cli/tests/appfs/run-live-with-adapter.sh (enabled via APPFS_BRIDGE_RESILIENCE_CONTRACT=1)
+```
+
+### CT-020 Shell-Expanded Multiline JSON Recovery
+
+Spec refs:
+
+1. `APPFS-v0.1` section 7 (JSONL submission boundaries + runtime compatibility recovery).
+2. `APPFS-adapter-requirements-v0.1` (`AR-016`, submit-time validation and ordering).
+
+Assertions:
+
+1. Runtime recovers one request from shell-expanded multiline JSON fragments on a single `.act` sink.
+2. Recovered request emits deterministic terminal event (`action.completed`) with token correlation.
+3. Consecutive multiline submissions on the same sink are both processed and stream sequence order is preserved.
+
+Script:
+
+```text
+cli/tests/appfs/test-submit-multiline-recovery.sh
 ```
 
 ## 5. Gaps and Follow-up (v0.2 Candidate)
