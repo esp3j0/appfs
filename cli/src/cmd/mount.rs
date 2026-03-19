@@ -302,7 +302,15 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
             let _mount_handle = mount_fs(fs, mount_opts).await?;
             eprintln!("Mounted at {}", mountpoint.display());
             eprintln!("Press Ctrl+C to unmount and exit.");
-            tokio::signal::ctrl_c().await?;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = wait_for_external_unmount(mountpoint.clone()) => {
+                    eprintln!(
+                        "Mountpoint {} was unmounted externally; exiting foreground mode.",
+                        mountpoint.display()
+                    );
+                }
+            }
             Ok::<(), anyhow::Error>(())
         })?;
 
@@ -625,6 +633,27 @@ fn is_mounted(path: &std::path::Path) -> bool {
 
     // Different device IDs means it's a mountpoint
     path_meta.dev() != parent_meta.dev()
+}
+
+/// Wait until a mounted path is externally unmounted.
+///
+/// This keeps foreground mount mode compatible with test harnesses that
+/// unmount using `fusermount -u` and then wait for the foreground process.
+#[cfg(target_os = "linux")]
+async fn wait_for_external_unmount(mountpoint: PathBuf) {
+    let mut consecutive_not_mounted = 0u8;
+    loop {
+        if is_mounted(&mountpoint) {
+            consecutive_not_mounted = 0;
+        } else {
+            consecutive_not_mounted = consecutive_not_mounted.saturating_add(1);
+            // Require multiple consecutive misses to avoid transient mount-state races.
+            if consecutive_not_mounted >= 3 {
+                return;
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
 }
 
 /// List all currently mounted agentfs filesystems (Linux)
