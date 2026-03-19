@@ -82,6 +82,28 @@ fn error_to_ntstatus(e: &SdkError) -> i32 {
     }
 }
 
+/// Resolve file-size behavior for WinFsp `set_file_size`.
+///
+/// - `set_allocation_size = false`: request is logical EOF change (always apply).
+/// - `set_allocation_size = true`: request is allocation-size hint.
+///   Since AgentFS has no separate allocation-size primitive, we only apply
+///   truncation when allocation shrinks below current logical size.
+fn resolve_truncate_size(
+    current_size: u64,
+    requested_size: u64,
+    set_allocation_size: bool,
+) -> Option<u64> {
+    if !set_allocation_size {
+        return Some(requested_size);
+    }
+
+    if requested_size < current_size {
+        Some(requested_size)
+    } else {
+        None
+    }
+}
+
 /// Convert an anyhow error to a WinFsp error code.
 fn anyhow_to_ntstatus(e: &anyhow::Error) -> i32 {
     // First try to downcast to SdkError
@@ -1280,9 +1302,28 @@ impl FileSystemContext for AgentFSWinFsp {
                 None => return Ok(()), // Should not happen, but handle gracefully
             };
 
-            // AgentFS has no separate allocation-size primitive, so we keep
-            // Windows behavior simple and treat both size requests as truncate/extend.
-            let result = self.block_on(async move { file.truncate(new_size).await });
+            let fs = self.fs.clone();
+            let current_stats = match self.block_on(async move { fs.lock().getattr(ino).await }) {
+                Ok(Some(stats)) => stats,
+                Ok(None) => return Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+                Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+            };
+            let current_size = current_stats.size.max(0) as u64;
+
+            let Some(target_size) =
+                resolve_truncate_size(current_size, new_size, set_allocation_size)
+            else {
+                // Allocation-size extension should not change logical file length.
+                fill_file_info(&current_stats, file_info);
+                return Ok(());
+            };
+
+            if target_size == current_size {
+                fill_file_info(&current_stats, file_info);
+                return Ok(());
+            }
+
+            let result = self.block_on(async move { file.truncate(target_size).await });
 
             match result {
                 Ok(()) => {
@@ -1600,4 +1641,25 @@ pub fn mount(fs: Arc<Mutex<dyn FileSystem + Send>>, opts: MountOpts) -> Result<(
 /// Unmount a WinFsp filesystem.
 pub fn unmount(_mountpoint: &std::path::Path, _lazy: bool) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_truncate_size;
+
+    #[test]
+    fn allocation_growth_does_not_change_logical_size() {
+        assert_eq!(resolve_truncate_size(2, 512, true), None);
+    }
+
+    #[test]
+    fn allocation_shrink_truncates_when_below_logical_size() {
+        assert_eq!(resolve_truncate_size(512, 2, true), Some(2));
+    }
+
+    #[test]
+    fn eof_size_request_always_applies() {
+        assert_eq!(resolve_truncate_size(2, 512, false), Some(512));
+        assert_eq!(resolve_truncate_size(512, 2, false), Some(2));
+    }
 }
