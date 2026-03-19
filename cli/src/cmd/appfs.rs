@@ -1479,7 +1479,7 @@ fn try_decode_utf16_line(slice: &[u8], allow_bom: bool) -> Option<String> {
         return Some(String::new());
     }
 
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return None;
     }
 
@@ -1522,7 +1522,7 @@ fn try_decode_utf16_line(slice: &[u8], allow_bom: bool) -> Option<String> {
     }
 
     let mut out = String::with_capacity(units.len());
-    for ch in std::char::decode_utf16(units.into_iter()) {
+    for ch in std::char::decode_utf16(units) {
         let ch = ch.ok()?;
         out.push(ch);
     }
