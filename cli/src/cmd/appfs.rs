@@ -1176,13 +1176,15 @@ impl AppfsAdapter {
     fn find_action_spec(&self, rel_path: &str) -> Option<&ActionSpec> {
         self.action_specs
             .iter()
-            .find(|spec| action_template_matches(&spec.template, rel_path))
+            .filter(|spec| action_template_matches(&spec.template, rel_path))
+            .max_by_key(|spec| template_specificity(&spec.template))
     }
 
     fn find_snapshot_spec(&self, rel_path: &str) -> Option<&SnapshotSpec> {
         self.snapshot_specs
             .iter()
-            .find(|spec| action_template_matches(&spec.template, rel_path))
+            .filter(|spec| action_template_matches(&spec.template, rel_path))
+            .max_by_key(|spec| template_specificity(&spec.template))
     }
 
     fn load_manifest_contract(manifest_path: &Path) -> Result<ManifestContract> {
@@ -1907,6 +1909,28 @@ fn action_template_matches(template: &str, rel_path: &str) -> bool {
         })
 }
 
+/// Specificity score for template matching.
+///
+/// Higher is more specific: prefer templates with more literal segments/bytes
+/// over placeholder-heavy templates (for example, prefer
+/// `chats/chat-oversize/messages.res.jsonl` over `chats/{chat_id}/messages.res.jsonl`).
+fn template_specificity(template: &str) -> (usize, usize, usize) {
+    let mut literal_segments = 0usize;
+    let mut literal_bytes = 0usize;
+    let mut total_segments = 0usize;
+    for segment in template.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        total_segments += 1;
+        if !is_template_placeholder(segment) {
+            literal_segments += 1;
+            literal_bytes += segment.len();
+        }
+    }
+    (literal_segments, literal_bytes, total_segments)
+}
+
 fn is_template_placeholder(segment: &str) -> bool {
     segment.len() >= 3 && segment.starts_with('{') && segment.ends_with('}')
 }
@@ -2097,11 +2121,12 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
-        extract_client_token, has_odd_unescaped_quotes, is_handle_format_valid,
-        is_safe_resource_rel_path, normalize_resource_rel_path, normalize_runtime_handle_id,
-        parse_paging_request, parse_snapshot_refresh_request, recover_multiline_json_payload,
-        validate_payload, ActionSpec, ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
+        action_template_matches, boundary_probe_from_bytes, decode_jsonl_line,
+        deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
+        is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
+        normalize_runtime_handle_id, parse_paging_request, parse_snapshot_refresh_request,
+        recover_multiline_json_payload, template_specificity, validate_payload, ActionSpec,
+        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -2306,6 +2331,22 @@ mod tests {
         assert!(!is_safe_resource_rel_path(
             "chats/chat-001/messages.res.json"
         ));
+    }
+
+    #[test]
+    fn template_specificity_prefers_concrete_snapshot_template() {
+        let rel = "chats/chat-oversize/messages.res.jsonl";
+        let generic = "chats/{chat_id}/messages.res.jsonl";
+        let concrete = "chats/chat-oversize/messages.res.jsonl";
+        assert!(action_template_matches(generic, rel));
+        assert!(action_template_matches(concrete, rel));
+
+        let selected = [generic, concrete]
+            .into_iter()
+            .filter(|template| action_template_matches(template, rel))
+            .max_by_key(|template| template_specificity(template))
+            .expect("expected at least one template match");
+        assert_eq!(selected, concrete);
     }
 
     #[test]
