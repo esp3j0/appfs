@@ -66,9 +66,16 @@ Adapter MUST provide data required to produce `_meta/manifest.res.json`:
 
 ### AR-002 Resource Read
 
-1. Adapter MUST resolve `*.res.json` nodes to UTF-8 JSON output.
-2. Missing resource MUST map to `ENOENT`.
-3. Unauthorized resource MUST map to `EACCES`.
+1. Adapter MUST resolve `*.res.json` nodes to UTF-8 JSON output (live/page envelopes).
+2. Adapter MUST resolve `*.res.jsonl` nodes to UTF-8 JSONL output (snapshot full-file items).
+3. Missing resource MUST map to `ENOENT`.
+4. Unauthorized resource MUST map to `EACCES`.
+
+### AR-002A Snapshot Materialization Limits
+
+1. `output_mode=jsonl` resources MUST declare `snapshot.max_materialized_bytes` in manifest.
+2. Snapshot resources MUST NOT declare paging metadata.
+3. Refresh/materialization checks for over-limit snapshot resources MUST emit deterministic terminal failure with `error.code = "SNAPSHOT_TOO_LARGE"`.
 
 ### AR-003 Action Submit (`*.act`)
 
@@ -162,7 +169,7 @@ Adapter SHOULD expose or feed data for `/app/<app_id>/_meta/observer.res.json`:
 
 ### AR-014 Paging Handle Error Contract
 
-`/_paging/fetch_next.act` and `/_paging/close.act` MUST follow deterministic error mapping:
+For live pageable resources only, `/_paging/fetch_next.act` and `/_paging/close.act` MUST follow deterministic error mapping:
 
 1. Malformed `handle_id` format MUST fail at submit-time with `EINVAL` and MUST NOT emit `action.accepted`.
 2. Unknown handle MUST emit `action.failed` with `error.code = "PAGER_HANDLE_NOT_FOUND"`.

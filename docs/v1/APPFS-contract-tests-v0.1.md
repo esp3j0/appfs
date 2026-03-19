@@ -84,7 +84,11 @@ sh ./tests/appfs/run-live-with-adapter.sh
 | `APPFS_ROOT` | `/app` | Mounted AppFS root |
 | `APPFS_APP_ID` | `aiim` | App id under `/app` |
 | `APPFS_TEST_ACTION` | `/app/aiim/contacts/zhangsan/send_message.act` | Action sink used by action tests |
-| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.json` | Pageable resource used by paging tests |
+| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations.res.json` | Live pageable resource used by paging tests |
+| `APPFS_EXPIRED_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations-expired.res.json` | Expired live pageable resource used by paging error mapping tests |
+| `APPFS_LONG_HANDLE_RESOURCE` | `/app/aiim/feed/recommendations-long.res.json` | Live pageable resource with overlong handle id used by portability tests |
+| `APPFS_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.jsonl` | Snapshot full-file resource used by grep/rg compatibility tests |
+| `APPFS_OVERSIZE_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-oversize/messages.res.jsonl` | Snapshot resource used by too-large error mapping tests |
 | `APPFS_TIMEOUT_SEC` | `10` | Wait timeout for async assertions |
 | `APPFS_STATIC_FIXTURE` | `0` | Set `1` to run only static checks against fixture trees |
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` | Set `1` in bridge-mode runs to execute `CT-017` (retry/circuit/recovery) |
@@ -94,7 +98,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. Contract Suite
 
-Note: `cli/tests/appfs/` includes direct scripts for baseline and extended checks (`CT-001`..`CT-015` plus `CT-018` burst append queueing and `CT-020` multiline JSON recovery), while `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`), optional bridge resilience probe (`CT-017`), and restart cursor recovery (`CT-019`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` submit-time malformed/invalid JSONL reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance, `CT-018` burst append queueing, `CT-019` restart cursor recovery, `CT-020` shell-expanded multiline JSON recovery).
+Note: `cli/tests/appfs/` includes direct scripts for baseline and extended checks (`CT-001`..`CT-015` plus `CT-018` burst append queueing, `CT-020` multiline JSON recovery, `CT-021` snapshot full-file semantics, and `CT-022` snapshot too-large mapping), while `run-live-with-adapter.sh` additionally executes lifecycle probes (`CT-016`), optional bridge resilience probe (`CT-017`), and restart cursor recovery (`CT-019`). Sections below highlight baseline CT-001~CT-005 and the same runner also executes extended live checks (`CT-006` streaming lifecycle, `CT-007` submit-time malformed/invalid JSONL reject behavior, `CT-008` submit ordering, `CT-009` paging error mapping, `CT-010`/`CT-011` submit atomicity/interruption, `CT-012` path safety, `CT-013` duplicate consumption, `CT-014` concurrent submit stress, `CT-015` long-handle normalization, `CT-016` restart reconciliation, `CT-017` bridge retry/circuit/recovery fault tolerance, `CT-018` burst append queueing, `CT-019` restart cursor recovery, `CT-020` shell-expanded multiline JSON recovery, `CT-021` snapshot full-file semantics, and `CT-022` snapshot too-large mapping).
 
 ### CT-001 Layout and Required Nodes
 
@@ -105,8 +109,9 @@ Spec refs:
 
 Assertions:
 
-1. Required files exist (`manifest`, `context`, `permissions`, `events`, `cursor`, `from-seq`, `_paging/fetch_next.act`, `_paging/close.act`).
-2. `manifest` has `app_id` and `nodes`.
+1. Required files exist (`manifest`, `context`, `permissions`, `events`, `cursor`, `from-seq`).
+2. If manifest declares live pageable resources, `_paging/fetch_next.act` and `_paging/close.act` are required.
+3. `manifest` has `app_id` and `nodes`.
 
 Script:
 
@@ -183,7 +188,8 @@ Assertions:
 
 1. Node names do not contain forbidden path patterns (`..`, backslash, drive letters).
 2. Action nodes define expected fields (`input_mode`, `execution_mode`).
-3. Pageable resources define `paging` metadata.
+3. Snapshot resources (`output_mode=jsonl`) define `snapshot.max_materialized_bytes` and do not enable paging.
+4. Pageable resources define `paging` metadata with `paging.mode=live`.
 
 Script:
 
@@ -228,6 +234,43 @@ Script:
 
 ```text
 cli/tests/appfs/test-submit-multiline-recovery.sh
+```
+
+### CT-021 Snapshot Full-File Semantics
+
+Spec refs:
+
+1. `APPFS-v0.1` section 6 (resource suffix semantics).
+2. `APPFS-v0.1` section 11 (snapshot vs live split).
+
+Assertions:
+
+1. Snapshot resource is exposed as `*.res.jsonl` full file.
+2. Snapshot lines are JSON message items (no `{items,page}` envelope).
+3. Shell text tools (`rg`/`grep`) can query snapshot content directly.
+
+Script:
+
+```text
+cli/tests/appfs/test-snapshot-full-file.sh
+```
+
+### CT-022 Snapshot Too-Large Error Mapping
+
+Spec refs:
+
+1. `APPFS-v0.1` section 13 (snapshot limits).
+2. `APPFS-adapter-requirements-v0.1` (deterministic error mapping).
+
+Assertions:
+
+1. Submitting `/_snapshot/refresh.act` for an over-limit snapshot emits `action.failed`.
+2. `error.code` is `SNAPSHOT_TOO_LARGE`.
+
+Script:
+
+```text
+cli/tests/appfs/test-snapshot-too-large.sh
 ```
 
 ## 5. Gaps and Follow-up (v0.2 Candidate)

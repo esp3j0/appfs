@@ -31,13 +31,13 @@ What it runs:
 
 1. Mount AgentFS live filesystem.
 2. Start adapter runtime (or runtime + bridge endpoint).
-3. Execute `CT-001` to `CT-019` via `cli/tests/appfs/run-live-with-adapter.sh` (`CT-017` runs when bridge resilience probe is enabled).
+3. Execute `CT-001` to `CT-022` via `cli/tests/appfs/run-live-with-adapter.sh` (`CT-017` runs when bridge resilience probe is enabled).
 
 ## 3. Define Structure Before Writing Handlers
 
 Before coding bridge handlers, define:
 
-1. Node templates in `manifest.res.json` (`*.res.json`, `*.act`).
+1. Node templates in `manifest.res.json` (`*.res.json`, `*.res.jsonl`, `*.act`).
 2. Real sink/resource files under `/app/<app_id>/...`.
 3. A node-to-handler mapping table.
 
@@ -96,9 +96,10 @@ Before claiming compatibility, verify:
 1. `.act` append+JSONL submit semantics.
 2. Stream lifecycle and replay surfaces.
 3. Paging handle error mapping (`fetch_next`, `close`).
-4. `AppAdapterV1` contract compliance.
-5. CI/static/live conformance evidence.
-6. Declared node templates and bridge handlers are fully mapped 1:1.
+4. Snapshot full-file semantics (`*.res.jsonl`) and over-limit mapping (`SNAPSHOT_TOO_LARGE`).
+5. `AppAdapterV1` contract compliance.
+6. CI/static/live conformance evidence.
+7. Declared node templates and bridge handlers are fully mapped 1:1.
 
 Reference docs:
 

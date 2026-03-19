@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 #[cfg(unix)]
@@ -30,6 +30,7 @@ const ACTION_CURSORS_FILENAME: &str = "action-cursors.res.json";
 const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
 const MAX_RECOVERY_BYTES: usize = 65536;
+const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -37,6 +38,7 @@ const ERR_PAGER_HANDLE_CLOSED: &str = "PAGER_HANDLE_CLOSED";
 const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
+const ERR_SNAPSHOT_TOO_LARGE: &str = "SNAPSHOT_TOO_LARGE";
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
@@ -155,6 +157,19 @@ struct ActionSpec {
     max_payload_bytes: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+struct SnapshotSpec {
+    template: String,
+    max_materialized_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ManifestContract {
+    action_specs: Vec<ActionSpec>,
+    snapshot_specs: Vec<SnapshotSpec>,
+    requires_paging_controls: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ManifestDoc {
     #[serde(default)]
@@ -165,11 +180,31 @@ struct ManifestDoc {
 struct ManifestNodeDoc {
     kind: String,
     #[serde(default)]
+    output_mode: Option<String>,
+    #[serde(default)]
     input_mode: Option<String>,
     #[serde(default)]
     execution_mode: Option<String>,
     #[serde(default)]
     max_payload_bytes: Option<usize>,
+    #[serde(default)]
+    paging: Option<ManifestPagingDoc>,
+    #[serde(default)]
+    snapshot: Option<ManifestSnapshotDoc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestPagingDoc {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestSnapshotDoc {
+    #[serde(default)]
+    max_materialized_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +226,11 @@ struct PagingHandle {
 struct PagingRequest {
     handle_id: String,
     session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotRefreshRequest {
+    resource_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +266,7 @@ struct AppfsAdapter {
     session_id: String,
     app_dir: PathBuf,
     action_specs: Vec<ActionSpec>,
+    snapshot_specs: Vec<SnapshotSpec>,
     events_path: PathBuf,
     cursor_path: PathBuf,
     replay_dir: PathBuf,
@@ -273,7 +314,32 @@ impl AppfsAdapter {
 
         let cursor = Self::load_cursor(&cursor_path)?;
         let next_seq = cursor.max_seq + 1;
-        let action_specs = Self::load_action_specs(&manifest_path)?;
+        let manifest_contract = Self::load_manifest_contract(&manifest_path)?;
+        if manifest_contract.requires_paging_controls {
+            let has_fetch = manifest_contract
+                .action_specs
+                .iter()
+                .any(|spec| spec.template == "_paging/fetch_next.act");
+            let has_close = manifest_contract
+                .action_specs
+                .iter()
+                .any(|spec| spec.template == "_paging/close.act");
+            if !has_fetch || !has_close {
+                anyhow::bail!(
+                    "manifest declares live pageable resources but missing required paging actions: _paging/fetch_next.act and _paging/close.act"
+                );
+            }
+
+            let fetch_path = app_dir.join("_paging").join("fetch_next.act");
+            let close_path = app_dir.join("_paging").join("close.act");
+            if !fetch_path.exists() || !close_path.exists() {
+                anyhow::bail!(
+                    "live pageable resources require paging control files to exist: {} and {}",
+                    fetch_path.display(),
+                    close_path.display()
+                );
+            }
+        }
         let normalized_http_endpoint = bridge_config
             .adapter_http_endpoint
             .as_deref()
@@ -329,7 +395,8 @@ impl AppfsAdapter {
             app_id,
             session_id,
             app_dir,
-            action_specs,
+            action_specs: manifest_contract.action_specs,
+            snapshot_specs: manifest_contract.snapshot_specs,
             events_path,
             cursor_path,
             replay_dir,
@@ -609,6 +676,26 @@ impl AppfsAdapter {
                 Err(_) => {
                     eprintln!(
                         "AppFS adapter rejected malformed paging close handle at submit-time: {}",
+                        normalized_path
+                    );
+                    return Ok(ProcessOutcome::Consumed);
+                }
+            };
+        }
+
+        if normalized_path == "/_snapshot/refresh.act" {
+            match parse_snapshot_refresh_request(payload) {
+                Ok(request) => {
+                    return self.handle_snapshot_refresh(
+                        &normalized_path,
+                        &request_id,
+                        &request.resource_path,
+                        client_token,
+                    );
+                }
+                Err(_) => {
+                    eprintln!(
+                        "AppFS adapter rejected malformed snapshot refresh payload at submit-time: {}",
                         normalized_path
                     );
                     return Ok(ProcessOutcome::Consumed);
@@ -928,6 +1015,92 @@ impl AppfsAdapter {
         }
     }
 
+    fn handle_snapshot_refresh(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_path: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let Some(resource_rel) = normalize_resource_rel_path(resource_path) else {
+            self.emit_failed(
+                action_path,
+                request_id,
+                ERR_INVALID_ARGUMENT,
+                "resource_path must be a non-empty .res.jsonl path",
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        };
+        if !is_safe_resource_rel_path(&resource_rel) {
+            self.emit_failed(
+                action_path,
+                request_id,
+                ERR_INVALID_ARGUMENT,
+                "unsafe snapshot resource_path",
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        }
+
+        let Some(snapshot_spec) = self.find_snapshot_spec(&resource_rel) else {
+            self.emit_failed(
+                action_path,
+                request_id,
+                ERR_INVALID_ARGUMENT,
+                "snapshot resource is not declared in manifest",
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        };
+
+        let resource_abs = self.app_dir.join(&resource_rel);
+        let size_bytes = match fs::metadata(&resource_abs) {
+            Ok(meta) => meta.len() as usize,
+            Err(err) => {
+                self.emit_failed(
+                    action_path,
+                    request_id,
+                    ERR_INVALID_ARGUMENT,
+                    &format!("snapshot resource not readable: {err}"),
+                    client_token,
+                )?;
+                return Ok(ProcessOutcome::Consumed);
+            }
+        };
+
+        if size_bytes > snapshot_spec.max_materialized_bytes {
+            self.emit_failed(
+                action_path,
+                request_id,
+                ERR_SNAPSHOT_TOO_LARGE,
+                &format!(
+                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={}",
+                    snapshot_spec.max_materialized_bytes
+                ),
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        }
+
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.completed",
+            Some(json!({
+                "refreshed": true,
+                "resource_path": format!("/{}", resource_rel),
+                "bytes": size_bytes,
+                "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
+                "cached": true,
+                "generated_at": Utc::now().to_rfc3339(),
+            })),
+            None,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
+    }
+
     fn enqueue_streaming_job(
         &mut self,
         action_path: &str,
@@ -1006,59 +1179,153 @@ impl AppfsAdapter {
             .find(|spec| action_template_matches(&spec.template, rel_path))
     }
 
-    fn load_action_specs(manifest_path: &Path) -> Result<Vec<ActionSpec>> {
+    fn find_snapshot_spec(&self, rel_path: &str) -> Option<&SnapshotSpec> {
+        self.snapshot_specs
+            .iter()
+            .find(|spec| action_template_matches(&spec.template, rel_path))
+    }
+
+    fn load_manifest_contract(manifest_path: &Path) -> Result<ManifestContract> {
         let manifest_json = fs::read_to_string(manifest_path)
             .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
         let manifest: ManifestDoc = serde_json::from_str(&manifest_json)
             .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
 
-        let mut specs = Vec::new();
+        let mut action_specs = Vec::new();
+        let mut action_templates = HashSet::new();
+        let mut snapshot_specs = Vec::new();
+        let mut requires_paging_controls = false;
+
         for (template, node) in manifest.nodes {
-            if node.kind != "action" || !template.ends_with(".act") {
-                continue;
+            match node.kind.as_str() {
+                "action" => {
+                    if !template.ends_with(".act") {
+                        continue;
+                    }
+
+                    let input_mode = match node.input_mode.as_deref() {
+                        Some("json") => InputMode::Json,
+                        Some(other) => {
+                            anyhow::bail!(
+                                "AppFS adapter requires input_mode=json for all action sinks, template={template}, found input_mode={other}"
+                            );
+                        }
+                        None => {
+                            anyhow::bail!(
+                                "AppFS adapter requires explicit input_mode=json for action template={template}"
+                            );
+                        }
+                    };
+
+                    let execution_mode = match node.execution_mode.as_deref() {
+                        Some("streaming") => ExecutionMode::Streaming,
+                        Some("inline") | None => ExecutionMode::Inline,
+                        Some(other) => {
+                            eprintln!(
+                                "AppFS adapter unknown execution_mode='{other}' for action template={template}, defaulting to inline"
+                            );
+                            ExecutionMode::Inline
+                        }
+                    };
+
+                    let normalized = template.trim_start_matches('/').to_string();
+                    action_templates.insert(normalized.clone());
+                    action_specs.push(ActionSpec {
+                        template: normalized,
+                        input_mode,
+                        execution_mode,
+                        max_payload_bytes: node.max_payload_bytes,
+                    });
+                }
+                "resource" => {
+                    let output_mode = node.output_mode.as_deref().unwrap_or("json");
+                    let paging_enabled = node
+                        .paging
+                        .as_ref()
+                        .and_then(|paging| paging.enabled)
+                        .unwrap_or(false);
+                    let paging_mode = node
+                        .paging
+                        .as_ref()
+                        .and_then(|paging| paging.mode.as_deref())
+                        .unwrap_or("snapshot");
+
+                    match output_mode {
+                        "jsonl" => {
+                            if !template.ends_with(".res.jsonl") {
+                                anyhow::bail!(
+                                    "snapshot jsonl resource template must end with .res.jsonl: {template}"
+                                );
+                            }
+                            if paging_enabled
+                                || node
+                                    .paging
+                                    .as_ref()
+                                    .and_then(|paging| paging.mode.as_deref())
+                                    .is_some()
+                            {
+                                anyhow::bail!(
+                                    "snapshot jsonl resource must not declare paging metadata: {template}"
+                                );
+                            }
+                            let max_materialized_bytes = node
+                                .snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.max_materialized_bytes)
+                                .unwrap_or(DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES);
+                            if max_materialized_bytes == 0 {
+                                anyhow::bail!(
+                                    "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
+                                );
+                            }
+                            snapshot_specs.push(SnapshotSpec {
+                                template: template.trim_start_matches('/').to_string(),
+                                max_materialized_bytes,
+                            });
+                        }
+                        "json" => {
+                            if paging_enabled {
+                                if paging_mode != "live" {
+                                    anyhow::bail!(
+                                        "pageable resource must declare paging.mode=live in v0.1 for template={template}"
+                                    );
+                                }
+                                requires_paging_controls = true;
+                            }
+                        }
+                        other => {
+                            anyhow::bail!(
+                                "unsupported output_mode='{other}' for resource template={template}; expected json or jsonl"
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
-
-            let input_mode = match node.input_mode.as_deref() {
-                Some("json") => InputMode::Json,
-                Some(other) => {
-                    anyhow::bail!(
-                        "AppFS adapter requires input_mode=json for all action sinks, template={template}, found input_mode={other}"
-                    );
-                }
-                None => {
-                    anyhow::bail!(
-                        "AppFS adapter requires explicit input_mode=json for action template={template}"
-                    );
-                }
-            };
-
-            let execution_mode = match node.execution_mode.as_deref() {
-                Some("streaming") => ExecutionMode::Streaming,
-                Some("inline") | None => ExecutionMode::Inline,
-                Some(other) => {
-                    eprintln!(
-                        "AppFS adapter unknown execution_mode='{other}' for action template={template}, defaulting to inline"
-                    );
-                    ExecutionMode::Inline
-                }
-            };
-
-            specs.push(ActionSpec {
-                template: template.trim_start_matches('/').to_string(),
-                input_mode,
-                execution_mode,
-                max_payload_bytes: node.max_payload_bytes,
-            });
         }
 
-        if specs.is_empty() {
+        if requires_paging_controls {
+            for required in ["_paging/fetch_next.act", "_paging/close.act"] {
+                if !action_templates.contains(required) {
+                    anyhow::bail!(
+                        "manifest declares live pageable resources but missing required action template={required}"
+                    );
+                }
+            }
+        }
+
+        if action_specs.is_empty() {
             eprintln!(
                 "AppFS adapter warning: no action definitions found in {}",
                 manifest_path.display()
             );
         }
 
-        Ok(specs)
+        Ok(ManifestContract {
+            action_specs,
+            snapshot_specs,
+            requires_paging_controls,
+        })
     }
 
     fn emit_failed(
@@ -1650,6 +1917,18 @@ fn is_safe_action_rel_path(rel_path: &str) -> bool {
         return false;
     }
 
+    path.ends_with(".act") && path.split('/').all(is_safe_segment)
+}
+
+fn is_safe_resource_rel_path(rel_path: &str) -> bool {
+    let path = rel_path.trim_matches('/');
+    if path.is_empty() {
+        return false;
+    }
+    if !path.ends_with(".res.jsonl") {
+        return false;
+    }
+
     path.split('/').all(is_safe_segment)
 }
 
@@ -1733,6 +2012,27 @@ fn parse_paging_request(payload: &str) -> std::result::Result<PagingRequest, &'s
     })
 }
 
+fn parse_snapshot_refresh_request(
+    payload: &str,
+) -> std::result::Result<SnapshotRefreshRequest, &'static str> {
+    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
+    let resource_path = json
+        .get("resource_path")
+        .and_then(|v| v.as_str())
+        .ok_or(ERR_INVALID_ARGUMENT)?;
+    Ok(SnapshotRefreshRequest {
+        resource_path: resource_path.trim().to_string(),
+    })
+}
+
+fn normalize_resource_rel_path(path: &str) -> Option<String> {
+    let normalized = path.trim().trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized)
+}
+
 fn parse_rfc3339_timestamp(value: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
@@ -1799,7 +2099,8 @@ mod tests {
     use super::{
         boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
         extract_client_token, has_odd_unescaped_quotes, is_handle_format_valid,
-        normalize_runtime_handle_id, parse_paging_request, recover_multiline_json_payload,
+        is_safe_resource_rel_path, normalize_resource_rel_path, normalize_runtime_handle_id,
+        parse_paging_request, parse_snapshot_refresh_request, recover_multiline_json_payload,
         validate_payload, ActionSpec, ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
@@ -1981,6 +2282,30 @@ mod tests {
     #[test]
     fn parse_handle_rejects_non_json_payload() {
         assert!(parse_paging_request("ph_7f2c\n").is_err());
+    }
+
+    #[test]
+    fn parse_snapshot_refresh_requires_resource_path() {
+        assert!(parse_snapshot_refresh_request(
+            r#"{"resource_path":"/chats/chat-001/messages.res.jsonl"}"#
+        )
+        .is_ok());
+        assert!(parse_snapshot_refresh_request(r#"{"path":"bad"}"#).is_err());
+    }
+
+    #[test]
+    fn resource_path_normalization_and_safety() {
+        assert_eq!(
+            normalize_resource_rel_path("/chats/chat-001/messages.res.jsonl").as_deref(),
+            Some("chats/chat-001/messages.res.jsonl")
+        );
+        assert!(is_safe_resource_rel_path(
+            "chats/chat-001/messages.res.jsonl"
+        ));
+        assert!(!is_safe_resource_rel_path("../etc/passwd"));
+        assert!(!is_safe_resource_rel_path(
+            "chats/chat-001/messages.res.json"
+        ));
     }
 
     #[test]

@@ -31,7 +31,7 @@ class JsonPlaceholderBackend:
                     "handle_id": handle_id,
                     "page_no": page_no,
                     "has_more": has_more,
-                    "mode": "snapshot",
+                    "mode": "live",
                 },
             },
         }

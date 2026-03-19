@@ -25,15 +25,55 @@
     "replay_path_template": "_stream/from-seq/{seq}.evt.jsonl"
   },
   "nodes": {
-    "chats/{chat_id}/messages.res.json": {
+    "chats/{chat_id}/messages.res.jsonl": {
+      "kind": "resource",
+      "output_mode": "jsonl",
+      "output_schema": "_meta/schemas/chat.message.item.output.schema.json",
+      "snapshot": {
+        "max_materialized_bytes": 10485760
+      }
+    },
+    "chats/chat-oversize/messages.res.jsonl": {
+      "kind": "resource",
+      "output_mode": "jsonl",
+      "output_schema": "_meta/schemas/chat.message.item.output.schema.json",
+      "snapshot": {
+        "max_materialized_bytes": 128
+      }
+    },
+    "feed/recommendations.res.json": {
       "kind": "resource",
       "output_mode": "json",
       "output_schema": "_meta/schemas/chat.messages.page.output.schema.json",
       "paging": {
         "enabled": true,
-        "mode": "snapshot",
-        "default_page_size": 30,
-        "max_page_size": 100,
+        "mode": "live",
+        "default_page_size": 20,
+        "max_page_size": 50,
+        "handle_ttl_sec": 900
+      }
+    },
+    "feed/recommendations-expired.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/chat.messages.page.output.schema.json",
+      "paging": {
+        "enabled": true,
+        "mode": "live",
+        "default_page_size": 20,
+        "max_page_size": 50,
+        "handle_ttl_sec": 900
+      }
+    },
+    "feed/recommendations-long.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/chat.messages.page.output.schema.json",
+      "paging": {
+        "enabled": true,
+        "mode": "live",
+        "default_page_size": 20,
+        "max_page_size": 50,
         "handle_ttl_sec": 900
       }
     },
@@ -77,6 +117,19 @@
         "action.failed"
       ],
       "example": "echo '{\"target\":\"C:/tmp/file-001.bin\"}' >> /app/aiim/files/file-001/download.act"
+    },
+    "_snapshot/refresh.act": {
+      "kind": "action",
+      "input_mode": "json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 1000,
+      "input_schema": "_meta/schemas/snapshot.refresh.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 2048,
+      "event_types": [
+        "action.completed",
+        "action.failed"
+      ]
     },
     "_paging/fetch_next.act": {
       "kind": "action",

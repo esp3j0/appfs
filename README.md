@@ -34,8 +34,9 @@ printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 # 3) read resources directly
 cat /app/aiim/contacts/zhangsan/profile.res.json
 
-# 4) page long content via unified paging actions
-cat /app/aiim/chats/chat-001/messages.res.json
+# 4) snapshot resources are full files (.res.jsonl), live resources keep paging
+cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
+cat /app/aiim/feed/recommendations.res.json
 printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
@@ -56,6 +57,10 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
    - `execution_mode`: `inline`
    - `input_mode`: `json`
 4. `/_paging/close.act`
+   - `kind`: `action`
+   - `execution_mode`: `inline`
+   - `input_mode`: `json`
+5. `/_snapshot/refresh.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
    - `input_mode`: `json`
@@ -101,9 +106,16 @@ Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 # trigger action (append JSONL, one JSON per line)
 Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
 
-# paging actions are JSON-only as well
-Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_001"}'
-Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_001"}'
+# snapshot resource is directly searchable
+Get-Content C:\mnt\win-real\aiim\chats\chat-001\messages.res.jsonl | Select-String "hello"
+
+# live resource keeps paging
+Get-Content C:\mnt\win-real\aiim\feed\recommendations.res.json -Raw
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_live_7f2c"}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_live_7f2c"}'
+
+# explicit snapshot refresh (cache/materialization checkpoint)
+Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"resource_path":"/chats/chat-001/messages.res.jsonl"}'
 
 # read resource
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
@@ -148,9 +160,16 @@ tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 # trigger action (append JSONL)
 printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
-# paging actions are JSON-only as well
-printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+# snapshot resource is directly searchable
+cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
+
+# live resource keeps paging
+cat /tmp/appfs-real/aiim/feed/recommendations.res.json
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+
+# explicit snapshot refresh (cache/materialization checkpoint)
+printf '{"resource_path":"/chats/chat-001/messages.res.jsonl"}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # read resource
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -172,7 +191,7 @@ Notes:
 The architecture has four layers:
 
 1. Agent shell operations (`cat`, `echo`, `tail`).
-2. AppFS namespace and contract files (`_meta`, `_stream`, `_paging`, domain paths).
+2. AppFS namespace and contract files (`_meta`, `_stream`, `_paging`, `_snapshot`, domain paths).
 3. AppFS runtime in `agentfs serve appfs` (routing, validation, stream persistence, replay).
 4. Business adapter implementations (in-process or HTTP/gRPC bridge) that call real app backends.
 
@@ -234,7 +253,7 @@ Key compatibility commitments:
 7. `examples/appfs/`: reference fixtures and bridge examples.
 8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
 9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-020`).
+10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-022`).
 
 ## Current Status
 

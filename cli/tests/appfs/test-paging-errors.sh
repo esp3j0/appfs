@@ -11,7 +11,7 @@ events="$APPFS_APP_DIR/_stream/events.evt.jsonl"
 resource="$APPFS_PAGEABLE_RESOURCE"
 fetch_next="$APPFS_APP_DIR/_paging/fetch_next.act"
 close_act="$APPFS_APP_DIR/_paging/close.act"
-expired_resource="${APPFS_EXPIRED_PAGEABLE_RESOURCE:-$APPFS_APP_DIR/chats/chat-expired/messages.res.json}"
+expired_resource="${APPFS_EXPIRED_PAGEABLE_RESOURCE:-$APPFS_APP_DIR/feed/recommendations-expired.res.json}"
 
 assert_file "$events"
 assert_file "$fetch_next"

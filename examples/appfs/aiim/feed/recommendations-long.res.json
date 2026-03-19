@@ -1,16 +1,16 @@
 {
   "items": [
     {
-      "id": "m-long-1",
-      "text": "long handle page",
-      "ts": "2026-03-16T09:21:00Z"
+      "id": "rec-long-1",
+      "text": "Long handle portability fixture",
+      "ts": "2026-03-16T10:06:00Z"
     }
   ],
   "page": {
     "handle_id": "ph_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "page_no": 0,
     "has_more": true,
-    "mode": "snapshot",
+    "mode": "live",
     "expires_at": "2099-01-01T00:00:00Z"
   }
 }

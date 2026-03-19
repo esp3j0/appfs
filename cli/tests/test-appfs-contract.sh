@@ -21,9 +21,11 @@ else
     tests="
     $DIR/appfs/test-layout.sh
     $DIR/appfs/test-action-basics.sh
+    $DIR/appfs/test-snapshot-full-file.sh
     $DIR/appfs/test-stream-replay.sh
     $DIR/appfs/test-paging.sh
     $DIR/appfs/test-paging-errors.sh
+    $DIR/appfs/test-snapshot-too-large.sh
     $DIR/appfs/test-manifest-policy.sh
     $DIR/appfs/test-streaming-lifecycle.sh
     $DIR/appfs/test-submit-reject.sh

@@ -7,11 +7,12 @@ This directory contains AppFS v0.1 reference fixtures and adapter examples align
 1. `.well-known/apps.res.json` for app discovery.
 2. `aiim/_meta/*` for manifest/context/permissions/schema metadata.
 3. `aiim/_stream/*` sample event stream + replay snapshots.
-4. `aiim/_paging/*` action sinks for paging protocol.
-5. Resource/action sample paths under `contacts/`, `files/`, `chats/`.
-6. `http-bridge/python/` and `grpc-bridge/python/` out-of-process adapter bridge examples (HTTP mini backend uses `uv`).
-7. `adapter-template/rust-minimal/` minimal Rust adapter template using frozen `AppAdapterV1`.
-8. `new-adapter.sh` one-command scaffold for new Python HTTP bridge adapters.
+4. `aiim/_paging/*` action sinks for live resource paging protocol.
+5. `aiim/_snapshot/refresh.act` for explicit snapshot materialization checks.
+6. Resource/action sample paths under `contacts/`, `files/`, `chats/`, `feed/`.
+7. `http-bridge/python/` and `grpc-bridge/python/` out-of-process adapter bridge examples (HTTP mini backend uses `uv`).
+8. `adapter-template/rust-minimal/` minimal Rust adapter template using frozen `AppAdapterV1`.
+9. `new-adapter.sh` one-command scaffold for new Python HTTP bridge adapters.
 
 ## Contract Checks
 

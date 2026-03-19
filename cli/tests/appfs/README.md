@@ -55,9 +55,11 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 | `APPFS_APP_ID` | `aiim` |
 | `APPFS_TEST_ACTION` | `/app/aiim/contacts/zhangsan/send_message.act` |
 | `APPFS_STREAMING_ACTION` | `/app/aiim/files/file-001/download.act` |
-| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.json` |
-| `APPFS_EXPIRED_PAGEABLE_RESOURCE` | `/app/aiim/chats/chat-expired/messages.res.json` |
-| `APPFS_LONG_HANDLE_RESOURCE` | `/app/aiim/chats/chat-long/messages.res.json` |
+| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations.res.json` |
+| `APPFS_EXPIRED_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations-expired.res.json` |
+| `APPFS_LONG_HANDLE_RESOURCE` | `/app/aiim/feed/recommendations-long.res.json` |
+| `APPFS_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.jsonl` |
+| `APPFS_OVERSIZE_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-oversize/messages.res.jsonl` |
 | `APPFS_TIMEOUT_SEC` | `10` |
 | `APPFS_STATIC_FIXTURE` | `0` |
 
@@ -97,6 +99,8 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 3. `APPFS_PAGEABLE_RESOURCE`
 4. `APPFS_EXPIRED_PAGEABLE_RESOURCE`
 5. `APPFS_LONG_HANDLE_RESOURCE`
+6. `APPFS_SNAPSHOT_RESOURCE`
+7. `APPFS_OVERSIZE_SNAPSHOT_RESOURCE`
 
 to avoid inheriting stale shell environment overrides.
 
@@ -106,7 +110,7 @@ to avoid inheriting stale shell environment overrides.
 2. Some checks require `jq`; if missing, JSON field-level assertions are skipped.
 3. `APPFS_STATIC_FIXTURE=1` runs only static contract checks (layout/replay/manifest policy).
 4. `run-live-with-adapter.sh` is Linux/FUSE oriented and expects `fusermount` + `mountpoint`.
-5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), long-handle normalization compatibility (`CT-015`), burst append JSONL queueing (`CT-018`), and shell-expanded multiline JSON recovery (`CT-020`).
+5. Live suite validates paging error mapping (`CT-009`), streaming lifecycle (`CT-006`), malformed submit rejection (`CT-007`), ordered multi-submit behavior (`CT-008`), in-progress write atomicity (`CT-010`), interrupted-write no-commit behavior (`CT-011`), unsafe-path no-side-effect guard (`CT-012`), duplicate-consumption semantics (`CT-013`), concurrent same-action stress (`CT-014`), long-handle normalization compatibility (`CT-015`), burst append JSONL queueing (`CT-018`), shell-expanded multiline JSON recovery (`CT-020`), snapshot full-file semantics (`CT-021`), and snapshot too-large mapping (`CT-022`).
 6. `run-live-with-adapter.sh` additionally runs lifecycle restart probes, including accepted-but-not-terminal reconciliation for streaming requests (`CT-016`) and restart cursor recovery (`CT-019`).
 7. When `APPFS_BRIDGE_RESILIENCE_CONTRACT=1` and bridge mode is enabled, `run-live-with-adapter.sh` also runs `CT-017` (retry + circuit-breaker + cooldown recovery probe) and checks adapter logs for retry/short-circuit observations.
 8. `CT-017` uses multiple action sinks under `contacts/${APPFS_BRIDGE_RESILIENCE_CONTACT_PREFIX}{1..4}` to avoid submit cooldown interference.

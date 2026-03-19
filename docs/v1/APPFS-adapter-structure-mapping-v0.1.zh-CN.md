@@ -47,9 +47,10 @@ AppFS 是能力模型，不是 UI 截图模型。
 
 在 `nodes` 里声明模板路径：
 
-1. 资源：`*.res.json`
-2. 动作：`*.act`
-3. 动态实体用占位符（如 `{user_id}`、`{chat_id}`）
+1. live 资源：`*.res.json`
+2. snapshot 全量文件资源：`*.res.jsonl`
+3. 动作：`*.act`
+4. 动态实体用占位符（如 `{user_id}`、`{chat_id}`）
 
 示例：
 
@@ -57,6 +58,11 @@ AppFS 是能力模型，不是 UI 截图模型。
 {
   "nodes": {
     "home/feed.res.json": { "kind": "resource", "output_mode": "json" },
+    "chats/{chat_id}/messages.res.jsonl": {
+      "kind": "resource",
+      "output_mode": "jsonl",
+      "snapshot": { "max_materialized_bytes": 10485760 }
+    },
     "settings/profile/save.act": {
       "kind": "action",
       "input_mode": "json",
@@ -87,8 +93,9 @@ AppFS 是能力模型，不是 UI 截图模型。
 生成脚手架后，建议维护 1:1 映射表：
 
 1. 一个 action 模板 -> 一个桥接处理分支
-2. 一个控制动作 kind（`paging_fetch_next` / `paging_close`）-> 一个控制处理函数
-3. 一个 resource 模板 -> 一个资源生产逻辑
+2. 一个控制动作 kind（`paging_fetch_next` / `paging_close`）-> 一个控制处理函数（仅 live 分页）
+3. 一个 snapshot 刷新动作（`_snapshot/refresh.act`）-> 一个 snapshot 物化处理函数
+4. 一个 resource 模板 -> 一个资源生产逻辑
 
 推荐表格：
 
@@ -96,6 +103,7 @@ AppFS 是能力模型，不是 UI 截图模型。
 |---|---|---|---|---|
 | `contacts/{contact_id}/send_message.act` | action | inline | `/v1/submit-action` | `handle_send_message` |
 | `files/{file_id}/download.act` | action | streaming | `/v1/submit-action` | `handle_download` |
+| `_snapshot/refresh.act` | action | inline | `/v1/submit-action` | `handle_snapshot_refresh` |
 | `_paging/fetch_next.act` | control | inline | `/v1/submit-control-action` | `handle_paging_fetch_next` |
 | `_paging/close.act` | control | inline | `/v1/submit-control-action` | `handle_paging_close` |
 
@@ -122,14 +130,15 @@ AppFS 是能力模型，不是 UI 截图模型。
 5. 在 bridge backend 实现 handler。
 6. 跑测试：
    - 协议层/后端单测
-   - `CT-001 ~ CT-019` live 一致性（开启 bridge 韧性探针时执行 `CT-017`）
+   - `CT-001 ~ CT-022` live 一致性（开启 bridge 韧性探针时执行 `CT-017`）
 
 ## 7. 常见失败模式
 
 1. 模板与实际路径不匹配 -> 动作被忽略。
 2. `input_mode=json` 但按文本处理 -> 提交时拒绝或后端报错。
 3. `execution_mode` 实现不一致（例如应 inline 却做成 streaming）-> 合约失败。
-4. 声明可分页资源却缺 `_paging/*` 动作 -> 一致性失败。
+4. 声明 live 可分页资源却缺 `_paging/*` 动作 -> 一致性失败。
+5. 声明 `output_mode=jsonl` 却未给 `snapshot.max_materialized_bytes` -> manifest 策略失败。
 
 ## 8. 这类问题该改文档还是改代码
 

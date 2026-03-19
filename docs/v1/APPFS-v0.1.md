@@ -68,6 +68,7 @@ Optional scope convention (recommended):
   _meta/
   _stream/
   _paging/
+  _snapshot/
   <domain>/...
 ```
 
@@ -81,8 +82,9 @@ Required files:
 /app/<app_id>/_stream/events.evt.jsonl
 /app/<app_id>/_stream/cursor.res.json
 /app/<app_id>/_stream/from-seq/<seq>.evt.jsonl
-/app/<app_id>/_paging/fetch_next.act          # required when app has pageable resources
-/app/<app_id>/_paging/close.act               # required when app has pageable resources
+/app/<app_id>/_paging/fetch_next.act          # required when app has live pageable resources
+/app/<app_id>/_paging/close.act               # required when app has live pageable resources
+/app/<app_id>/_snapshot/refresh.act           # optional but recommended for snapshot refresh/materialization checks
 ```
 
 ## 5. Path and Naming Rules
@@ -119,15 +121,17 @@ Segment length and portability:
 
 Within the same domain tree:
 
-1. `*.res.json` => resource snapshot (read-oriented)
-2. `*.act` => action sink (write-oriented)
-3. `*.cfg.json` => config document (read/write)
-4. `*.evt.jsonl` => event stream
+1. `*.res.json` => live/pageable resource (read-oriented, page envelope)
+2. `*.res.jsonl` => snapshot full-file resource (read-oriented, one JSON item per line)
+3. `*.act` => action sink (write-oriented)
+4. `*.cfg.json` => config document (read/write)
+5. `*.evt.jsonl` => event stream
 
 Example:
 
 ```text
 /app/aiim/contacts/zhangsan/profile.res.json
+/app/aiim/chats/chat-001/messages.res.jsonl
 /app/aiim/contacts/zhangsan/send_message.act
 ```
 
@@ -284,29 +288,38 @@ Complex search MAY use action sink near resource:
 /app/<app_id>/contacts/search.act
 ```
 
-For long content resources (chat history, infinite feeds), AppFS uses a unified Page Handle protocol.
+For long content resources, AppFS splits semantics by resource type:
+
+1. `snapshot` resources are exposed as full files (`*.res.jsonl`) and MUST NOT require page handles.
+2. `live` resources use the Page Handle protocol (`*.res.json` + `/_paging/*`).
 
 ### 11.1 Default First Page via `cat`
 
-When a resource is declared pageable, `cat <resource>.res.json` MUST return page 0 using this envelope:
+Snapshot default (`*.res.jsonl`):
+
+1. `cat <resource>.res.jsonl` returns full file content.
+2. Each line MUST be one JSON object item.
+3. Snapshot resources MUST NOT include `{items,page}` envelopes.
+4. Snapshot resources MUST NOT expose or require `handle_id`.
+
+Live default (`*.res.json`):
+
+When a live resource is declared pageable, `cat <resource>.res.json` MUST return page 0 using this envelope:
 
 ```json
 {
   "items": [],
   "page": {
-    "handle_id": "ph_7f2c",
+    "handle_id": "ph_live_7f2c",
     "page_no": 0,
     "has_more": true,
-    "mode": "snapshot",
+    "mode": "live",
     "expires_at": "2026-03-16T12:30:00Z"
   }
 }
 ```
 
-`mode` meaning:
-
-1. `snapshot`: finite/consistent page sequence (typical chat history).
-2. `live`: unbounded feed (recommendations/infinite scroll).
+`mode` in page envelopes MUST be `live`.
 
 ### 11.2 Fetch Next Page
 
@@ -324,7 +337,7 @@ Payload format:
 Example:
 
 ```bash
-printf '{"handle_id":"ph_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 Result delivery:
@@ -344,7 +357,7 @@ Handle cleanup action:
 Payload:
 
 ```json
-{"handle_id":"ph_7f2c"}
+{"handle_id":"ph_live_7f2c"}
 ```
 
 If client does not close explicitly, runtime/app MAY expire handles by TTL.
@@ -431,10 +444,11 @@ Failure example:
 
 1. available nodes
 2. input/output/event schema refs
-3. payload mode (`text` or `json`) for each `.act`
+3. payload mode (`json`) for each `.act`
 4. limits for each action (`max_payload_bytes`, `rate_limit_hint`)
 5. execution mode for each action (`execution_mode`) and mode-specific hints (`inline_timeout_ms` or `progress_policy`)
-6. paging metadata for pageable resources (`paging.enabled`, page sizes, mode, handle TTL)
+6. paging metadata for live pageable resources (`paging.enabled`, page sizes, mode=`live`, handle TTL)
+7. snapshot limits for snapshot full-file resources (`snapshot.max_materialized_bytes`)
 
 Example:
 
@@ -454,19 +468,17 @@ Example:
     }
   },
   "nodes": {
-    "chats/{chat_id}/messages.res.json": {
+    "chats/{chat_id}/messages.res.jsonl": {
       "kind": "resource",
-      "output_schema": "_meta/schemas/chat.messages.page.schema.json",
-      "paging": {
-        "enabled": true,
-        "mode": "snapshot",
-        "default_page_size": 30,
-        "max_page_size": 100,
-        "handle_ttl_sec": 900
+      "output_mode": "jsonl",
+      "output_schema": "_meta/schemas/chat.message.item.output.schema.json",
+      "snapshot": {
+        "max_materialized_bytes": 10485760
       }
     },
     "feed/recommendations.res.json": {
       "kind": "resource",
+      "output_mode": "json",
       "output_schema": "_meta/schemas/feed.recommendations.page.schema.json",
       "paging": {
         "enabled": true,
@@ -514,6 +526,14 @@ Example:
       "execution_mode": "inline",
       "inline_timeout_ms": 500,
       "input_schema": "_meta/schemas/paging.close.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json"
+    },
+    "_snapshot/refresh.act": {
+      "kind": "action",
+      "input_mode": "json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 1000,
+      "input_schema": "_meta/schemas/snapshot.refresh.input.schema.json",
       "event_schema": "_meta/schemas/events.evt.schema.json"
     }
   }
@@ -604,7 +624,9 @@ Directory:
   _stream/cursor.res.json
   _paging/fetch_next.act
   _paging/close.act
-  chats/chat-001/messages.res.json
+  _snapshot/refresh.act
+  chats/chat-001/messages.res.jsonl
+  feed/recommendations.res.json
   contacts/zhangsan/profile.res.json
   contacts/zhangsan/send_message.act
   files/file-001/download.act
@@ -622,11 +644,15 @@ printf '{"text":"hi"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 # terminal 3
 printf '{"target":"C:/tmp/file-001.bin"}\n' >> /app/aiim/files/file-001/download.act
 
-# terminal 4: first page by cat
-cat /app/aiim/chats/chat-001/messages.res.json
+# terminal 4: snapshot is a full file
+cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hi"
 
-# terminal 5: next page by handle
-printf '{"handle_id":"ph_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
+# terminal 5: live resource paging
+cat /app/aiim/feed/recommendations.res.json
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /app/aiim/_paging/fetch_next.act
+
+# terminal 6: optional snapshot refresh/materialization checkpoint
+printf '{"resource_path":"/chats/chat-001/messages.res.jsonl"}\n' >> /app/aiim/_snapshot/refresh.act
 ```
 
 Expected events:
@@ -636,7 +662,7 @@ Expected events:
 {"seq":1202,"ts":"2026-03-15T10:00:01Z","app":"aiim","session_id":"sess-7f2c","request_id":"req-b7d120","path":"/files/file-001/download.act","type":"action.accepted","content":"download started"}
 {"seq":1203,"ts":"2026-03-15T10:00:02Z","app":"aiim","session_id":"sess-7f2c","request_id":"req-b7d120","path":"/files/file-001/download.act","type":"action.progress","content":{"percent":25}}
 {"seq":1204,"ts":"2026-03-15T10:00:06Z","app":"aiim","session_id":"sess-7f2c","request_id":"req-b7d120","path":"/files/file-001/download.act","type":"action.completed","content":{"saved_to":"C:/tmp/file-001.bin"}}
-{"seq":1205,"ts":"2026-03-16T09:20:00Z","app":"aiim","session_id":"sess-7f2c","request_id":"req-c115aa","path":"/_paging/fetch_next.act","type":"action.completed","content":{"items":[{"id":"m31","text":"..."}],"page":{"handle_id":"ph_7f2c","page_no":1,"has_more":true,"mode":"snapshot"}}}
+{"seq":1205,"ts":"2026-03-16T09:20:00Z","app":"aiim","session_id":"sess-7f2c","request_id":"req-c115aa","path":"/_paging/fetch_next.act","type":"action.completed","content":{"items":[{"id":"rec-3","text":"..."}],"page":{"handle_id":"ph_live_7f2c","page_no":1,"has_more":true,"mode":"live"}}}
 ```
 
 ## 19. Open Items for v0.2

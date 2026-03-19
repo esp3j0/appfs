@@ -90,7 +90,7 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
                         "handle_id": handle_id,
                         "page_no": page_no,
                         "has_more": has_more,
-                        "mode": "snapshot"
+                        "mode": "live"
                     }
                 }),
             }),
@@ -129,8 +129,8 @@ mod tests {
         let result = adapter
             .submit_action(
                 "/contacts/zhangsan/send_message.act",
-                "hello\n",
-                AdapterInputModeV1::Text,
+                r#"{"text":"hello"}"#,
+                AdapterInputModeV1::Json,
                 AdapterExecutionModeV1::Inline,
                 &ctx(),
             )

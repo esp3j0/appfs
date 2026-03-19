@@ -34,8 +34,9 @@ printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 # 3) 直接读取资源
 cat /app/aiim/contacts/zhangsan/profile.res.json
 
-# 4) 用统一分页动作读取长内容
-cat /app/aiim/chats/chat-001/messages.res.json
+# 4) snapshot 资源是完整文件（.res.jsonl），live 资源继续分页
+cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
+cat /app/aiim/feed/recommendations.res.json
 printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
@@ -56,6 +57,10 @@ printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
    - `execution_mode`: `inline`
    - `input_mode`: `json`
 4. `/_paging/close.act`
+   - `kind`: `action`
+   - `execution_mode`: `inline`
+   - `input_mode`: `json`
+5. `/_snapshot/refresh.act`
    - `kind`: `action`
    - `execution_mode`: `inline`
    - `input_mode`: `json`
@@ -101,9 +106,16 @@ Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 # 触发动作（append JSONL，一行一个 JSON）
 Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
 
-# 分页动作同样是 JSON-only
-Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_001"}'
-Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_001"}'
+# snapshot 资源可直接检索
+Get-Content C:\mnt\win-real\aiim\chats\chat-001\messages.res.jsonl | Select-String "hello"
+
+# live 资源继续分页
+Get-Content C:\mnt\win-real\aiim\feed\recommendations.res.json -Raw
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_live_7f2c"}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_live_7f2c"}'
+
+# 显式触发 snapshot 刷新（缓存/物化检查点）
+Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"resource_path":"/chats/chat-001/messages.res.jsonl"}'
 
 # 读取资源
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
@@ -148,9 +160,16 @@ tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 # 触发动作（append JSONL）
 printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
-# 分页动作同样是 JSON-only
-printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"handle_id":"ph_001"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+# snapshot 资源可直接检索
+cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
+
+# live 资源继续分页
+cat /tmp/appfs-real/aiim/feed/recommendations.res.json
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+
+# 显式触发 snapshot 刷新（缓存/物化检查点）
+printf '{"resource_path":"/chats/chat-001/messages.res.jsonl"}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # 读取资源
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -172,7 +191,7 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 架构共四层：
 
 1. Agent shell 操作层（`cat`、`echo`、`tail`）。
-2. AppFS 命名空间与契约文件层（`_meta`、`_stream`、`_paging`、业务路径）。
+2. AppFS 命名空间与契约文件层（`_meta`、`_stream`、`_paging`、`_snapshot`、业务路径）。
 3. `agentfs serve appfs` runtime 层（路由、校验、流持久化、重放）。
 4. 业务适配器层（进程内，或 HTTP/gRPC bridge）对接真实应用后端。
 
@@ -235,7 +254,7 @@ sh ./run-conformance.sh grpc-python
 8. `docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
 9. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
 10. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
-11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-020`）。
+11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-022`）。
 
 ## 当前状态
 

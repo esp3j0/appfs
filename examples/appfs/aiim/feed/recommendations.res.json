@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "rec-1",
+      "text": "Try searching your snapshot with rg",
+      "ts": "2026-03-16T10:00:00Z"
+    },
+    {
+      "id": "rec-2",
+      "text": "Live feed keeps paging semantics",
+      "ts": "2026-03-16T10:00:01Z"
+    }
+  ],
+  "page": {
+    "handle_id": "ph_live_7f2c",
+    "page_no": 0,
+    "has_more": true,
+    "mode": "live",
+    "expires_at": "2099-01-01T00:00:00Z"
+  }
+}

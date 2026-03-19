@@ -32,4 +32,12 @@ missing_action_mode="$(jq -r '.nodes | to_entries[] | select(.value.kind=="actio
 [ -z "$missing_action_mode" ] || fail "action node missing execution_mode: $missing_action_mode"
 pass "all action nodes declare execution_mode"
 
+invalid_snapshot="$(jq -r '.nodes | to_entries[] | select(.value.kind=="resource") | select((.value.output_mode // "json")=="jsonl") | select((.value.snapshot.max_materialized_bytes // 0) <= 0 or (.value.paging.enabled // false)==true) | .key' "$manifest" || true)"
+[ -z "$invalid_snapshot" ] || fail "snapshot jsonl resource policy violation: $invalid_snapshot"
+pass "snapshot resources declare max_materialized_bytes and disable paging"
+
+invalid_live_paging="$(jq -r '.nodes | to_entries[] | select(.value.kind=="resource") | select((.value.paging.enabled // false)==true) | select((.value.paging.mode // "snapshot") != "live") | .key' "$manifest" || true)"
+[ -z "$invalid_live_paging" ] || fail "pageable resource must use paging.mode=live: $invalid_live_paging"
+pass "pageable resources use paging.mode=live"
+
 say "CT-005 done"

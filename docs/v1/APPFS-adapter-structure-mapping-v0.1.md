@@ -46,9 +46,10 @@ Do not model a page as one opaque file. Model what the agent can read/write.
 
 Define paths as templates in `nodes`:
 
-1. Resource: `*.res.json`
-2. Action sink: `*.act`
-3. Include placeholders when entity IDs are dynamic (for example `{user_id}`, `{chat_id}`).
+1. Live resource: `*.res.json`
+2. Snapshot full-file resource: `*.res.jsonl`
+3. Action sink: `*.act`
+4. Include placeholders when entity IDs are dynamic (for example `{user_id}`, `{chat_id}`).
 
 Example:
 
@@ -56,6 +57,11 @@ Example:
 {
   "nodes": {
     "home/feed.res.json": { "kind": "resource", "output_mode": "json" },
+    "chats/{chat_id}/messages.res.jsonl": {
+      "kind": "resource",
+      "output_mode": "jsonl",
+      "snapshot": { "max_materialized_bytes": 10485760 }
+    },
     "settings/profile/save.act": {
       "kind": "action",
       "input_mode": "json",
@@ -86,8 +92,9 @@ Practical implication:
 After `new-adapter.sh`, think in a 1:1 mapping table:
 
 1. One declared action template -> one bridge handler branch
-2. One control action kind (`paging_fetch_next`, `paging_close`) -> one control handler
-3. One resource template -> one resource producer path (adapter/backend side)
+2. One control action kind (`paging_fetch_next`, `paging_close`) -> one control handler (only for live paging)
+3. One snapshot refresh action (`_snapshot/refresh.act`) -> one snapshot materialization handler
+4. One resource template -> one resource producer path (adapter/backend side)
 
 Recommended mapping table format:
 
@@ -95,6 +102,7 @@ Recommended mapping table format:
 |---|---|---|---|---|
 | `contacts/{contact_id}/send_message.act` | action | inline | `/v1/submit-action` | `handle_send_message` |
 | `files/{file_id}/download.act` | action | streaming | `/v1/submit-action` | `handle_download` |
+| `_snapshot/refresh.act` | action | inline | `/v1/submit-action` | `handle_snapshot_refresh` |
 | `_paging/fetch_next.act` | control | inline | `/v1/submit-control-action` | `handle_paging_fetch_next` |
 | `_paging/close.act` | control | inline | `/v1/submit-control-action` | `handle_paging_close` |
 
@@ -121,14 +129,15 @@ For each declared action template:
 5. Implement handlers in bridge backend.
 6. Run:
    - unit tests for protocol/backend
-   - `CT-001 ~ CT-019` live conformance (`CT-017` when bridge resilience probe is enabled)
+   - `CT-001 ~ CT-022` live conformance (`CT-017` when bridge resilience probe is enabled)
 
 ## 7. Common Failure Modes
 
 1. Declared template does not match real sink path -> action ignored.
 2. `input_mode` says `json` but handler treats payload as text -> submit-time reject or backend failure.
 3. `execution_mode` mismatch (`send_message` should be inline but implemented as streaming) -> contract failure.
-4. Missing `_paging/*` control actions while claiming pageable resources -> conformance failure.
+4. Missing `_paging/*` control actions while claiming live pageable resources -> conformance failure.
+5. Declaring `output_mode=jsonl` without `snapshot.max_materialized_bytes` -> manifest policy failure.
 
 ## 8. Decision: Docs or Code?
 

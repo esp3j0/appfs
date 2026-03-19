@@ -31,13 +31,13 @@ sh ./run-conformance.sh grpc-python
 
 1. 挂载 AgentFS live 文件系统。
 2. 启动适配器 runtime（或 runtime + bridge endpoint）。
-3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-019`（开启 bridge 韧性探针时会执行 `CT-017`）。
+3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-022`（开启 bridge 韧性探针时会执行 `CT-017`）。
 
 ## 3. 写代码前先定义结构
 
 先完成三件事：
 
-1. 在 `manifest.res.json` 声明节点模板（`*.res.json`、`*.act`）。
+1. 在 `manifest.res.json` 声明节点模板（`*.res.json`、`*.res.jsonl`、`*.act`）。
 2. 在 `/app/<app_id>/...` 落地对应 sink/resource 文件。
 3. 建立“节点模板 -> handler”映射表。
 
@@ -96,9 +96,10 @@ uv run python bridge_server.py
 1. `.act` 的 `append+JSONL` 提交语义正确。
 2. 流生命周期与重放面正确。
 3. 分页句柄错误映射（`fetch_next`、`close`）正确。
-4. `AppAdapterV1` 契约符合规范。
-5. CI/static/live 一致性证据齐全。
-6. 声明节点与桥接 handler 1:1 映射完成。
+4. snapshot 全量文件语义（`*.res.jsonl`）与超限错误映射（`SNAPSHOT_TOO_LARGE`）正确。
+5. `AppAdapterV1` 契约符合规范。
+6. CI/static/live 一致性证据齐全。
+7. 声明节点与桥接 handler 1:1 映射完成。
 
 参考文档：
 

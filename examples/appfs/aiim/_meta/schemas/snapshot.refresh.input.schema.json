@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/snapshot.refresh.input.schema.json",
+  "title": "Snapshot Refresh Input",
+  "type": "object",
+  "required": [
+    "resource_path"
+  ],
+  "properties": {
+    "resource_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_token": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

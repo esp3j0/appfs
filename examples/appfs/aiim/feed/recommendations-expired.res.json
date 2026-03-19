@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "id": "rec-exp-1",
+      "text": "Expired live handle fixture",
+      "ts": "2026-03-16T10:05:00Z"
+    }
+  ],
+  "page": {
+    "handle_id": "ph_live_expired",
+    "page_no": 0,
+    "has_more": true,
+    "mode": "live",
+    "expires_at": "2000-01-01T00:00:00Z"
+  }
+}

@@ -84,7 +84,11 @@ sh ./tests/appfs/run-live-with-adapter.sh
 | `APPFS_ROOT` | `/app` | 挂载的 AppFS 根目录 |
 | `APPFS_APP_ID` | `aiim` | `/app` 下 app id |
 | `APPFS_TEST_ACTION` | `/app/aiim/contacts/zhangsan/send_message.act` | action 测试使用的 sink |
-| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.json` | 分页测试使用的资源 |
+| `APPFS_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations.res.json` | 分页测试使用的 live 资源 |
+| `APPFS_EXPIRED_PAGEABLE_RESOURCE` | `/app/aiim/feed/recommendations-expired.res.json` | 分页错误映射测试使用的过期 live 资源 |
+| `APPFS_LONG_HANDLE_RESOURCE` | `/app/aiim/feed/recommendations-long.res.json` | 长句柄归一化测试使用的 live 资源 |
+| `APPFS_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-001/messages.res.jsonl` | snapshot 全量文件语义测试资源 |
+| `APPFS_OVERSIZE_SNAPSHOT_RESOURCE` | `/app/aiim/chats/chat-oversize/messages.res.jsonl` | snapshot 超限错误映射测试资源 |
 | `APPFS_TIMEOUT_SEC` | `10` | 异步断言等待超时 |
 | `APPFS_STATIC_FIXTURE` | `0` | 设为 `1` 只跑 fixture 静态检查 |
 | `APPFS_BRIDGE_RESILIENCE_CONTRACT` | `0` | bridge 模式下设为 `1` 启用 `CT-017`（重试/断路/恢复） |
@@ -94,7 +98,7 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 ## 4. 合约测试套件
 
-说明：`cli/tests/appfs/` 的直接脚本包含基线与扩展检查（`CT-001`..`CT-015`，以及 `CT-018` 连续追加提交排队和 `CT-020` 多行 JSON 恢复），`run-live-with-adapter.sh` 还会额外执行生命周期探针（`CT-016`）、可选 bridge 韧性探针（`CT-017`）和重启后游标恢复（`CT-019`）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` 提交时 malformed/invalid JSONL 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错、`CT-018` 连续追加提交排队、`CT-019` 重启后游标恢复、`CT-020` shell 展开多行 JSON 恢复）。
+说明：`cli/tests/appfs/` 的直接脚本包含基线与扩展检查（`CT-001`..`CT-015`，以及 `CT-018` 连续追加提交排队、`CT-020` 多行 JSON 恢复、`CT-021` snapshot 全量文件语义、`CT-022` snapshot 超限错误映射），`run-live-with-adapter.sh` 还会额外执行生命周期探针（`CT-016`）、可选 bridge 韧性探针（`CT-017`）和重启后游标恢复（`CT-019`）。下面先列基线 CT-001~CT-005；同一执行器还会覆盖扩展 live 检查（`CT-006` 流生命周期、`CT-007` 提交时 malformed/invalid JSONL 拒绝、`CT-008` 提交顺序、`CT-009` 分页错误映射、`CT-010`/`CT-011` 提交原子性/中断、`CT-012` 路径安全、`CT-013` 重复消费、`CT-014` 并发提交压力、`CT-015` 长句柄归一化、`CT-016` 重启对账、`CT-017` bridge 重试/断路/恢复容错、`CT-018` 连续追加提交排队、`CT-019` 重启后游标恢复、`CT-020` shell 展开多行 JSON 恢复、`CT-021` snapshot 全量文件语义、`CT-022` snapshot 超限错误映射）。
 
 ### CT-001 布局与必需节点
 
@@ -105,8 +109,9 @@ sh ./tests/appfs/run-live-with-adapter.sh
 
 断言：
 
-1. 必需文件存在（`manifest`、`context`、`permissions`、`events`、`cursor`、`from-seq`、`_paging/fetch_next.act`、`_paging/close.act`）。
-2. `manifest` 包含 `app_id` 与 `nodes`。
+1. 必需文件存在（`manifest`、`context`、`permissions`、`events`、`cursor`、`from-seq`）。
+2. 若 manifest 声明存在 live 分页资源，则 `_paging/fetch_next.act` 与 `_paging/close.act` 必须存在。
+3. `manifest` 包含 `app_id` 与 `nodes`。
 
 脚本：
 
@@ -183,7 +188,8 @@ cli/tests/appfs/test-paging.sh
 
 1. 节点名不包含禁止路径模式（`..`、反斜杠、盘符）。
 2. action 节点声明期望字段（`input_mode`、`execution_mode`）。
-3. 可分页资源声明 `paging` 元数据。
+3. snapshot 资源（`output_mode=jsonl`）声明 `snapshot.max_materialized_bytes` 且不启用 `paging`。
+4. 可分页资源声明 `paging` 元数据且 `paging.mode=live`。
 
 脚本：
 
@@ -228,6 +234,43 @@ cli/tests/appfs/run-live-with-adapter.sh (通过 APPFS_BRIDGE_RESILIENCE_CONTRAC
 
 ```text
 cli/tests/appfs/test-submit-multiline-recovery.sh
+```
+
+### CT-021 Snapshot 全量文件语义
+
+规范引用：
+
+1. `APPFS-v0.1` 第 6 节（资源后缀语义）。
+2. `APPFS-v0.1` 第 11 节（snapshot/live 分流）。
+
+断言：
+
+1. snapshot 资源暴露为 `*.res.jsonl` 全量文件。
+2. 每行是消息 JSON，不是 `{items,page}` 包装。
+3. 可直接用 `rg/grep` 做文本检索。
+
+脚本：
+
+```text
+cli/tests/appfs/test-snapshot-full-file.sh
+```
+
+### CT-022 Snapshot 超限错误映射
+
+规范引用：
+
+1. `APPFS-v0.1` 第 13 节（snapshot 限额）。
+2. `APPFS-adapter-requirements-v0.1`（确定性错误映射）。
+
+断言：
+
+1. 对超限 snapshot 提交 `/_snapshot/refresh.act` 时发出 `action.failed`。
+2. `error.code` 为 `SNAPSHOT_TOO_LARGE`。
+
+脚本：
+
+```text
+cli/tests/appfs/test-snapshot-too-large.sh
 ```
 
 ## 5. 缺口与后续（v0.2 候选）

@@ -89,7 +89,7 @@
 声明 Core 兼容必须通过：
 
 1. AppFS 静态合约测试（`CT-001`、`CT-003`、`CT-005`）。
-2. AppFS live 合约套件（`CT-002`、`CT-004`、`CT-006` 到 `CT-016`）。
+2. AppFS live 合约套件（`CT-002`、`CT-004`、`CT-006` 到 `CT-022`）。
 3. `APPFS-adapter-requirements-v0.1` 中的适配器验收清单项。
 4. CI 必须同时包含 static + live 合约执行（参考 `.github/workflows/rust.yml` 的 `appfs-contract-gate`）。
 5. 仓库参考 CI 额外验证进程外传输一致性：`appfs-contract-gate-http-bridge` 与 `appfs-contract-gate-grpc-bridge`。

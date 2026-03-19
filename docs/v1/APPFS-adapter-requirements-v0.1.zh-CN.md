@@ -66,9 +66,16 @@ Adapter 必须提供构建 `_meta/manifest.res.json` 所需数据：
 
 ### AR-002 资源读取
 
-1. Adapter 必须将 `*.res.json` 节点解析为 UTF-8 JSON 输出。
-2. 资源不存在必须映射 `ENOENT`。
-3. 无权限必须映射 `EACCES`。
+1. Adapter 必须将 `*.res.json` 节点解析为 UTF-8 JSON 输出（live/page 包装）。
+2. Adapter 必须将 `*.res.jsonl` 节点解析为 UTF-8 JSONL 输出（snapshot 全量文件）。
+3. 资源不存在必须映射 `ENOENT`。
+4. 无权限必须映射 `EACCES`。
+
+### AR-002A Snapshot 物化限额
+
+1. `output_mode=jsonl` 资源必须在 manifest 声明 `snapshot.max_materialized_bytes`。
+2. snapshot 资源不得声明分页元数据。
+3. 对超限 snapshot 的刷新/物化检查必须返回确定性终态失败：`error.code = "SNAPSHOT_TOO_LARGE"`。
 
 ### AR-003 Action 提交（`*.act`）
 
@@ -162,7 +169,7 @@ Adapter 应暴露或提供 `/app/<app_id>/_meta/observer.res.json` 数据：
 
 ### AR-014 分页句柄错误契约
 
-`/_paging/fetch_next.act` 与 `/_paging/close.act` 必须满足确定性映射：
+仅对 live 可分页资源，`/_paging/fetch_next.act` 与 `/_paging/close.act` 必须满足确定性映射：
 
 1. `handle_id` 格式错误：提交时失败，返回 `EINVAL`，且不得发出 `action.accepted`。
 2. 未知 handle：发 `action.failed`，`error.code = "PAGER_HANDLE_NOT_FOUND"`。

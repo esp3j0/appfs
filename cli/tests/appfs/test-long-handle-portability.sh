@@ -8,7 +8,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 banner "AppFS CT-015 Long Handle Normalization"
 
 events="$APPFS_APP_DIR/_stream/events.evt.jsonl"
-resource="${APPFS_LONG_HANDLE_RESOURCE:-$APPFS_APP_DIR/chats/chat-long/messages.res.json}"
+resource="${APPFS_LONG_HANDLE_RESOURCE:-$APPFS_APP_DIR/feed/recommendations-long.res.json}"
 fetch_next="$APPFS_APP_DIR/_paging/fetch_next.act"
 close_act="$APPFS_APP_DIR/_paging/close.act"
 
