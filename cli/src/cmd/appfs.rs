@@ -473,7 +473,7 @@ impl AppfsAdapter {
             };
             let line_end = position + rel_idx + 1;
             let line_bytes = &bytes[position..line_end];
-            let payload = match decode_jsonl_line(line_bytes, position == 0) {
+            let mut payload = match decode_jsonl_line(line_bytes, position == 0) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     cursor.offset = line_end as u64;
@@ -492,12 +492,43 @@ impl AppfsAdapter {
                     continue;
                 }
             };
+            let mut payload_line_end = line_end;
+
+            if matches!(spec.input_mode, InputMode::Json)
+                && serde_json::from_str::<JsonValue>(&payload).is_err()
+                && has_odd_unescaped_quotes(&payload)
+            {
+                let mut next_position = line_end;
+                while next_position < bytes.len() && bytes[next_position] == 0 {
+                    next_position += 1;
+                }
+                if next_position < bytes.len() {
+                    if let Some(next_rel_idx) =
+                        bytes[next_position..].iter().position(|b| *b == b'\n')
+                    {
+                        let next_end = next_position + next_rel_idx + 1;
+                        let next_line_bytes = &bytes[next_position..next_end];
+                        if let Ok(Some(next_payload)) =
+                            decode_jsonl_line(next_line_bytes, next_position == 0)
+                        {
+                            let merged_payload = format!("{payload}\\n{next_payload}");
+                            if serde_json::from_str::<JsonValue>(&merged_payload).is_ok() {
+                                eprintln!(
+                                    "AppFS adapter normalized shell-expanded newline for {rel} by joining adjacent JSON fragments"
+                                );
+                                payload = merged_payload;
+                                payload_line_end = next_end;
+                            }
+                        }
+                    }
+                }
+            }
 
             match self.process_action(&rel, &spec, &payload)? {
                 ProcessOutcome::Consumed => {
-                    cursor.offset = line_end as u64;
+                    cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
-                    position = line_end;
+                    position = payload_line_end;
                 }
                 ProcessOutcome::RetryPending => {
                     eprintln!(
@@ -1403,6 +1434,25 @@ fn decode_jsonl_line(
     Ok(Some(decoded.to_string()))
 }
 
+fn has_odd_unescaped_quotes(s: &str) -> bool {
+    let mut escaped = false;
+    let mut quote_count = 0usize;
+    for ch in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            quote_count += 1;
+        }
+    }
+    quote_count % 2 == 1
+}
+
 #[derive(Clone, Copy)]
 enum Utf16Endian {
     Le,
@@ -1695,7 +1745,7 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 mod tests {
     use super::{
         boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment, extract_client_token,
-        is_handle_format_valid, normalize_runtime_handle_id, parse_paging_request, validate_payload,
+        has_odd_unescaped_quotes, is_handle_format_valid, normalize_runtime_handle_id, parse_paging_request, validate_payload,
         ActionSpec, ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
@@ -1805,6 +1855,12 @@ mod tests {
         ];
         let line = decode_jsonl_line(&bytes, true).expect("decode should succeed");
         assert_eq!(line.as_deref(), Some("{\"ok\":true}"));
+    }
+
+    #[test]
+    fn quote_parity_detects_shell_expanded_fragment() {
+        assert!(has_odd_unescaped_quotes("{\"text\":\"hello"));
+        assert!(!has_odd_unescaped_quotes("{\"text\":\"hello\\nworld\"}"));
     }
 
     #[test]
