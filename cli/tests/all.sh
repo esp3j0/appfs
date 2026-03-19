@@ -20,6 +20,7 @@ DIR="$(dirname "$0")"
 "$DIR/test-run-bash.sh" || true  # Requires user namespaces (may fail in CI)
 "$DIR/test-run-git.sh" || true  # Requires user namespaces (may fail in CI)
 "$DIR/test-mount.sh"
+"$DIR/test-mount-foreground-reuse.sh"
 "$DIR/test-overlay-whiteout.sh"
 "$DIR/test-overlay-delta-in-base-dir.sh"
 "$DIR/test-fuse-cache-invalidation.sh"
