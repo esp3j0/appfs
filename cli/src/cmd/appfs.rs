@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -391,9 +391,16 @@ impl AppfsAdapter {
             return Ok(false);
         };
 
-        let bytes = match fs::read(action_path) {
-            Ok(bytes) => bytes,
+        let mut cursor = self.action_cursors.get(&rel).cloned().unwrap_or_default();
+        let original_cursor = cursor.clone();
+        let file_len = match fs::metadata(action_path) {
+            Ok(meta) => meta.len(),
             Err(err) => {
+                if is_transient_action_sink_busy(&err) {
+                    // Writer currently owns an exclusive handle (common on Windows).
+                    // Defer and retry next poll without consuming data.
+                    return Ok(false);
+                }
                 eprintln!(
                     "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} reason={}",
                     err
@@ -402,8 +409,30 @@ impl AppfsAdapter {
             }
         };
 
-        let mut cursor = self.action_cursors.get(&rel).cloned().unwrap_or_default();
-        let original_cursor = cursor.clone();
+        if cursor.offset > file_len {
+            eprintln!(
+                "AppFS adapter HIGH: illegal action sink truncation detected for {rel}: offset={} file_len={file_len}; skipping rewritten content and waiting for future append",
+                cursor.offset
+            );
+            cursor.offset = file_len;
+            cursor.boundary_probe = None;
+        } else if cursor.offset == file_len {
+            return Ok(false);
+        }
+
+        let bytes = match fs::read(action_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if is_transient_action_sink_busy(&err) {
+                    return Ok(false);
+                }
+                eprintln!(
+                    "AppFS adapter rejected action payload for {rel}: validation={ERR_INVALID_PAYLOAD} reason={}",
+                    err
+                );
+                return Ok(false);
+            }
+        };
         let file_len = bytes.len() as u64;
 
         if cursor.offset > file_len {
@@ -412,7 +441,7 @@ impl AppfsAdapter {
                 cursor.offset
             );
             cursor.offset = file_len;
-            cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+            cursor.boundary_probe = None;
         } else if cursor.offset > 0 && cursor.boundary_probe.is_some() {
             let expected = cursor.boundary_probe.as_deref().unwrap_or_default();
             let current = boundary_probe_from_bytes(&bytes, cursor.offset);
@@ -428,12 +457,23 @@ impl AppfsAdapter {
 
         let mut position = cursor.offset as usize;
         while position < bytes.len() {
+            while position < bytes.len() && bytes[position] == 0 {
+                // PowerShell 5 `>>` (Out-File) may leave a trailing UTF-16 newline NUL byte
+                // after our `\n` delimiter split. Consume it so the cursor can progress.
+                position += 1;
+                cursor.offset = position as u64;
+                cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+            }
+            if position >= bytes.len() {
+                break;
+            }
+
             let Some(rel_idx) = bytes[position..].iter().position(|b| *b == b'\n') else {
                 break;
             };
             let line_end = position + rel_idx + 1;
             let line_bytes = &bytes[position..line_end];
-            let payload = match decode_jsonl_line(line_bytes, position == 0) {
+            let mut payload = match decode_jsonl_line(line_bytes, position == 0) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     cursor.offset = line_end as u64;
@@ -452,12 +492,43 @@ impl AppfsAdapter {
                     continue;
                 }
             };
+            let mut payload_line_end = line_end;
+
+            if matches!(spec.input_mode, InputMode::Json)
+                && serde_json::from_str::<JsonValue>(&payload).is_err()
+                && has_odd_unescaped_quotes(&payload)
+            {
+                let mut next_position = line_end;
+                while next_position < bytes.len() && bytes[next_position] == 0 {
+                    next_position += 1;
+                }
+                if next_position < bytes.len() {
+                    if let Some(next_rel_idx) =
+                        bytes[next_position..].iter().position(|b| *b == b'\n')
+                    {
+                        let next_end = next_position + next_rel_idx + 1;
+                        let next_line_bytes = &bytes[next_position..next_end];
+                        if let Ok(Some(next_payload)) =
+                            decode_jsonl_line(next_line_bytes, next_position == 0)
+                        {
+                            let merged_payload = format!("{payload}\\n{next_payload}");
+                            if serde_json::from_str::<JsonValue>(&merged_payload).is_ok() {
+                                eprintln!(
+                                    "AppFS adapter normalized shell-expanded newline for {rel} by joining adjacent JSON fragments"
+                                );
+                                payload = merged_payload;
+                                payload_line_end = next_end;
+                            }
+                        }
+                    }
+                }
+            }
 
             match self.process_action(&rel, &spec, &payload)? {
                 ProcessOutcome::Consumed => {
-                    cursor.offset = line_end as u64;
+                    cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
-                    position = line_end;
+                    position = payload_line_end;
                 }
                 ProcessOutcome::RetryPending => {
                     eprintln!(
@@ -1351,9 +1422,130 @@ fn decode_jsonl_line(
         return Ok(None);
     }
 
+    if let Some(decoded_utf16) = try_decode_utf16_line(slice, allow_bom) {
+        if decoded_utf16.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(decoded_utf16));
+    }
+
     let decoded = std::str::from_utf8(slice)
         .map_err(|err| format!("utf8 decode failed for JSONL line: {err}"))?;
     Ok(Some(decoded.to_string()))
+}
+
+fn has_odd_unescaped_quotes(s: &str) -> bool {
+    let mut escaped = false;
+    let mut quote_count = 0usize;
+    for ch in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            quote_count += 1;
+        }
+    }
+    quote_count % 2 == 1
+}
+
+#[derive(Clone, Copy)]
+enum Utf16Endian {
+    Le,
+    Be,
+}
+
+fn try_decode_utf16_line(slice: &[u8], allow_bom: bool) -> Option<String> {
+    if !slice.contains(&0x00) {
+        return None;
+    }
+
+    let mut bytes = slice;
+    let mut endian: Option<Utf16Endian> = None;
+
+    if allow_bom && bytes.starts_with(&[0xFF, 0xFE]) {
+        bytes = &bytes[2..];
+        endian = Some(Utf16Endian::Le);
+    } else if allow_bom && bytes.starts_with(&[0xFE, 0xFF]) {
+        bytes = &bytes[2..];
+        endian = Some(Utf16Endian::Be);
+    }
+
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+
+    if endian.is_none() {
+        let pair_count = bytes.len() / 2;
+        if pair_count == 0 {
+            return None;
+        }
+        let odd_zeros = bytes.iter().skip(1).step_by(2).filter(|b| **b == 0).count();
+        let even_zeros = bytes.iter().step_by(2).filter(|b| **b == 0).count();
+
+        if odd_zeros * 2 >= pair_count {
+            endian = Some(Utf16Endian::Le);
+        } else if even_zeros * 2 >= pair_count {
+            endian = Some(Utf16Endian::Be);
+        } else {
+            return None;
+        }
+    }
+
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    match endian.expect("utf16 endianness should be detected") {
+        Utf16Endian::Le => {
+            for pair in bytes.chunks_exact(2) {
+                units.push(u16::from_le_bytes([pair[0], pair[1]]));
+            }
+        }
+        Utf16Endian::Be => {
+            for pair in bytes.chunks_exact(2) {
+                units.push(u16::from_be_bytes([pair[0], pair[1]]));
+            }
+        }
+    }
+
+    while matches!(units.last(), Some(0x000d | 0x000a)) {
+        units.pop();
+    }
+    if units.is_empty() {
+        return Some(String::new());
+    }
+
+    let mut out = String::with_capacity(units.len());
+    for ch in std::char::decode_utf16(units) {
+        let ch = ch.ok()?;
+        out.push(ch);
+    }
+    Some(out)
+}
+
+fn is_transient_action_sink_busy(err: &std::io::Error) -> bool {
+    if !matches!(
+        err.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::WouldBlock
+    ) {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        matches!(err.raw_os_error(), Some(5 | 32 | 33))
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
@@ -1556,9 +1748,9 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 mod tests {
     use super::{
         boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
-        extract_client_token, is_handle_format_valid, normalize_runtime_handle_id,
-        parse_paging_request, validate_payload, ActionSpec, ExecutionMode, InputMode,
-        MAX_SEGMENT_BYTES,
+        extract_client_token, has_odd_unescaped_quotes, is_handle_format_valid,
+        normalize_runtime_handle_id, parse_paging_request, validate_payload, ActionSpec,
+        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -1644,8 +1836,35 @@ mod tests {
 
     #[test]
     fn decode_jsonl_line_rejects_invalid_utf8() {
-        let bytes = [0xFF, 0x00, b'\n'];
+        let bytes = [0xFF, 0xFF, b'\n'];
         assert!(decode_jsonl_line(&bytes, false).is_err());
+    }
+
+    #[test]
+    fn decode_jsonl_line_supports_utf16le_ps5_redirection() {
+        let bytes = vec![
+            0x7b, 0x00, 0x22, 0x00, 0x74, 0x00, 0x65, 0x00, 0x78, 0x00, 0x74, 0x00, 0x22, 0x00,
+            0x3a, 0x00, 0x22, 0x00, 0x68, 0x00, 0x65, 0x00, 0x6c, 0x00, 0x6c, 0x00, 0x6f, 0x00,
+            0x22, 0x00, 0x7d, 0x00, 0x0d, 0x00, 0x0a,
+        ];
+        let line = decode_jsonl_line(&bytes, false).expect("decode should succeed");
+        assert_eq!(line.as_deref(), Some("{\"text\":\"hello\"}"));
+    }
+
+    #[test]
+    fn decode_jsonl_line_supports_utf16le_bom() {
+        let bytes = vec![
+            0xff, 0xfe, 0x7b, 0x00, 0x22, 0x00, 0x6f, 0x00, 0x6b, 0x00, 0x22, 0x00, 0x3a, 0x00,
+            0x74, 0x00, 0x72, 0x00, 0x75, 0x00, 0x65, 0x00, 0x7d, 0x00, 0x0a,
+        ];
+        let line = decode_jsonl_line(&bytes, true).expect("decode should succeed");
+        assert_eq!(line.as_deref(), Some("{\"ok\":true}"));
+    }
+
+    #[test]
+    fn quote_parity_detects_shell_expanded_fragment() {
+        assert!(has_odd_unescaped_quotes("{\"text\":\"hello"));
+        assert!(!has_odd_unescaped_quotes("{\"text\":\"hello\\nworld\"}"));
     }
 
     #[test]
