@@ -229,7 +229,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
         auto_unmount: args.auto_unmount,
         allow_root: args.allow_root,
         allow_other: args.allow_other,
-        fsname,
+        fsname: fsname.clone(),
         uid: args.uid,
         gid: args.gid,
     };
