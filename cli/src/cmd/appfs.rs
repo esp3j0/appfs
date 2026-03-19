@@ -28,6 +28,8 @@ const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
 const ACTION_CURSORS_FILENAME: &str = "action-cursors.res.json";
 const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
+const MAX_RECOVERY_LINES: usize = 32;
+const MAX_RECOVERY_BYTES: usize = 65536;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -496,31 +498,15 @@ impl AppfsAdapter {
 
             if matches!(spec.input_mode, InputMode::Json)
                 && serde_json::from_str::<JsonValue>(&payload).is_err()
-                && has_odd_unescaped_quotes(&payload)
             {
-                let mut next_position = line_end;
-                while next_position < bytes.len() && bytes[next_position] == 0 {
-                    next_position += 1;
-                }
-                if next_position < bytes.len() {
-                    if let Some(next_rel_idx) =
-                        bytes[next_position..].iter().position(|b| *b == b'\n')
-                    {
-                        let next_end = next_position + next_rel_idx + 1;
-                        let next_line_bytes = &bytes[next_position..next_end];
-                        if let Ok(Some(next_payload)) =
-                            decode_jsonl_line(next_line_bytes, next_position == 0)
-                        {
-                            let merged_payload = format!("{payload}\\n{next_payload}");
-                            if serde_json::from_str::<JsonValue>(&merged_payload).is_ok() {
-                                eprintln!(
-                                    "AppFS adapter normalized shell-expanded newline for {rel} by joining adjacent JSON fragments"
-                                );
-                                payload = merged_payload;
-                                payload_line_end = next_end;
-                            }
-                        }
-                    }
+                if let Some((merged_payload, merged_line_end, consumed_lines)) =
+                    recover_multiline_json_payload(&bytes, &payload, line_end, &spec)
+                {
+                    eprintln!(
+                        "AppFS adapter normalized shell-expanded newline for {rel}: consumed_lines={consumed_lines}"
+                    );
+                    payload = merged_payload;
+                    payload_line_end = merged_line_end;
                 }
             }
 
@@ -1453,6 +1439,68 @@ fn has_odd_unescaped_quotes(s: &str) -> bool {
     quote_count % 2 == 1
 }
 
+fn recover_multiline_json_payload(
+    bytes: &[u8],
+    initial_payload: &str,
+    initial_line_end: usize,
+    spec: &ActionSpec,
+) -> Option<(String, usize, usize)> {
+    if !has_odd_unescaped_quotes(initial_payload) {
+        return None;
+    }
+
+    let max_recovery_bytes = spec
+        .max_payload_bytes
+        .unwrap_or(MAX_RECOVERY_BYTES)
+        .min(MAX_RECOVERY_BYTES);
+    if initial_payload.len() >= max_recovery_bytes {
+        return None;
+    }
+
+    let mut merged = initial_payload.to_string();
+    let mut consumed_lines = 1usize;
+    let mut next_position = initial_line_end;
+
+    while consumed_lines < MAX_RECOVERY_LINES {
+        while next_position < bytes.len() && bytes[next_position] == 0 {
+            next_position += 1;
+        }
+        if next_position >= bytes.len() {
+            break;
+        }
+
+        let Some(next_rel_idx) = bytes[next_position..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let next_end = next_position + next_rel_idx + 1;
+        let next_line_bytes = &bytes[next_position..next_end];
+        let next_fragment = match decode_jsonl_line(next_line_bytes, next_position == 0) {
+            Ok(Some(value)) => value,
+            Ok(None) => String::new(),
+            Err(_) => break,
+        };
+
+        let candidate_len = merged
+            .len()
+            .saturating_add(2)
+            .saturating_add(next_fragment.len());
+        if candidate_len > max_recovery_bytes {
+            break;
+        }
+
+        merged.push_str("\\n");
+        merged.push_str(&next_fragment);
+        consumed_lines += 1;
+
+        if serde_json::from_str::<JsonValue>(&merged).is_ok() {
+            return Some((merged, next_end, consumed_lines));
+        }
+        next_position = next_end;
+    }
+
+    None
+}
+
 #[derive(Clone, Copy)]
 enum Utf16Endian {
     Le,
@@ -1746,11 +1794,13 @@ fn is_handle_format_valid(handle_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::{
         boundary_probe_from_bytes, decode_jsonl_line, deterministic_shorten_segment,
         extract_client_token, has_odd_unescaped_quotes, is_handle_format_valid,
-        normalize_runtime_handle_id, parse_paging_request, validate_payload, ActionSpec,
-        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
+        normalize_runtime_handle_id, parse_paging_request, recover_multiline_json_payload,
+        validate_payload, ActionSpec, ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -1865,6 +1915,68 @@ mod tests {
     fn quote_parity_detects_shell_expanded_fragment() {
         assert!(has_odd_unescaped_quotes("{\"text\":\"hello"));
         assert!(!has_odd_unescaped_quotes("{\"text\":\"hello\\nworld\"}"));
+    }
+
+    #[test]
+    fn multiline_recovery_merges_three_lines_into_one_json() {
+        let spec = make_spec();
+        let bytes = b"{\"client_token\":\"ct-ml-1\",\"text\":\"\xe4\xbd\xa0\xe5\xa5\xbd\nhello\n\xe5\xa5\xbd\xef\xbc\x81\"}\n";
+        let first_line_end = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|idx| idx + 1)
+            .expect("newline");
+        let first_payload = decode_jsonl_line(&bytes[..first_line_end], true)
+            .expect("decode")
+            .expect("payload");
+
+        let recovered =
+            recover_multiline_json_payload(bytes, &first_payload, first_line_end, &spec)
+                .expect("should recover");
+        assert_eq!(recovered.2, 3);
+        assert_eq!(recovered.1, bytes.len());
+
+        let parsed: Value = serde_json::from_str(&recovered.0).expect("valid json");
+        assert_eq!(
+            parsed.get("text").and_then(|v| v.as_str()),
+            Some("你好\nhello\n好！")
+        );
+    }
+
+    #[test]
+    fn multiline_recovery_does_not_trigger_for_non_multiline_fragment() {
+        let spec = make_spec();
+        let bytes = b"{\"client_token\":\"ct-good\",\"text\":\"ok\"}\n{\"client_token\":\"ct-next\",\"text\":\"next\"}\n";
+        let first_line_end = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|idx| idx + 1)
+            .expect("newline");
+        let first_payload = decode_jsonl_line(&bytes[..first_line_end], true)
+            .expect("decode")
+            .expect("payload");
+
+        let recovered =
+            recover_multiline_json_payload(bytes, &first_payload, first_line_end, &spec);
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn multiline_recovery_stops_when_json_not_completed() {
+        let spec = make_spec();
+        let bytes = b"{\"client_token\":\"ct-bad\",\"text\":\"hello\nworld\n";
+        let first_line_end = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|idx| idx + 1)
+            .expect("newline");
+        let first_payload = decode_jsonl_line(&bytes[..first_line_end], true)
+            .expect("decode")
+            .expect("payload");
+
+        let recovered =
+            recover_multiline_json_payload(bytes, &first_payload, first_line_end, &spec);
+        assert!(recovered.is_none());
     }
 
     #[test]

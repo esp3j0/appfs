@@ -161,6 +161,7 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 1. `.act` 统一为 append-only JSONL：使用 `>>`（或 PowerShell `Add-Content`）提交，一行一个 JSON。
 2. 对 `.act` 使用 `>` 覆写/截断会被视为非法变更，runtime 只记录诊断日志并跳过该批内容。
 3. 运行时语义为 `at-least-once`，建议业务层基于 `client_token`/`request_id` 做幂等去重。
+4. runtime 会兼容 shell 展开导致的多行 JSON 片段，并尝试合并相邻行恢复为单次请求；推荐写法仍是单行 JSON，并在字符串中使用转义 `\\n`。
 
 ## 架构
 
@@ -234,7 +235,7 @@ sh ./run-conformance.sh grpc-python
 8. `docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
 9. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
 10. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
-11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-019`）。
+11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-020`）。
 
 ## 当前状态
 
