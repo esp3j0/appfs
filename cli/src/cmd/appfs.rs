@@ -33,6 +33,7 @@ const MAX_RECOVERY_BYTES: usize = 65536;
 const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
 const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
+const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -1169,9 +1170,24 @@ impl AppfsAdapter {
         };
 
         let resource_abs = self.app_dir.join(&resource_rel);
+        let force_expand = snapshot_force_expand_on_refresh();
         let size_bytes = match fs::metadata(&resource_abs) {
             Ok(meta) => {
                 let size_bytes = meta.len() as usize;
+                if force_expand {
+                    eprintln!(
+                        "[cache] refresh forcing expand resource=/{} existing_bytes={size_bytes}",
+                        resource_rel
+                    );
+                    return self.expand_snapshot_cache_read_through(
+                        action_path,
+                        request_id,
+                        &resource_rel,
+                        &snapshot_spec,
+                        "forced_refresh",
+                        client_token,
+                    );
+                }
                 self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Hot);
                 eprintln!("[cache] hit resource=/{} bytes={size_bytes}", resource_rel);
                 size_bytes
@@ -1193,14 +1209,18 @@ impl AppfsAdapter {
         };
 
         if size_bytes > snapshot_spec.max_materialized_bytes {
-            self.emit_failed(
+            let resource_path = format!("/{}", resource_rel);
+            eprintln!(
+                "[cache] snapshot_too_large resource={} size={} max={}",
+                resource_path, size_bytes, snapshot_spec.max_materialized_bytes
+            );
+            self.emit_snapshot_too_large(
                 action_path,
                 request_id,
-                ERR_SNAPSHOT_TOO_LARGE,
-                &format!(
-                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={}",
-                    snapshot_spec.max_materialized_bytes
-                ),
+                &resource_path,
+                size_bytes,
+                snapshot_spec.max_materialized_bytes,
+                "existing_cache",
                 client_token,
             )?;
             return Ok(ProcessOutcome::Consumed);
@@ -1330,14 +1350,32 @@ impl AppfsAdapter {
         let size_bytes = expanded_jsonl.len();
         if size_bytes > snapshot_spec.max_materialized_bytes {
             self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
-            self.emit_failed(
+            eprintln!(
+                "[cache] snapshot_too_large resource={} size={} max={}",
+                resource_path, size_bytes, snapshot_spec.max_materialized_bytes
+            );
+            self.emit_event(
+                &resource_path,
+                request_id,
+                "cache.expand",
+                Some(json!({
+                    "path": resource_path,
+                    "phase": "failed",
+                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                    "failure_reason": "snapshot_too_large",
+                    "size": size_bytes,
+                    "max_size": snapshot_spec.max_materialized_bytes,
+                })),
+                None,
+                client_token.clone(),
+            )?;
+            self.emit_snapshot_too_large(
                 action_path,
                 request_id,
-                ERR_SNAPSHOT_TOO_LARGE,
-                &format!(
-                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={}",
-                    snapshot_spec.max_materialized_bytes
-                ),
+                &resource_path,
+                size_bytes,
+                snapshot_spec.max_materialized_bytes,
+                "expand_publish",
                 client_token,
             )?;
             return Ok(ProcessOutcome::Consumed);
@@ -1422,7 +1460,9 @@ impl AppfsAdapter {
         &self,
         resource_rel: &str,
     ) -> std::result::Result<String, String> {
-        if resource_rel != "chats/chat-001/messages.res.jsonl" {
+        if resource_rel != "chats/chat-001/messages.res.jsonl"
+            && resource_rel != "chats/chat-oversize/messages.res.jsonl"
+        {
             return Err("connector has no expansion mapping for resource".to_string());
         }
 
@@ -1751,6 +1791,36 @@ impl AppfsAdapter {
                 "code": error_code,
                 "message": message,
                 "retryable": retryable,
+            })),
+            client_token,
+        )
+    }
+
+    fn emit_snapshot_too_large(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_path: &str,
+        size_bytes: usize,
+        max_size: usize,
+        phase: &str,
+        client_token: Option<String>,
+    ) -> Result<()> {
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.failed",
+            None,
+            Some(json!({
+                "code": ERR_SNAPSHOT_TOO_LARGE,
+                "message": format!(
+                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={max_size}"
+                ),
+                "retryable": false,
+                "resource_path": resource_path,
+                "phase": phase,
+                "size": size_bytes,
+                "max_size": max_size,
             })),
             client_token,
         )
@@ -2263,6 +2333,10 @@ fn snapshot_expand_delay_ms() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(0)
+}
+
+fn snapshot_force_expand_on_refresh() -> bool {
+    env_flag_enabled(SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV)
 }
 
 fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPolicy {
