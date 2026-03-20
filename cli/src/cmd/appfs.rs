@@ -1830,6 +1830,7 @@ impl AppfsAdapter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_snapshot_too_large(
         &mut self,
         action_path: &str,
