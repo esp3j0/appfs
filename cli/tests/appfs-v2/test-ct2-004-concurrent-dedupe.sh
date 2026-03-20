@@ -20,10 +20,7 @@ REFRESH_ACT=""
 EVENTS=""
 
 cleanup() {
-    if [ -n "${ADAPTER_PID:-}" ] && kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        kill "$ADAPTER_PID" 2>/dev/null || true
-        wait "$ADAPTER_PID" 2>/dev/null || true
-    fi
+    stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi

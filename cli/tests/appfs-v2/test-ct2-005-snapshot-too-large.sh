@@ -20,10 +20,7 @@ REFRESH_ACT=""
 EVENTS=""
 
 cleanup() {
-    if [ -n "${ADAPTER_PID:-}" ] && kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        kill "$ADAPTER_PID" 2>/dev/null || true
-        wait "$ADAPTER_PID" 2>/dev/null || true
-    fi
+    stop_adapter
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi
@@ -31,10 +28,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 stop_adapter() {
-    if [ -n "${ADAPTER_PID:-}" ] && kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        kill "$ADAPTER_PID" 2>/dev/null || true
-        wait "$ADAPTER_PID" 2>/dev/null || true
-    fi
+    stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     ADAPTER_PID=""
 }
 
@@ -61,6 +55,22 @@ wait_token_event() {
         count="$(grep -c "$token" "$file" 2>/dev/null || true)"
         [ -n "$count" ] || count=0
         if [ "$count" -ge 1 ]; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+wait_token_type_event() {
+    token="$1"
+    event_type="$2"
+    file="$3"
+    timeout="${4:-15}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if grep "$token" "$file" 2>/dev/null | grep -q "\"type\":\"$event_type\""; then
             return 0
         fi
         i=$((i + 1))
@@ -154,7 +164,7 @@ start_adapter() {
 
 assert_snapshot_too_large_event() {
     token="$1"
-    line="$(grep "$token" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
+    line="$(grep "$token" "$EVENTS" 2>/dev/null | grep "\"type\":\"action.failed\"" | tail -n 1 || true)"
     [ -n "$line" ] || fail "missing action event for token=$token"
     assert_json_expr "$line" 'obj.get("type") == "action.failed"' "token=$token should emit action.failed"
     assert_json_expr "$line" 'obj.get("error", {}).get("code") == "SNAPSHOT_TOO_LARGE"' "token=$token should map to SNAPSHOT_TOO_LARGE"
@@ -193,7 +203,7 @@ pass "adapter started for cold-miss oversize scenario"
 wait_writable "$REFRESH_ACT" 10 || fail "snapshot refresh sink remained non-writable: $REFRESH_ACT"
 token_cold="ct2-005-cold-$$"
 printf '{"resource_path":"/chats/chat-oversize/messages.res.jsonl","client_token":"%s"}\n' "$token_cold" >> "$REFRESH_ACT" || fail "failed to submit cold-miss oversize refresh"
-wait_token_event "$token_cold" "$EVENTS" 20 || fail "cold-miss oversize token event timeout"
+wait_token_type_event "$token_cold" "action.failed" "$EVENTS" 20 || fail "cold-miss oversize action.failed timeout"
 
 assert_snapshot_too_large_event "$token_cold"
 assert_expand_failed_snapshot_too_large "$token_cold"
@@ -218,7 +228,7 @@ pass "adapter started for partial-cache continue-expand oversize scenario"
 wait_writable "$REFRESH_ACT" 10 || fail "snapshot refresh sink remained non-writable in partial-cache scenario: $REFRESH_ACT"
 token_partial="ct2-005-partial-$$"
 printf '{"resource_path":"/chats/chat-oversize/messages.res.jsonl","client_token":"%s"}\n' "$token_partial" >> "$REFRESH_ACT" || fail "failed to submit partial-cache oversize refresh"
-wait_token_event "$token_partial" "$EVENTS" 20 || fail "partial-cache oversize token event timeout"
+wait_token_type_event "$token_partial" "action.failed" "$EVENTS" 20 || fail "partial-cache oversize action.failed timeout"
 
 assert_snapshot_too_large_event "$token_partial"
 assert_expand_failed_snapshot_too_large "$token_partial"

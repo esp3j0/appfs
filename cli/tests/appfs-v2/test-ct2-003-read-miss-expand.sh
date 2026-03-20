@@ -21,10 +21,7 @@ REFRESH_ACT=""
 EVENTS=""
 
 cleanup() {
-    if [ -n "${ADAPTER_PID:-}" ] && kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        kill "$ADAPTER_PID" 2>/dev/null || true
-        wait "$ADAPTER_PID" 2>/dev/null || true
-    fi
+    stop_adapter
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi
@@ -32,10 +29,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 stop_adapter() {
-    if [ -n "${ADAPTER_PID:-}" ] && kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        kill "$ADAPTER_PID" 2>/dev/null || true
-        wait "$ADAPTER_PID" 2>/dev/null || true
-    fi
+    stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     ADAPTER_PID=""
 }
 
@@ -62,6 +56,22 @@ wait_token_event() {
         count="$(grep -c "$token" "$file" 2>/dev/null || true)"
         [ -n "$count" ] || count=0
         if [ "$count" -ge 1 ]; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+wait_token_type_event() {
+    token="$1"
+    event_type="$2"
+    file="$3"
+    timeout="${4:-15}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if grep "$token" "$file" 2>/dev/null | grep -q "\"type\":\"$event_type\""; then
             return 0
         fi
         i=$((i + 1))
@@ -230,9 +240,9 @@ pass "adapter started for timeout-fail scenario"
 wait_writable "$REFRESH_ACT" 10 || fail "snapshot refresh sink remained non-writable in timeout scenario: $REFRESH_ACT"
 token_timeout="ct2-003-timeout-$$"
 printf '{"resource_path":"/chats/chat-001/messages.res.jsonl","client_token":"%s"}\n' "$token_timeout" >> "$REFRESH_ACT" || fail "failed to submit snapshot refresh for timeout-fail scenario"
-wait_token_event "$token_timeout" "$EVENTS" 20 || fail "timeout-fail token event timeout"
+wait_token_type_event "$token_timeout" "action.failed" "$EVENTS" 20 || fail "timeout-fail action.failed timeout"
 
-event_fail="$(grep "$token_timeout" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
+event_fail="$(grep "$token_timeout" "$EVENTS" 2>/dev/null | grep "\"type\":\"action.failed\"" | tail -n 1 || true)"
 [ -n "$event_fail" ] || fail "missing action event for timeout-fail scenario"
 assert_json_expr "$event_fail" 'obj.get("type") == "action.failed"' "timeout-fail should emit action.failed"
 assert_json_expr "$event_fail" 'obj.get("error", {}).get("code") == "CACHE_MISS_EXPAND_FAILED"' "timeout-fail should map to CACHE_MISS_EXPAND_FAILED"
