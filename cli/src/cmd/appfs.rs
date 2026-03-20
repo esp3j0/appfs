@@ -34,6 +34,8 @@ const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
 const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
 const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
+const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_V2_SNAPSHOT_COALESCE_WINDOW_MS";
+const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -334,6 +336,7 @@ struct AppfsAdapter {
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
     snapshot_states: HashMap<String, SnapshotCacheState>,
+    snapshot_recent_expands: HashMap<String, Instant>,
     streaming_jobs: Vec<StreamingJob>,
     actionline_v2_strict: bool,
     business_adapter: Box<dyn AppAdapterV1>,
@@ -466,6 +469,7 @@ impl AppfsAdapter {
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             snapshot_states: HashMap::new(),
+            snapshot_recent_expands: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_adapter,
@@ -521,6 +525,27 @@ impl AppfsAdapter {
             );
         }
         self.snapshot_states.insert(resource_rel.to_string(), next);
+    }
+
+    fn mark_snapshot_recent_expand(&mut self, resource_rel: &str) {
+        self.snapshot_recent_expands
+            .insert(resource_rel.to_string(), Instant::now());
+    }
+
+    fn clear_snapshot_recent_expand(&mut self, resource_rel: &str) {
+        self.snapshot_recent_expands.remove(resource_rel);
+    }
+
+    fn is_coalesced_snapshot_hit(&mut self, resource_rel: &str) -> bool {
+        let window = Duration::from_millis(snapshot_coalesce_window_ms().max(1));
+        match self.snapshot_recent_expands.get(resource_rel).copied() {
+            Some(expanded_at) if expanded_at.elapsed() <= window => true,
+            Some(_) => {
+                self.snapshot_recent_expands.remove(resource_rel);
+                false
+            }
+            None => false,
+        }
     }
 
     fn poll_once(&mut self) -> Result<()> {
@@ -1171,7 +1196,7 @@ impl AppfsAdapter {
 
         let resource_abs = self.app_dir.join(&resource_rel);
         let force_expand = snapshot_force_expand_on_refresh();
-        let size_bytes = match fs::metadata(&resource_abs) {
+        let (size_bytes, coalesced) = match fs::metadata(&resource_abs) {
             Ok(meta) => {
                 let size_bytes = meta.len() as usize;
                 if force_expand {
@@ -1179,6 +1204,7 @@ impl AppfsAdapter {
                         "[cache] refresh forcing expand resource=/{} existing_bytes={size_bytes}",
                         resource_rel
                     );
+                    self.clear_snapshot_recent_expand(&resource_rel);
                     return self.expand_snapshot_cache_read_through(
                         action_path,
                         request_id,
@@ -1188,15 +1214,23 @@ impl AppfsAdapter {
                         client_token,
                     );
                 }
+                let coalesced = self.is_coalesced_snapshot_hit(&resource_rel);
                 self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Hot);
                 eprintln!("[cache] hit resource=/{} bytes={size_bytes}", resource_rel);
-                size_bytes
+                if coalesced {
+                    eprintln!(
+                        "[cache] coalesced concurrent miss resource=/{}",
+                        resource_rel
+                    );
+                }
+                (size_bytes, coalesced)
             }
             Err(err) => {
                 let reason = match err.kind() {
                     ErrorKind::NotFound => format!("resource_missing: {err}"),
                     _ => format!("resource_unreadable: {err}"),
                 };
+                self.clear_snapshot_recent_expand(&resource_rel);
                 return self.expand_snapshot_cache_read_through(
                     action_path,
                     request_id,
@@ -1236,6 +1270,7 @@ impl AppfsAdapter {
                 "bytes": size_bytes,
                 "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
                 "cached": true,
+                "coalesced": coalesced,
                 "state": self.snapshot_state_for(&resource_rel).as_str(),
                 "generated_at": Utc::now().to_rfc3339(),
             })),
@@ -1255,6 +1290,7 @@ impl AppfsAdapter {
         client_token: Option<String>,
     ) -> Result<ProcessOutcome> {
         let resource_path = format!("/{}", resource_rel);
+        self.clear_snapshot_recent_expand(resource_rel);
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Cold);
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Warming);
 
@@ -1266,20 +1302,6 @@ impl AppfsAdapter {
             snapshot_spec.on_timeout.as_str()
         );
 
-        self.emit_event(
-            &resource_path,
-            request_id,
-            "cache.expand",
-            Some(json!({
-                "path": resource_path,
-                "phase": "warming",
-                "state": self.snapshot_state_for(resource_rel).as_str(),
-                "reason": reason,
-            })),
-            None,
-            client_token.clone(),
-        )?;
-
         let started_at = Instant::now();
         let simulated_delay_ms = snapshot_expand_delay_ms();
         if simulated_delay_ms > 0 {
@@ -1288,6 +1310,7 @@ impl AppfsAdapter {
 
         if simulated_delay_ms > snapshot_spec.read_through_timeout_ms {
             self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.clear_snapshot_recent_expand(resource_rel);
             self.emit_event(
                 &resource_path,
                 request_id,
@@ -1323,6 +1346,7 @@ impl AppfsAdapter {
             Ok(content) => content,
             Err(upstream_reason) => {
                 self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+                self.clear_snapshot_recent_expand(resource_rel);
                 self.emit_event(
                     &resource_path,
                     request_id,
@@ -1350,6 +1374,7 @@ impl AppfsAdapter {
         let size_bytes = expanded_jsonl.len();
         if size_bytes > snapshot_spec.max_materialized_bytes {
             self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.clear_snapshot_recent_expand(resource_rel);
             eprintln!(
                 "[cache] snapshot_too_large resource={} size={} max={}",
                 resource_path, size_bytes, snapshot_spec.max_materialized_bytes
@@ -1383,6 +1408,7 @@ impl AppfsAdapter {
 
         self.materialize_snapshot_file(resource_rel, &expanded_jsonl)?;
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Hot);
+        self.mark_snapshot_recent_expand(resource_rel);
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
         eprintln!(
@@ -1400,6 +1426,7 @@ impl AppfsAdapter {
                 "state": self.snapshot_state_for(resource_rel).as_str(),
                 "bytes": size_bytes,
                 "elapsed_ms": elapsed_ms,
+                "upstream_calls": 1,
             })),
             None,
             client_token.clone(),
@@ -1415,6 +1442,7 @@ impl AppfsAdapter {
                 "bytes": size_bytes,
                 "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
                 "cached": false,
+                "coalesced": false,
                 "state": self.snapshot_state_for(resource_rel).as_str(),
                 "generated_at": Utc::now().to_rfc3339(),
             })),
@@ -2337,6 +2365,13 @@ fn snapshot_expand_delay_ms() -> u64 {
 
 fn snapshot_force_expand_on_refresh() -> bool {
     env_flag_enabled(SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV)
+}
+
+fn snapshot_coalesce_window_ms() -> u64 {
+    std::env::var(SNAPSHOT_COALESCE_WINDOW_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS)
 }
 
 fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPolicy {
