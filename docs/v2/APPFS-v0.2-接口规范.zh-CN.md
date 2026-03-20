@@ -43,7 +43,7 @@
 
 | 禁止项 | 处理方式 |
 |--------|----------|
-| 原始文本直写到 `.act`（非 JSONL） | submit-time 返回 `EINVAL` |
+| 原始文本直写到 `.act`（非 JSONL） | submit-time 返回 `INVALID_PAYLOAD` |
 | 无换行的半行提交 | 不作为有效请求，等待补全 |
 | 非对象 JSON（数组、纯字符串、数字） | submit-time 返回 `INVALID_ARGUMENT` |
 | 使用 `mode` 字段作为协议控制字段 | submit-time 返回 `INVALID_ARGUMENT` |

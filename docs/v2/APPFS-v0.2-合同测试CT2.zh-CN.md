@@ -347,7 +347,7 @@ Feature: 协议违规拒绝
     When Agent 执行命令:
       | printf 'hello world\n' >> /app/aiim/contacts/zhangsan/send_message.act |
 
-    Then 返回错误 EINVAL
+    Then 返回错误 INVALID_PAYLOAD
     And 不触发 action.accepted 事件
     And 日志包含: "[action] rejected: not json line=hello world"
 
@@ -382,7 +382,7 @@ Feature: 协议违规拒绝
 
 **Evidence 锚点**：
 - 日志：`[action] rejected: ...`
-- 返回码：EINVAL 或 INVALID_ARGUMENT
+- 返回码：INVALID_PAYLOAD 或 INVALID_ARGUMENT
 - 事件流：无 action.accepted
 
 ---
