@@ -234,6 +234,18 @@ struct SnapshotRefreshRequest {
     resource_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedActionLineV2 {
+    client_token: String,
+    payload_json: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActionLineV2ValidationError {
+    code: &'static str,
+    reason: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StreamingJob {
     request_id: String,
@@ -279,6 +291,7 @@ struct AppfsAdapter {
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
     streaming_jobs: Vec<StreamingJob>,
+    actionline_v2_strict: bool,
     business_adapter: Box<dyn AppAdapterV1>,
 }
 
@@ -409,6 +422,7 @@ impl AppfsAdapter {
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
+            actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_adapter,
         };
         adapter.load_known_handles()?;
@@ -563,6 +577,7 @@ impl AppfsAdapter {
                 }
             };
             let mut payload_line_end = line_end;
+            let mut client_token_override = None;
 
             if matches!(spec.input_mode, InputMode::Json)
                 && serde_json::from_str::<JsonValue>(&payload).is_err()
@@ -579,7 +594,27 @@ impl AppfsAdapter {
                 }
             }
 
-            match self.process_action(&rel, &spec, &payload)? {
+            if self.actionline_v2_strict {
+                match parse_action_line_v2(&payload) {
+                    Ok(parsed) => {
+                        client_token_override = Some(parsed.client_token);
+                        payload = parsed.payload_json;
+                    }
+                    Err(validation) => {
+                        let len = payload.len();
+                        eprintln!(
+                            "AppFS adapter rejected action payload for {rel}: validation={} len={len} reason={}",
+                            validation.code, validation.reason
+                        );
+                        cursor.offset = payload_line_end as u64;
+                        cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                        position = payload_line_end;
+                        continue;
+                    }
+                }
+            }
+
+            match self.process_action(&rel, &spec, &payload, client_token_override)? {
                 ProcessOutcome::Consumed => {
                     cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
@@ -615,6 +650,7 @@ impl AppfsAdapter {
         rel: &str,
         spec: &ActionSpec,
         payload: &str,
+        client_token_override: Option<String>,
     ) -> Result<ProcessOutcome> {
         if let Err(code) = validate_payload(spec, payload) {
             eprintln!(
@@ -626,7 +662,7 @@ impl AppfsAdapter {
 
         let normalized_path = format!("/{}", rel);
         let request_id = Self::new_request_id();
-        let client_token = extract_client_token(payload);
+        let client_token = client_token_override.or_else(|| extract_client_token(payload));
 
         if normalized_path == "/_paging/fetch_next.act" {
             match parse_paging_request(payload) {
@@ -1902,6 +1938,80 @@ fn is_transient_action_sink_busy(err: &std::io::Error) -> bool {
     }
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn parse_action_line_v2(
+    line: &str,
+) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
+    let json = serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
+        code: ERR_INVALID_PAYLOAD,
+        reason: "action line must be valid json",
+    })?;
+
+    let object = json.as_object().ok_or(ActionLineV2ValidationError {
+        code: ERR_INVALID_ARGUMENT,
+        reason: "action line must be a json object",
+    })?;
+
+    if object.contains_key("mode") {
+        return Err(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "mode field is not allowed in ActionLineV2",
+        });
+    }
+
+    let version = object
+        .get("version")
+        .and_then(|value| value.as_str())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "version is required",
+        })?;
+
+    if version != "2.0" {
+        return Err(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "version must be 2.0",
+        });
+    }
+
+    let client_token = object
+        .get("client_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "client_token is required",
+        })?
+        .to_string();
+
+    let payload = object
+        .get("payload")
+        .and_then(|value| value.as_object())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "payload must be a json object",
+        })?;
+
+    let payload_json = serde_json::to_string(payload).map_err(|_| ActionLineV2ValidationError {
+        code: ERR_INVALID_PAYLOAD,
+        reason: "payload serialization failed",
+    })?;
+
+    Ok(ParsedActionLineV2 {
+        client_token,
+        payload_json,
+    })
+}
+
 fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
     if let Some(max) = spec.max_payload_bytes {
         if payload.len() > max {
@@ -2161,9 +2271,10 @@ mod tests {
         action_template_matches, boundary_probe_from_bytes, decode_jsonl_line,
         deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
         is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
-        normalize_runtime_handle_id, parse_paging_request, parse_snapshot_refresh_request,
-        recover_multiline_json_payload, template_specificity, validate_payload, ActionSpec,
-        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
+        normalize_runtime_handle_id, parse_action_line_v2, parse_paging_request,
+        parse_snapshot_refresh_request, recover_multiline_json_payload, template_specificity,
+        validate_payload, ActionSpec, ExecutionMode, InputMode, ERR_INVALID_ARGUMENT,
+        ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -2231,6 +2342,73 @@ mod tests {
         let spec = make_spec();
         let payload = "hello line 1";
         assert!(validate_payload(&spec, payload).is_err());
+    }
+
+    #[test]
+    fn actionline_v2_parses_minimal_valid_line() {
+        let parsed = parse_action_line_v2(
+            r#"{"version":"2.0","client_token":"msg-001","payload":{"text":"hello"}}"#,
+        )
+        .expect("expected valid action line");
+        assert_eq!(parsed.client_token, "msg-001");
+        let payload: Value = serde_json::from_str(&parsed.payload_json).expect("json payload");
+        assert_eq!(payload.get("text").and_then(|v| v.as_str()), Some("hello"));
+    }
+
+    #[test]
+    fn actionline_v2_supports_multiple_jsonl_lines() {
+        let bytes = br#"{"version":"2.0","client_token":"msg-001","payload":{"text":"a"}}
+{"version":"2.0","client_token":"msg-002","payload":{"text":"b"}}
+"#;
+        let mut parsed_tokens = Vec::new();
+        for (idx, line) in bytes.split(|b| *b == b'\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut line_bytes = line.to_vec();
+            line_bytes.push(b'\n');
+            let decoded = decode_jsonl_line(&line_bytes, idx == 0)
+                .expect("decode")
+                .expect("line");
+            let parsed = parse_action_line_v2(&decoded).expect("parse");
+            parsed_tokens.push(parsed.client_token);
+        }
+        assert_eq!(parsed_tokens, vec!["msg-001", "msg-002"]);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_raw_text() {
+        let err = parse_action_line_v2("hello world").expect_err("raw text must be rejected");
+        assert_eq!(err.code, ERR_INVALID_PAYLOAD);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_non_object_json() {
+        let err = parse_action_line_v2(r#"["not","object"]"#)
+            .expect_err("non-object json must be rejected");
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_mode_field() {
+        let err = parse_action_line_v2(
+            r#"{"version":"2.0","mode":"text","client_token":"x","payload":{"text":"hi"}}"#,
+        )
+        .expect_err("mode must be rejected");
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_missing_required_fields() {
+        let missing_client =
+            parse_action_line_v2(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
+                .expect_err("missing client_token");
+        assert_eq!(missing_client.code, ERR_INVALID_ARGUMENT);
+
+        let missing_payload =
+            parse_action_line_v2(r#"{"version":"2.0","client_token":"x"}"#)
+                .expect_err("missing payload");
+        assert_eq!(missing_payload.code, ERR_INVALID_ARGUMENT);
     }
 
     #[test]

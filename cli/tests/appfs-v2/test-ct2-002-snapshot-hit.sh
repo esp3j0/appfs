@@ -72,6 +72,11 @@ ensure_agentfs_bin() {
         return 0
     fi
 
+    if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
+        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
+        return 0
+    fi
+
     if command -v cargo >/dev/null 2>&1; then
         build_cmd="cargo"
         say "Building Linux agentfs binary for CT2 v2 tests..."
@@ -83,11 +88,6 @@ ensure_agentfs_bin() {
             return 0
         fi
         say "Linux build unavailable; trying Windows fallback binary..."
-    fi
-
-    if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
     fi
 
     if command -v cargo.exe >/dev/null 2>&1; then
