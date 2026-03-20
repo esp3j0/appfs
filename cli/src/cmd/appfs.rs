@@ -592,10 +592,7 @@ impl AppfsAdapter {
         if sanitized.len() > 160 {
             sanitized = deterministic_shorten_segment(&sanitized, 160);
         }
-        format!(
-            "/_stream/snapshot-expand-tmp/{}.pending.jsonl",
-            sanitized
-        )
+        format!("/_stream/snapshot-expand-tmp/{}.pending.jsonl", sanitized)
     }
 
     fn snapshot_expand_temp_abs_path(&self, resource_rel: &str) -> PathBuf {
@@ -1467,6 +1464,90 @@ impl AppfsAdapter {
         }
 
         if simulated_delay_ms > snapshot_spec.read_through_timeout_ms {
+            if matches!(
+                snapshot_spec.on_timeout,
+                SnapshotOnTimeoutPolicy::ReturnStale
+            ) {
+                let stale_abs = self.app_dir.join(resource_rel);
+                match fs::metadata(&stale_abs) {
+                    Ok(meta) => {
+                        let stale_bytes = meta.len() as usize;
+                        if stale_bytes <= snapshot_spec.max_materialized_bytes {
+                            self.transition_snapshot_state(resource_rel, SnapshotCacheState::Hot);
+                            self.clear_snapshot_recent_expand(resource_rel);
+                            self.clear_snapshot_expand_journal_entry(resource_rel)?;
+                            eprintln!(
+                                "[cache] timeout_return_stale resource={} bytes={} timeout_ms={} elapsed_ms={}",
+                                resource_path,
+                                stale_bytes,
+                                snapshot_spec.read_through_timeout_ms,
+                                simulated_delay_ms
+                            );
+                            self.emit_event(
+                                &resource_path,
+                                request_id,
+                                "cache.expand",
+                                Some(json!({
+                                    "path": resource_path.clone(),
+                                    "phase": "timeout",
+                                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                                    "failure_reason": "timeout",
+                                    "timeout_ms": snapshot_spec.read_through_timeout_ms,
+                                    "elapsed_ms": simulated_delay_ms,
+                                    "on_timeout": snapshot_spec.on_timeout.as_str(),
+                                    "fallback": "return_stale",
+                                })),
+                                None,
+                                client_token.clone(),
+                            )?;
+                            self.emit_event(
+                                &resource_path,
+                                request_id,
+                                "cache.stale",
+                                Some(json!({
+                                    "path": resource_path.clone(),
+                                    "reason": "timeout",
+                                    "bytes": stale_bytes,
+                                    "max_size": snapshot_spec.max_materialized_bytes,
+                                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                                })),
+                                None,
+                                client_token.clone(),
+                            )?;
+                            self.emit_event(
+                                action_path,
+                                request_id,
+                                "action.completed",
+                                Some(json!({
+                                    "refreshed": false,
+                                    "resource_path": resource_path,
+                                    "bytes": stale_bytes,
+                                    "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
+                                    "cached": true,
+                                    "coalesced": false,
+                                    "stale": true,
+                                    "degrade_reason": "timeout_return_stale",
+                                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                                    "generated_at": Utc::now().to_rfc3339(),
+                                })),
+                                None,
+                                client_token,
+                            )?;
+                            return Ok(ProcessOutcome::Consumed);
+                        }
+                        eprintln!(
+                            "[cache] timeout_return_stale unavailable resource={} reason=stale_cache_too_large size={} max={}",
+                            resource_path, stale_bytes, snapshot_spec.max_materialized_bytes
+                        );
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "[cache] timeout_return_stale unavailable resource={} reason=no_stale_cache",
+                            resource_path
+                        );
+                    }
+                }
+            }
             self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
             self.clear_snapshot_recent_expand(resource_rel);
             self.emit_event(
@@ -1729,8 +1810,9 @@ impl AppfsAdapter {
         }
 
         if abs.exists() {
-            fs::remove_file(&abs)
-                .with_context(|| format!("Failed to remove stale snapshot file {}", abs.display()))?;
+            fs::remove_file(&abs).with_context(|| {
+                format!("Failed to remove stale snapshot file {}", abs.display())
+            })?;
         }
         fs::rename(temp_path, &abs).with_context(|| {
             format!(
@@ -2250,7 +2332,9 @@ impl AppfsAdapter {
     }
 
     fn save_snapshot_expand_journal(&self) -> Result<()> {
-        let tmp_path = self.snapshot_expand_journal_path.with_extension("res.json.tmp");
+        let tmp_path = self
+            .snapshot_expand_journal_path
+            .with_extension("res.json.tmp");
         let doc = SnapshotExpandJournalDoc {
             resources: self.snapshot_expand_journal.clone(),
         };
