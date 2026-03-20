@@ -39,6 +39,7 @@ const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
 const ERR_SNAPSHOT_TOO_LARGE: &str = "SNAPSHOT_TOO_LARGE";
+const ERR_CACHE_MISS_EXPAND_FAILED: &str = "CACHE_MISS_EXPAND_FAILED";
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
@@ -1056,16 +1057,24 @@ impl AppfsAdapter {
 
         let resource_abs = self.app_dir.join(&resource_rel);
         let size_bytes = match fs::metadata(&resource_abs) {
-            Ok(meta) => meta.len() as usize,
+            Ok(meta) => {
+                let size_bytes = meta.len() as usize;
+                eprintln!("[cache] hit resource=/{} bytes={size_bytes}", resource_rel);
+                size_bytes
+            }
             Err(err) => {
-                self.emit_failed(
+                let reason = match err.kind() {
+                    ErrorKind::NotFound => format!("resource_missing: {err}"),
+                    _ => format!("resource_unreadable: {err}"),
+                };
+                return self.handle_snapshot_cache_expand_hook(
                     action_path,
                     request_id,
-                    ERR_INVALID_ARGUMENT,
-                    &format!("snapshot resource not readable: {err}"),
+                    &resource_rel,
+                    "expand_hook",
+                    &reason,
                     client_token,
-                )?;
-                return Ok(ProcessOutcome::Consumed);
+                );
             }
         };
 
@@ -1096,6 +1105,34 @@ impl AppfsAdapter {
                 "generated_at": Utc::now().to_rfc3339(),
             })),
             None,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
+    }
+
+    fn handle_snapshot_cache_expand_hook(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_rel: &str,
+        phase: &str,
+        reason: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let resource_path = format!("/{}", resource_rel);
+        eprintln!(
+            "[cache] miss, expanding resource={} phase={} reason={}",
+            resource_path, phase, reason
+        );
+        self.emit_failed_with_retryable(
+            action_path,
+            request_id,
+            ERR_CACHE_MISS_EXPAND_FAILED,
+            &format!(
+                "snapshot read-through skeleton not materialized yet: resource={} phase={} reason={}",
+                resource_path, phase, reason
+            ),
+            true,
             client_token,
         )?;
         Ok(ProcessOutcome::Consumed)
