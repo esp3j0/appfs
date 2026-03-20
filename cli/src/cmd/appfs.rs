@@ -13,7 +13,7 @@ use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod bridge_resilience;
@@ -31,6 +31,8 @@ const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
 const MAX_RECOVERY_BYTES: usize = 65536;
 const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
+const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -162,6 +164,42 @@ struct ActionSpec {
 struct SnapshotSpec {
     template: String,
     max_materialized_bytes: usize,
+    read_through_timeout_ms: u64,
+    on_timeout: SnapshotOnTimeoutPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotOnTimeoutPolicy {
+    ReturnStale,
+    Fail,
+}
+
+impl SnapshotOnTimeoutPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReturnStale => "return_stale",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotCacheState {
+    Cold,
+    Warming,
+    Hot,
+    Error,
+}
+
+impl SnapshotCacheState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::Warming => "warming",
+            Self::Hot => "hot",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +244,10 @@ struct ManifestPagingDoc {
 struct ManifestSnapshotDoc {
     #[serde(default)]
     max_materialized_bytes: Option<usize>,
+    #[serde(default)]
+    read_through_timeout_ms: Option<u64>,
+    #[serde(default)]
+    on_timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +332,7 @@ struct AppfsAdapter {
     action_cursors: HashMap<String, ActionCursorState>,
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
+    snapshot_states: HashMap<String, SnapshotCacheState>,
     streaming_jobs: Vec<StreamingJob>,
     actionline_v2_strict: bool,
     business_adapter: Box<dyn AppAdapterV1>,
@@ -421,10 +464,12 @@ impl AppfsAdapter {
             action_cursors: Self::load_action_cursors(&action_cursors_path)?,
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
+            snapshot_states: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_adapter,
         };
+        adapter.initialize_snapshot_states();
         adapter.load_known_handles()?;
         Ok(adapter)
     }
@@ -443,6 +488,38 @@ impl AppfsAdapter {
             }
         }
         Ok(())
+    }
+
+    fn initialize_snapshot_states(&mut self) {
+        for spec in &self.snapshot_specs {
+            let rel = spec.template.clone();
+            let abs = self.app_dir.join(&rel);
+            let state = match fs::metadata(abs) {
+                Ok(_) => SnapshotCacheState::Hot,
+                Err(_) => SnapshotCacheState::Cold,
+            };
+            self.snapshot_states.insert(rel, state);
+        }
+    }
+
+    fn snapshot_state_for(&self, resource_rel: &str) -> SnapshotCacheState {
+        self.snapshot_states
+            .get(resource_rel)
+            .copied()
+            .unwrap_or(SnapshotCacheState::Cold)
+    }
+
+    fn transition_snapshot_state(&mut self, resource_rel: &str, next: SnapshotCacheState) {
+        let prev = self.snapshot_state_for(resource_rel);
+        if prev != next {
+            eprintln!(
+                "[cache] state resource=/{} from={} to={}",
+                resource_rel,
+                prev.as_str(),
+                next.as_str()
+            );
+        }
+        self.snapshot_states.insert(resource_rel.to_string(), next);
     }
 
     fn poll_once(&mut self) -> Result<()> {
@@ -1080,7 +1157,7 @@ impl AppfsAdapter {
             return Ok(ProcessOutcome::Consumed);
         }
 
-        let Some(snapshot_spec) = self.find_snapshot_spec(&resource_rel) else {
+        let Some(snapshot_spec) = self.find_snapshot_spec(&resource_rel).cloned() else {
             self.emit_failed(
                 action_path,
                 request_id,
@@ -1095,6 +1172,7 @@ impl AppfsAdapter {
         let size_bytes = match fs::metadata(&resource_abs) {
             Ok(meta) => {
                 let size_bytes = meta.len() as usize;
+                self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Hot);
                 eprintln!("[cache] hit resource=/{} bytes={size_bytes}", resource_rel);
                 size_bytes
             }
@@ -1103,11 +1181,11 @@ impl AppfsAdapter {
                     ErrorKind::NotFound => format!("resource_missing: {err}"),
                     _ => format!("resource_unreadable: {err}"),
                 };
-                return self.handle_snapshot_cache_expand_hook(
+                return self.expand_snapshot_cache_read_through(
                     action_path,
                     request_id,
                     &resource_rel,
-                    "expand_hook",
+                    &snapshot_spec,
                     &reason,
                     client_token,
                 );
@@ -1138,6 +1216,168 @@ impl AppfsAdapter {
                 "bytes": size_bytes,
                 "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
                 "cached": true,
+                "state": self.snapshot_state_for(&resource_rel).as_str(),
+                "generated_at": Utc::now().to_rfc3339(),
+            })),
+            None,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
+    }
+
+    fn expand_snapshot_cache_read_through(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_rel: &str,
+        snapshot_spec: &SnapshotSpec,
+        reason: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let resource_path = format!("/{}", resource_rel);
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Cold);
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Warming);
+
+        eprintln!(
+            "[cache] miss, expanding resource={} phase=read_through reason={} timeout_ms={} on_timeout={}",
+            resource_path,
+            reason,
+            snapshot_spec.read_through_timeout_ms,
+            snapshot_spec.on_timeout.as_str()
+        );
+
+        self.emit_event(
+            &resource_path,
+            request_id,
+            "cache.expand",
+            Some(json!({
+                "path": resource_path,
+                "phase": "warming",
+                "state": self.snapshot_state_for(resource_rel).as_str(),
+                "reason": reason,
+            })),
+            None,
+            client_token.clone(),
+        )?;
+
+        let started_at = Instant::now();
+        let simulated_delay_ms = snapshot_expand_delay_ms();
+        if simulated_delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(simulated_delay_ms));
+        }
+
+        if simulated_delay_ms > snapshot_spec.read_through_timeout_ms {
+            self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.emit_event(
+                &resource_path,
+                request_id,
+                "cache.expand",
+                Some(json!({
+                    "path": resource_path,
+                    "phase": "failed",
+                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                    "failure_reason": "timeout",
+                    "timeout_ms": snapshot_spec.read_through_timeout_ms,
+                    "on_timeout": snapshot_spec.on_timeout.as_str(),
+                })),
+                None,
+                client_token.clone(),
+            )?;
+            let timeout_reason = format!(
+                "expand_timeout elapsed_ms={} timeout_ms={} on_timeout={}",
+                simulated_delay_ms,
+                snapshot_spec.read_through_timeout_ms,
+                snapshot_spec.on_timeout.as_str()
+            );
+            return self.handle_snapshot_cache_expand_hook(
+                action_path,
+                request_id,
+                resource_rel,
+                "timeout",
+                &timeout_reason,
+                client_token,
+            );
+        }
+
+        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel) {
+            Ok(content) => content,
+            Err(upstream_reason) => {
+                self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+                self.emit_event(
+                    &resource_path,
+                    request_id,
+                    "cache.expand",
+                    Some(json!({
+                        "path": resource_path,
+                        "phase": "failed",
+                        "state": self.snapshot_state_for(resource_rel).as_str(),
+                        "failure_reason": upstream_reason,
+                    })),
+                    None,
+                    client_token.clone(),
+                )?;
+                return self.handle_snapshot_cache_expand_hook(
+                    action_path,
+                    request_id,
+                    resource_rel,
+                    "expand_hook",
+                    "upstream_connector_unavailable",
+                    client_token,
+                );
+            }
+        };
+
+        let size_bytes = expanded_jsonl.len();
+        if size_bytes > snapshot_spec.max_materialized_bytes {
+            self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.emit_failed(
+                action_path,
+                request_id,
+                ERR_SNAPSHOT_TOO_LARGE,
+                &format!(
+                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={}",
+                    snapshot_spec.max_materialized_bytes
+                ),
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        }
+
+        self.materialize_snapshot_file(resource_rel, &expanded_jsonl)?;
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Hot);
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+
+        eprintln!(
+            "[cache] expanded resource={} bytes={} state=hot elapsed_ms={elapsed_ms}",
+            resource_path, size_bytes
+        );
+
+        self.emit_event(
+            &resource_path,
+            request_id,
+            "cache.expand",
+            Some(json!({
+                "path": resource_path,
+                "phase": "completed",
+                "state": self.snapshot_state_for(resource_rel).as_str(),
+                "bytes": size_bytes,
+                "elapsed_ms": elapsed_ms,
+            })),
+            None,
+            client_token.clone(),
+        )?;
+
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.completed",
+            Some(json!({
+                "refreshed": true,
+                "resource_path": resource_path,
+                "bytes": size_bytes,
+                "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
+                "cached": false,
+                "state": self.snapshot_state_for(resource_rel).as_str(),
                 "generated_at": Utc::now().to_rfc3339(),
             })),
             None,
@@ -1160,6 +1400,10 @@ impl AppfsAdapter {
             "[cache] miss, expanding resource={} phase={} reason={}",
             resource_path, phase, reason
         );
+        eprintln!(
+            "[cache] expand failed resource={} phase={} reason={}",
+            resource_path, phase, reason
+        );
         self.emit_failed_with_retryable(
             action_path,
             request_id,
@@ -1172,6 +1416,56 @@ impl AppfsAdapter {
             client_token,
         )?;
         Ok(ProcessOutcome::Consumed)
+    }
+
+    fn fetch_snapshot_jsonl_from_upstream(
+        &self,
+        resource_rel: &str,
+    ) -> std::result::Result<String, String> {
+        if resource_rel != "chats/chat-001/messages.res.jsonl" {
+            return Err("connector has no expansion mapping for resource".to_string());
+        }
+
+        eprintln!("[cache.expand] fetch_snapshot_chunk resource=/{}", resource_rel);
+        let mut out = String::new();
+        for idx in 1..=100u32 {
+            let second = (idx - 1) % 60;
+            out.push_str(&format!(
+                r#"{{"id":"m{idx:03}","text":"snapshot file expanded message {idx}","ts":"2026-03-20T00:00:{second:02}Z"}}"#
+            ));
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    fn materialize_snapshot_file(&self, resource_rel: &str, content: &str) -> Result<()> {
+        let abs = self.app_dir.join(resource_rel);
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create snapshot parent directory {}", parent.display())
+            })?;
+        }
+
+        let tmp = abs.with_extension(format!("jsonl.tmp-{}", Uuid::new_v4().simple()));
+        fs::write(&tmp, content).with_context(|| {
+            format!(
+                "Failed to write snapshot expansion temp file {}",
+                tmp.display()
+            )
+        })?;
+        if abs.exists() {
+            fs::remove_file(&abs).with_context(|| {
+                format!("Failed to remove stale snapshot file {}", abs.display())
+            })?;
+        }
+        fs::rename(&tmp, &abs).with_context(|| {
+            format!(
+                "Failed to publish snapshot expansion from {} to {}",
+                tmp.display(),
+                abs.display()
+            )
+        })?;
+        Ok(())
     }
 
     fn enqueue_streaming_job(
@@ -1353,9 +1647,26 @@ impl AppfsAdapter {
                                     "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
                                 );
                             }
+                            let read_through_timeout_ms = node
+                                .snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.read_through_timeout_ms)
+                                .unwrap_or(DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS);
+                            if read_through_timeout_ms == 0 {
+                                anyhow::bail!(
+                                    "snapshot.read_through_timeout_ms must be > 0 for resource template={template}"
+                                );
+                            }
+                            let on_timeout = parse_snapshot_on_timeout_policy(
+                                node.snapshot
+                                    .as_ref()
+                                    .and_then(|snapshot| snapshot.on_timeout.as_deref()),
+                            );
                             snapshot_specs.push(SnapshotSpec {
                                 template: template.trim_start_matches('/').to_string(),
                                 max_materialized_bytes,
+                                read_through_timeout_ms,
+                                on_timeout,
                             });
                         }
                         "json" => {
@@ -1947,6 +2258,30 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn snapshot_expand_delay_ms() -> u64 {
+    std::env::var(SNAPSHOT_EXPAND_DELAY_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPolicy {
+    let normalized = value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some("fail") => SnapshotOnTimeoutPolicy::Fail,
+        Some("return_stale") | None => SnapshotOnTimeoutPolicy::ReturnStale,
+        Some(other) => {
+            eprintln!(
+                "AppFS adapter unknown snapshot.on_timeout='{other}', defaulting to return_stale"
+            );
+            SnapshotOnTimeoutPolicy::ReturnStale
+        }
+    }
+}
+
 fn parse_action_line_v2(
     line: &str,
 ) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
@@ -2272,9 +2607,10 @@ mod tests {
         deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
         is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
         normalize_runtime_handle_id, parse_action_line_v2, parse_paging_request,
+        parse_snapshot_on_timeout_policy,
         parse_snapshot_refresh_request, recover_multiline_json_payload, template_specificity,
-        validate_payload, ActionSpec, ExecutionMode, InputMode, ERR_INVALID_ARGUMENT,
-        ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
+        validate_payload, ActionSpec, ExecutionMode, InputMode, SnapshotOnTimeoutPolicy,
+        ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -2531,6 +2867,34 @@ mod tests {
         )
         .is_ok());
         assert!(parse_snapshot_refresh_request(r#"{"path":"bad"}"#).is_err());
+    }
+
+    #[test]
+    fn snapshot_on_timeout_policy_defaults_to_return_stale() {
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(None),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("")),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("return_stale")),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+    }
+
+    #[test]
+    fn snapshot_on_timeout_policy_parses_fail() {
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("fail")),
+            SnapshotOnTimeoutPolicy::Fail
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("FAIL")),
+            SnapshotOnTimeoutPolicy::Fail
+        );
     }
 
     #[test]
