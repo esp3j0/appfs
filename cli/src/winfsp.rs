@@ -2,6 +2,8 @@
 //!
 //! This adapter implements the WinFsp FileSystemContext trait by wrapping
 //! the agentfs_sdk::FileSystem trait. It allows mounting AgentFS on Windows.
+#![allow(clippy::await_holding_lock)]
+#![allow(clippy::manual_is_multiple_of)]
 
 use agentfs_sdk::error::Error as SdkError;
 use agentfs_sdk::filesystem::TimeChange;
