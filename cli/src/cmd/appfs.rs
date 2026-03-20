@@ -1494,7 +1494,10 @@ impl AppfsAdapter {
             return Err("connector has no expansion mapping for resource".to_string());
         }
 
-        eprintln!("[cache.expand] fetch_snapshot_chunk resource=/{}", resource_rel);
+        eprintln!(
+            "[cache.expand] fetch_snapshot_chunk resource=/{}",
+            resource_rel
+        );
         let mut out = String::new();
         for idx in 1..=100u32 {
             let second = (idx - 1) % 60;
@@ -1510,7 +1513,10 @@ impl AppfsAdapter {
         let abs = self.app_dir.join(resource_rel);
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create snapshot parent directory {}", parent.display())
+                format!(
+                    "Failed to create snapshot parent directory {}",
+                    parent.display()
+                )
             })?;
         }
 
@@ -2394,10 +2400,11 @@ fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPol
 fn parse_action_line_v2(
     line: &str,
 ) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
-    let json = serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
-        code: ERR_INVALID_PAYLOAD,
-        reason: "action line must be valid json",
-    })?;
+    let json =
+        serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
+            code: ERR_INVALID_PAYLOAD,
+            reason: "action line must be valid json",
+        })?;
 
     let object = json.as_object().ok_or(ActionLineV2ValidationError {
         code: ERR_INVALID_ARGUMENT,
@@ -2716,10 +2723,10 @@ mod tests {
         deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
         is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
         normalize_runtime_handle_id, parse_action_line_v2, parse_paging_request,
-        parse_snapshot_on_timeout_policy,
-        parse_snapshot_refresh_request, recover_multiline_json_payload, template_specificity,
-        validate_payload, ActionSpec, ExecutionMode, InputMode, SnapshotOnTimeoutPolicy,
-        ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
+        parse_snapshot_on_timeout_policy, parse_snapshot_refresh_request,
+        recover_multiline_json_payload, template_specificity, validate_payload, ActionSpec,
+        ExecutionMode, InputMode, SnapshotOnTimeoutPolicy, ERR_INVALID_ARGUMENT,
+        ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -2845,14 +2852,12 @@ mod tests {
 
     #[test]
     fn actionline_v2_rejects_missing_required_fields() {
-        let missing_client =
-            parse_action_line_v2(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
-                .expect_err("missing client_token");
+        let missing_client = parse_action_line_v2(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
+            .expect_err("missing client_token");
         assert_eq!(missing_client.code, ERR_INVALID_ARGUMENT);
 
-        let missing_payload =
-            parse_action_line_v2(r#"{"version":"2.0","client_token":"x"}"#)
-                .expect_err("missing payload");
+        let missing_payload = parse_action_line_v2(r#"{"version":"2.0","client_token":"x"}"#)
+            .expect_err("missing payload");
         assert_eq!(missing_payload.code, ERR_INVALID_ARGUMENT);
     }
 
