@@ -2,7 +2,7 @@
 
 - Date: `2026-03-17`
 - Scope: `AppFS on top of AgentFS`
-- Status: `v0.1 release-candidate stabilization`
+- Status: `v0.1 demo/conformance validated; v0.2 backend-mode design pending`
 
 ## 1. Current Status
 
@@ -27,6 +27,8 @@
 1. Adapter author onboarding still needs more end-to-end real-app examples.
 2. Release governance docs exist, but `rc2 -> v0.1.0` cadence is not yet formalized as a single checklist.
 3. Some non-Core roadmap items (multi-tenant context, richer QoS, advanced subscriptions) are not yet ADR-tracked.
+4. `v0.1` sidecar runtime does not intercept resource reads at backend layer, so it cannot natively perform read-through cache expansion on `*.res.jsonl`.
+5. Product expectation has shifted toward backend-native behavior: snapshot prewarm at init + read-driven upstream fetch + incremental cache growth.
 
 ## 3. Recommended Next Steps
 
@@ -42,14 +44,16 @@
 2. Add one real-app adapter walkthrough based on the developer guide.
 3. Keep bridge conformance bootstrap scripts aligned with CI defaults.
 
-## 3.3 Mid Term (v0.2 Design)
+## 3.3 Mid Term (v0.2 Backend Mode Design)
 
-1. ADR: multi-tenant/user context model.
-2. ADR: stream QoS and delivery tuning.
-3. ADR: paging/cursor capability extensions for high-volume apps.
+1. ADR: why `v0.2` is required (semantic shift from sidecar poll model to backend-native read/submit path).
+2. ADR: backend read interception contract for `*.res.jsonl` and cache miss handling.
+3. ADR: snapshot prewarm at initialization (size/metadata acquisition strategy).
+4. ADR: incremental snapshot cache materialization and atomic extension strategy.
+5. ADR: compatibility and migration strategy（`v0.1` 作为 demo/reference，`v0.2` 允许一次性破坏性升级，不要求共存窗口）.
 
 ## 4. Delivery Plan (Suggested)
 
 1. Milestone A (1-3 days): `rc2` freeze docs + final release checklist + CI policy sync.
 2. Milestone B (1 week): adapter DX uplift (template + real-app walkthrough + troubleshooting hardening).
-3. Milestone C (2-3 weeks): `v0.2` ADR set and prototype decisions.
+3. Milestone C (2-3 weeks): `v0.2` backend ADR set + requirements freeze + contract-test delta draft.

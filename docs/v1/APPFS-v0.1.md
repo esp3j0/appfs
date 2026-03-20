@@ -671,3 +671,16 @@ Expected events:
 2. Optional standard idempotency key behavior (if promoted from app-defined to spec-defined).
 3. Backpressure and QoS classes for heavy event streams.
 4. Promote observer contract from recommended to core.
+5. Backend-native read interception for `*.res.jsonl` so runtime can observe read offset and trigger cache extension.
+6. Startup snapshot prewarm capability (query upstream size/metadata for declared snapshot resources during init).
+7. Read-through snapshot cache growth (on read beyond cached bytes, fetch additional chunks/pages from upstream and atomically extend cache).
+
+### 19.1 Explicit v0.1 Boundary (Important)
+
+Current `v0.1` reference implementation is sidecar-oriented (`agentfs serve appfs`) and does **not** guarantee:
+
+1. Intercepting normal file read operations at the mount backend layer.
+2. Calling upstream APIs on snapshot read-cache miss from the read path itself.
+3. Incrementally extending snapshot cache based on live read progress.
+
+These capabilities require backend-native hooks and are therefore tracked as `v0.2` design goals.
