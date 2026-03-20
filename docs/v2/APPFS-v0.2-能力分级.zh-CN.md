@@ -59,7 +59,7 @@ Core 能力是 v0.2 合规的最低要求，必须全部实现才能声明 `core
 
 | 项目 | 要求 |
 |------|------|
-| 非 JSONL 拒绝 | submit-time 返回 `EINVAL` |
+| 非 JSONL 拒绝 | submit-time 返回 `INVALID_PAYLOAD` |
 | mode 字段拒绝 | submit-time 返回 `INVALID_ARGUMENT` |
 | 不触发事件 | 拒绝后不得 emit `action.accepted` |
 

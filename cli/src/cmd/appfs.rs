@@ -13,7 +13,7 @@ use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod bridge_resilience;
@@ -31,6 +31,11 @@ const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
 const MAX_RECOVERY_BYTES: usize = 65536;
 const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
+const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
+const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
+const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_V2_SNAPSHOT_COALESCE_WINDOW_MS";
+const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -39,6 +44,7 @@ const ERR_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 const ERR_INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
 const ERR_INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
 const ERR_SNAPSHOT_TOO_LARGE: &str = "SNAPSHOT_TOO_LARGE";
+const ERR_CACHE_MISS_EXPAND_FAILED: &str = "CACHE_MISS_EXPAND_FAILED";
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
@@ -161,6 +167,42 @@ struct ActionSpec {
 struct SnapshotSpec {
     template: String,
     max_materialized_bytes: usize,
+    read_through_timeout_ms: u64,
+    on_timeout: SnapshotOnTimeoutPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotOnTimeoutPolicy {
+    ReturnStale,
+    Fail,
+}
+
+impl SnapshotOnTimeoutPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReturnStale => "return_stale",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotCacheState {
+    Cold,
+    Warming,
+    Hot,
+    Error,
+}
+
+impl SnapshotCacheState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::Warming => "warming",
+            Self::Hot => "hot",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +247,10 @@ struct ManifestPagingDoc {
 struct ManifestSnapshotDoc {
     #[serde(default)]
     max_materialized_bytes: Option<usize>,
+    #[serde(default)]
+    read_through_timeout_ms: Option<u64>,
+    #[serde(default)]
+    on_timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +277,18 @@ struct PagingRequest {
 #[derive(Debug, Clone)]
 struct SnapshotRefreshRequest {
     resource_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedActionLineV2 {
+    client_token: String,
+    payload_json: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActionLineV2ValidationError {
+    code: &'static str,
+    reason: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,7 +335,10 @@ struct AppfsAdapter {
     action_cursors: HashMap<String, ActionCursorState>,
     handles: HashMap<String, PagingHandle>,
     handle_aliases: HashMap<String, String>,
+    snapshot_states: HashMap<String, SnapshotCacheState>,
+    snapshot_recent_expands: HashMap<String, Instant>,
     streaming_jobs: Vec<StreamingJob>,
+    actionline_v2_strict: bool,
     business_adapter: Box<dyn AppAdapterV1>,
 }
 
@@ -407,9 +468,13 @@ impl AppfsAdapter {
             action_cursors: Self::load_action_cursors(&action_cursors_path)?,
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
+            snapshot_states: HashMap::new(),
+            snapshot_recent_expands: HashMap::new(),
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
+            actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_adapter,
         };
+        adapter.initialize_snapshot_states();
         adapter.load_known_handles()?;
         Ok(adapter)
     }
@@ -428,6 +493,59 @@ impl AppfsAdapter {
             }
         }
         Ok(())
+    }
+
+    fn initialize_snapshot_states(&mut self) {
+        for spec in &self.snapshot_specs {
+            let rel = spec.template.clone();
+            let abs = self.app_dir.join(&rel);
+            let state = match fs::metadata(abs) {
+                Ok(_) => SnapshotCacheState::Hot,
+                Err(_) => SnapshotCacheState::Cold,
+            };
+            self.snapshot_states.insert(rel, state);
+        }
+    }
+
+    fn snapshot_state_for(&self, resource_rel: &str) -> SnapshotCacheState {
+        self.snapshot_states
+            .get(resource_rel)
+            .copied()
+            .unwrap_or(SnapshotCacheState::Cold)
+    }
+
+    fn transition_snapshot_state(&mut self, resource_rel: &str, next: SnapshotCacheState) {
+        let prev = self.snapshot_state_for(resource_rel);
+        if prev != next {
+            eprintln!(
+                "[cache] state resource=/{} from={} to={}",
+                resource_rel,
+                prev.as_str(),
+                next.as_str()
+            );
+        }
+        self.snapshot_states.insert(resource_rel.to_string(), next);
+    }
+
+    fn mark_snapshot_recent_expand(&mut self, resource_rel: &str) {
+        self.snapshot_recent_expands
+            .insert(resource_rel.to_string(), Instant::now());
+    }
+
+    fn clear_snapshot_recent_expand(&mut self, resource_rel: &str) {
+        self.snapshot_recent_expands.remove(resource_rel);
+    }
+
+    fn is_coalesced_snapshot_hit(&mut self, resource_rel: &str) -> bool {
+        let window = Duration::from_millis(snapshot_coalesce_window_ms().max(1));
+        match self.snapshot_recent_expands.get(resource_rel).copied() {
+            Some(expanded_at) if expanded_at.elapsed() <= window => true,
+            Some(_) => {
+                self.snapshot_recent_expands.remove(resource_rel);
+                false
+            }
+            None => false,
+        }
     }
 
     fn poll_once(&mut self) -> Result<()> {
@@ -562,6 +680,7 @@ impl AppfsAdapter {
                 }
             };
             let mut payload_line_end = line_end;
+            let mut client_token_override = None;
 
             if matches!(spec.input_mode, InputMode::Json)
                 && serde_json::from_str::<JsonValue>(&payload).is_err()
@@ -578,7 +697,27 @@ impl AppfsAdapter {
                 }
             }
 
-            match self.process_action(&rel, &spec, &payload)? {
+            if self.actionline_v2_strict {
+                match parse_action_line_v2(&payload) {
+                    Ok(parsed) => {
+                        client_token_override = Some(parsed.client_token);
+                        payload = parsed.payload_json;
+                    }
+                    Err(validation) => {
+                        let len = payload.len();
+                        eprintln!(
+                            "AppFS adapter rejected action payload for {rel}: validation={} len={len} reason={}",
+                            validation.code, validation.reason
+                        );
+                        cursor.offset = payload_line_end as u64;
+                        cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                        position = payload_line_end;
+                        continue;
+                    }
+                }
+            }
+
+            match self.process_action(&rel, &spec, &payload, client_token_override)? {
                 ProcessOutcome::Consumed => {
                     cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
@@ -614,6 +753,7 @@ impl AppfsAdapter {
         rel: &str,
         spec: &ActionSpec,
         payload: &str,
+        client_token_override: Option<String>,
     ) -> Result<ProcessOutcome> {
         if let Err(code) = validate_payload(spec, payload) {
             eprintln!(
@@ -625,7 +765,7 @@ impl AppfsAdapter {
 
         let normalized_path = format!("/{}", rel);
         let request_id = Self::new_request_id();
-        let client_token = extract_client_token(payload);
+        let client_token = client_token_override.or_else(|| extract_client_token(payload));
 
         if normalized_path == "/_paging/fetch_next.act" {
             match parse_paging_request(payload) {
@@ -1043,7 +1183,7 @@ impl AppfsAdapter {
             return Ok(ProcessOutcome::Consumed);
         }
 
-        let Some(snapshot_spec) = self.find_snapshot_spec(&resource_rel) else {
+        let Some(snapshot_spec) = self.find_snapshot_spec(&resource_rel).cloned() else {
             self.emit_failed(
                 action_path,
                 request_id,
@@ -1055,29 +1195,66 @@ impl AppfsAdapter {
         };
 
         let resource_abs = self.app_dir.join(&resource_rel);
-        let size_bytes = match fs::metadata(&resource_abs) {
-            Ok(meta) => meta.len() as usize,
+        let force_expand = snapshot_force_expand_on_refresh();
+        let (size_bytes, coalesced) = match fs::metadata(&resource_abs) {
+            Ok(meta) => {
+                let size_bytes = meta.len() as usize;
+                if force_expand {
+                    eprintln!(
+                        "[cache] refresh forcing expand resource=/{} existing_bytes={size_bytes}",
+                        resource_rel
+                    );
+                    self.clear_snapshot_recent_expand(&resource_rel);
+                    return self.expand_snapshot_cache_read_through(
+                        action_path,
+                        request_id,
+                        &resource_rel,
+                        &snapshot_spec,
+                        "forced_refresh",
+                        client_token,
+                    );
+                }
+                let coalesced = self.is_coalesced_snapshot_hit(&resource_rel);
+                self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Hot);
+                eprintln!("[cache] hit resource=/{} bytes={size_bytes}", resource_rel);
+                if coalesced {
+                    eprintln!(
+                        "[cache] coalesced concurrent miss resource=/{}",
+                        resource_rel
+                    );
+                }
+                (size_bytes, coalesced)
+            }
             Err(err) => {
-                self.emit_failed(
+                let reason = match err.kind() {
+                    ErrorKind::NotFound => format!("resource_missing: {err}"),
+                    _ => format!("resource_unreadable: {err}"),
+                };
+                self.clear_snapshot_recent_expand(&resource_rel);
+                return self.expand_snapshot_cache_read_through(
                     action_path,
                     request_id,
-                    ERR_INVALID_ARGUMENT,
-                    &format!("snapshot resource not readable: {err}"),
+                    &resource_rel,
+                    &snapshot_spec,
+                    &reason,
                     client_token,
-                )?;
-                return Ok(ProcessOutcome::Consumed);
+                );
             }
         };
 
         if size_bytes > snapshot_spec.max_materialized_bytes {
-            self.emit_failed(
+            let resource_path = format!("/{}", resource_rel);
+            eprintln!(
+                "[cache] snapshot_too_large resource={} size={} max={}",
+                resource_path, size_bytes, snapshot_spec.max_materialized_bytes
+            );
+            self.emit_snapshot_too_large(
                 action_path,
                 request_id,
-                ERR_SNAPSHOT_TOO_LARGE,
-                &format!(
-                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={}",
-                    snapshot_spec.max_materialized_bytes
-                ),
+                &resource_path,
+                size_bytes,
+                snapshot_spec.max_materialized_bytes,
+                "existing_cache",
                 client_token,
             )?;
             return Ok(ProcessOutcome::Consumed);
@@ -1093,12 +1270,276 @@ impl AppfsAdapter {
                 "bytes": size_bytes,
                 "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
                 "cached": true,
+                "coalesced": coalesced,
+                "state": self.snapshot_state_for(&resource_rel).as_str(),
                 "generated_at": Utc::now().to_rfc3339(),
             })),
             None,
             client_token,
         )?;
         Ok(ProcessOutcome::Consumed)
+    }
+
+    fn expand_snapshot_cache_read_through(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_rel: &str,
+        snapshot_spec: &SnapshotSpec,
+        reason: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let resource_path = format!("/{}", resource_rel);
+        self.clear_snapshot_recent_expand(resource_rel);
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Cold);
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Warming);
+
+        eprintln!(
+            "[cache] miss, expanding resource={} phase=read_through reason={} timeout_ms={} on_timeout={}",
+            resource_path,
+            reason,
+            snapshot_spec.read_through_timeout_ms,
+            snapshot_spec.on_timeout.as_str()
+        );
+
+        let started_at = Instant::now();
+        let simulated_delay_ms = snapshot_expand_delay_ms();
+        if simulated_delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(simulated_delay_ms));
+        }
+
+        if simulated_delay_ms > snapshot_spec.read_through_timeout_ms {
+            self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.clear_snapshot_recent_expand(resource_rel);
+            self.emit_event(
+                &resource_path,
+                request_id,
+                "cache.expand",
+                Some(json!({
+                    "path": resource_path,
+                    "phase": "failed",
+                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                    "failure_reason": "timeout",
+                    "timeout_ms": snapshot_spec.read_through_timeout_ms,
+                    "on_timeout": snapshot_spec.on_timeout.as_str(),
+                })),
+                None,
+                client_token.clone(),
+            )?;
+            let timeout_reason = format!(
+                "expand_timeout elapsed_ms={} timeout_ms={} on_timeout={}",
+                simulated_delay_ms,
+                snapshot_spec.read_through_timeout_ms,
+                snapshot_spec.on_timeout.as_str()
+            );
+            return self.handle_snapshot_cache_expand_hook(
+                action_path,
+                request_id,
+                resource_rel,
+                "timeout",
+                &timeout_reason,
+                client_token,
+            );
+        }
+
+        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel) {
+            Ok(content) => content,
+            Err(upstream_reason) => {
+                self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+                self.clear_snapshot_recent_expand(resource_rel);
+                self.emit_event(
+                    &resource_path,
+                    request_id,
+                    "cache.expand",
+                    Some(json!({
+                        "path": resource_path,
+                        "phase": "failed",
+                        "state": self.snapshot_state_for(resource_rel).as_str(),
+                        "failure_reason": upstream_reason,
+                    })),
+                    None,
+                    client_token.clone(),
+                )?;
+                return self.handle_snapshot_cache_expand_hook(
+                    action_path,
+                    request_id,
+                    resource_rel,
+                    "expand_hook",
+                    "upstream_connector_unavailable",
+                    client_token,
+                );
+            }
+        };
+
+        let size_bytes = expanded_jsonl.len();
+        if size_bytes > snapshot_spec.max_materialized_bytes {
+            self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
+            self.clear_snapshot_recent_expand(resource_rel);
+            eprintln!(
+                "[cache] snapshot_too_large resource={} size={} max={}",
+                resource_path, size_bytes, snapshot_spec.max_materialized_bytes
+            );
+            self.emit_event(
+                &resource_path,
+                request_id,
+                "cache.expand",
+                Some(json!({
+                    "path": resource_path,
+                    "phase": "failed",
+                    "state": self.snapshot_state_for(resource_rel).as_str(),
+                    "failure_reason": "snapshot_too_large",
+                    "size": size_bytes,
+                    "max_size": snapshot_spec.max_materialized_bytes,
+                })),
+                None,
+                client_token.clone(),
+            )?;
+            self.emit_snapshot_too_large(
+                action_path,
+                request_id,
+                &resource_path,
+                size_bytes,
+                snapshot_spec.max_materialized_bytes,
+                "expand_publish",
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        }
+
+        self.materialize_snapshot_file(resource_rel, &expanded_jsonl)?;
+        self.transition_snapshot_state(resource_rel, SnapshotCacheState::Hot);
+        self.mark_snapshot_recent_expand(resource_rel);
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+
+        eprintln!(
+            "[cache] expanded resource={} bytes={} state=hot elapsed_ms={elapsed_ms}",
+            resource_path, size_bytes
+        );
+
+        self.emit_event(
+            &resource_path,
+            request_id,
+            "cache.expand",
+            Some(json!({
+                "path": resource_path,
+                "phase": "completed",
+                "state": self.snapshot_state_for(resource_rel).as_str(),
+                "bytes": size_bytes,
+                "elapsed_ms": elapsed_ms,
+                "upstream_calls": 1,
+            })),
+            None,
+            client_token.clone(),
+        )?;
+
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.completed",
+            Some(json!({
+                "refreshed": true,
+                "resource_path": resource_path,
+                "bytes": size_bytes,
+                "max_materialized_bytes": snapshot_spec.max_materialized_bytes,
+                "cached": false,
+                "coalesced": false,
+                "state": self.snapshot_state_for(resource_rel).as_str(),
+                "generated_at": Utc::now().to_rfc3339(),
+            })),
+            None,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
+    }
+
+    fn handle_snapshot_cache_expand_hook(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_rel: &str,
+        phase: &str,
+        reason: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let resource_path = format!("/{}", resource_rel);
+        eprintln!(
+            "[cache] miss, expanding resource={} phase={} reason={}",
+            resource_path, phase, reason
+        );
+        eprintln!(
+            "[cache] expand failed resource={} phase={} reason={}",
+            resource_path, phase, reason
+        );
+        self.emit_failed_with_retryable(
+            action_path,
+            request_id,
+            ERR_CACHE_MISS_EXPAND_FAILED,
+            &format!(
+                "snapshot read-through skeleton not materialized yet: resource={} phase={} reason={}",
+                resource_path, phase, reason
+            ),
+            true,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
+    }
+
+    fn fetch_snapshot_jsonl_from_upstream(
+        &self,
+        resource_rel: &str,
+    ) -> std::result::Result<String, String> {
+        if resource_rel != "chats/chat-001/messages.res.jsonl"
+            && resource_rel != "chats/chat-oversize/messages.res.jsonl"
+        {
+            return Err("connector has no expansion mapping for resource".to_string());
+        }
+
+        eprintln!(
+            "[cache.expand] fetch_snapshot_chunk resource=/{}",
+            resource_rel
+        );
+        let mut out = String::new();
+        for idx in 1..=100u32 {
+            let second = (idx - 1) % 60;
+            out.push_str(&format!(
+                r#"{{"id":"m{idx:03}","text":"snapshot file expanded message {idx}","ts":"2026-03-20T00:00:{second:02}Z"}}"#
+            ));
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    fn materialize_snapshot_file(&self, resource_rel: &str, content: &str) -> Result<()> {
+        let abs = self.app_dir.join(resource_rel);
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create snapshot parent directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let tmp = abs.with_extension(format!("jsonl.tmp-{}", Uuid::new_v4().simple()));
+        fs::write(&tmp, content).with_context(|| {
+            format!(
+                "Failed to write snapshot expansion temp file {}",
+                tmp.display()
+            )
+        })?;
+        if abs.exists() {
+            fs::remove_file(&abs).with_context(|| {
+                format!("Failed to remove stale snapshot file {}", abs.display())
+            })?;
+        }
+        fs::rename(&tmp, &abs).with_context(|| {
+            format!(
+                "Failed to publish snapshot expansion from {} to {}",
+                tmp.display(),
+                abs.display()
+            )
+        })?;
+        Ok(())
     }
 
     fn enqueue_streaming_job(
@@ -1280,9 +1721,26 @@ impl AppfsAdapter {
                                     "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
                                 );
                             }
+                            let read_through_timeout_ms = node
+                                .snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.read_through_timeout_ms)
+                                .unwrap_or(DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS);
+                            if read_through_timeout_ms == 0 {
+                                anyhow::bail!(
+                                    "snapshot.read_through_timeout_ms must be > 0 for resource template={template}"
+                                );
+                            }
+                            let on_timeout = parse_snapshot_on_timeout_policy(
+                                node.snapshot
+                                    .as_ref()
+                                    .and_then(|snapshot| snapshot.on_timeout.as_deref()),
+                            );
                             snapshot_specs.push(SnapshotSpec {
                                 template: template.trim_start_matches('/').to_string(),
                                 max_materialized_bytes,
+                                read_through_timeout_ms,
+                                on_timeout,
                             });
                         }
                         "json" => {
@@ -1367,6 +1825,37 @@ impl AppfsAdapter {
                 "code": error_code,
                 "message": message,
                 "retryable": retryable,
+            })),
+            client_token,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_snapshot_too_large(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        resource_path: &str,
+        size_bytes: usize,
+        max_size: usize,
+        phase: &str,
+        client_token: Option<String>,
+    ) -> Result<()> {
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.failed",
+            None,
+            Some(json!({
+                "code": ERR_SNAPSHOT_TOO_LARGE,
+                "message": format!(
+                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={max_size}"
+                ),
+                "retryable": false,
+                "resource_path": resource_path,
+                "phase": phase,
+                "size": size_bytes,
+                "max_size": max_size,
             })),
             client_token,
         )
@@ -1865,6 +2354,116 @@ fn is_transient_action_sink_busy(err: &std::io::Error) -> bool {
     }
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn snapshot_expand_delay_ms() -> u64 {
+    std::env::var(SNAPSHOT_EXPAND_DELAY_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn snapshot_force_expand_on_refresh() -> bool {
+    env_flag_enabled(SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV)
+}
+
+fn snapshot_coalesce_window_ms() -> u64 {
+    std::env::var(SNAPSHOT_COALESCE_WINDOW_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS)
+}
+
+fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPolicy {
+    let normalized = value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some("fail") => SnapshotOnTimeoutPolicy::Fail,
+        Some("return_stale") | None => SnapshotOnTimeoutPolicy::ReturnStale,
+        Some(other) => {
+            eprintln!(
+                "AppFS adapter unknown snapshot.on_timeout='{other}', defaulting to return_stale"
+            );
+            SnapshotOnTimeoutPolicy::ReturnStale
+        }
+    }
+}
+
+fn parse_action_line_v2(
+    line: &str,
+) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
+    let json =
+        serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
+            code: ERR_INVALID_PAYLOAD,
+            reason: "action line must be valid json",
+        })?;
+
+    let object = json.as_object().ok_or(ActionLineV2ValidationError {
+        code: ERR_INVALID_ARGUMENT,
+        reason: "action line must be a json object",
+    })?;
+
+    if object.contains_key("mode") {
+        return Err(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "mode field is not allowed in ActionLineV2",
+        });
+    }
+
+    let version = object
+        .get("version")
+        .and_then(|value| value.as_str())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "version is required",
+        })?;
+
+    if version != "2.0" {
+        return Err(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "version must be 2.0",
+        });
+    }
+
+    let client_token = object
+        .get("client_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "client_token is required",
+        })?
+        .to_string();
+
+    let payload = object
+        .get("payload")
+        .and_then(|value| value.as_object())
+        .ok_or(ActionLineV2ValidationError {
+            code: ERR_INVALID_ARGUMENT,
+            reason: "payload must be a json object",
+        })?;
+
+    let payload_json = serde_json::to_string(payload).map_err(|_| ActionLineV2ValidationError {
+        code: ERR_INVALID_PAYLOAD,
+        reason: "payload serialization failed",
+    })?;
+
+    Ok(ParsedActionLineV2 {
+        client_token,
+        payload_json,
+    })
+}
+
 fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
     if let Some(max) = spec.max_payload_bytes {
         if payload.len() > max {
@@ -2124,9 +2723,11 @@ mod tests {
         action_template_matches, boundary_probe_from_bytes, decode_jsonl_line,
         deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
         is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
-        normalize_runtime_handle_id, parse_paging_request, parse_snapshot_refresh_request,
+        normalize_runtime_handle_id, parse_action_line_v2, parse_paging_request,
+        parse_snapshot_on_timeout_policy, parse_snapshot_refresh_request,
         recover_multiline_json_payload, template_specificity, validate_payload, ActionSpec,
-        ExecutionMode, InputMode, MAX_SEGMENT_BYTES,
+        ExecutionMode, InputMode, SnapshotOnTimeoutPolicy, ERR_INVALID_ARGUMENT,
+        ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
     };
 
     fn make_spec() -> ActionSpec {
@@ -2194,6 +2795,71 @@ mod tests {
         let spec = make_spec();
         let payload = "hello line 1";
         assert!(validate_payload(&spec, payload).is_err());
+    }
+
+    #[test]
+    fn actionline_v2_parses_minimal_valid_line() {
+        let parsed = parse_action_line_v2(
+            r#"{"version":"2.0","client_token":"msg-001","payload":{"text":"hello"}}"#,
+        )
+        .expect("expected valid action line");
+        assert_eq!(parsed.client_token, "msg-001");
+        let payload: Value = serde_json::from_str(&parsed.payload_json).expect("json payload");
+        assert_eq!(payload.get("text").and_then(|v| v.as_str()), Some("hello"));
+    }
+
+    #[test]
+    fn actionline_v2_supports_multiple_jsonl_lines() {
+        let bytes = br#"{"version":"2.0","client_token":"msg-001","payload":{"text":"a"}}
+{"version":"2.0","client_token":"msg-002","payload":{"text":"b"}}
+"#;
+        let mut parsed_tokens = Vec::new();
+        for (idx, line) in bytes.split(|b| *b == b'\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let mut line_bytes = line.to_vec();
+            line_bytes.push(b'\n');
+            let decoded = decode_jsonl_line(&line_bytes, idx == 0)
+                .expect("decode")
+                .expect("line");
+            let parsed = parse_action_line_v2(&decoded).expect("parse");
+            parsed_tokens.push(parsed.client_token);
+        }
+        assert_eq!(parsed_tokens, vec!["msg-001", "msg-002"]);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_raw_text() {
+        let err = parse_action_line_v2("hello world").expect_err("raw text must be rejected");
+        assert_eq!(err.code, ERR_INVALID_PAYLOAD);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_non_object_json() {
+        let err = parse_action_line_v2(r#"["not","object"]"#)
+            .expect_err("non-object json must be rejected");
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_mode_field() {
+        let err = parse_action_line_v2(
+            r#"{"version":"2.0","mode":"text","client_token":"x","payload":{"text":"hi"}}"#,
+        )
+        .expect_err("mode must be rejected");
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn actionline_v2_rejects_missing_required_fields() {
+        let missing_client = parse_action_line_v2(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
+            .expect_err("missing client_token");
+        assert_eq!(missing_client.code, ERR_INVALID_ARGUMENT);
+
+        let missing_payload = parse_action_line_v2(r#"{"version":"2.0","client_token":"x"}"#)
+            .expect_err("missing payload");
+        assert_eq!(missing_payload.code, ERR_INVALID_ARGUMENT);
     }
 
     #[test]
@@ -2316,6 +2982,34 @@ mod tests {
         )
         .is_ok());
         assert!(parse_snapshot_refresh_request(r#"{"path":"bad"}"#).is_err());
+    }
+
+    #[test]
+    fn snapshot_on_timeout_policy_defaults_to_return_stale() {
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(None),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("")),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("return_stale")),
+            SnapshotOnTimeoutPolicy::ReturnStale
+        );
+    }
+
+    #[test]
+    fn snapshot_on_timeout_policy_parses_fail() {
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("fail")),
+            SnapshotOnTimeoutPolicy::Fail
+        );
+        assert_eq!(
+            parse_snapshot_on_timeout_policy(Some("FAIL")),
+            SnapshotOnTimeoutPolicy::Fail
+        );
     }
 
     #[test]
