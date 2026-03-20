@@ -28,3 +28,7 @@ DIR="$(dirname "$0")"
 # Optional AppFS contract test suite (disabled by default).
 # Enable with: APPFS_CONTRACT_TESTS=1 ./tests/all.sh
 sh "$DIR/test-appfs-contract.sh"
+
+# Optional AppFS v2 Phase-B contract skeleton suite (disabled by default).
+# Enable with: APPFS_V2_CONTRACT_TESTS=1 ./tests/all.sh
+sh "$DIR/test-appfs-v2-contract.sh"
