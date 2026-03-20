@@ -27,7 +27,7 @@ use crate::nfsserve::tcp::NFSTcp;
 use agentfs_sdk::{get_mounts, Mount};
 #[cfg(target_os = "linux")]
 use std::{
-    io::{self, Write},
+    io::{self, ErrorKind, Write},
     os::unix::fs::MetadataExt,
 };
 
@@ -216,11 +216,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
             .unwrap_or_else(|_| args.id_or_path.clone())
     );
 
-    if !args.mountpoint.exists() {
-        anyhow::bail!("Mountpoint does not exist: {}", args.mountpoint.display());
-    }
-
-    let mountpoint = std::fs::canonicalize(args.mountpoint.clone())?;
+    let mountpoint = canonicalize_mountpoint_with_recovery(&args.mountpoint)?;
     let mountpoint_ino = {
         use anyhow::Context as _;
         std::fs::metadata(mountpoint.clone())
@@ -233,11 +229,95 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
         auto_unmount: args.auto_unmount,
         allow_root: args.allow_root,
         allow_other: args.allow_other,
-        fsname,
+        fsname: fsname.clone(),
         uid: args.uid,
         gid: args.gid,
     };
 
+    if args.foreground {
+        let rt = crate::get_runtime();
+        let agentfs = match rt.block_on(open_agentfs(opts)) {
+            Ok(fs) => fs,
+            Err(SdkError::SchemaVersionMismatch { found, expected }) => {
+                exit_schema_version_mismatch(&found, &expected, &args.id_or_path);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        // Check for overlay configuration
+        let fs: Arc<Mutex<dyn FileSystem + Send>> = rt.block_on(async {
+            // Query base_path in a separate scope so connection is released before overlay load.
+            let base_path: Option<String> = {
+                let conn = agentfs.get_connection().await?;
+                let query = "SELECT value FROM fs_overlay_config WHERE key = 'base_path'";
+                match conn.query(query, ()).await {
+                    Ok(mut rows) => {
+                        if let Ok(Some(row)) = rows.next().await {
+                            row.get_value(0).ok().and_then(|v| {
+                                if let Value::Text(s) = v {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None, // Table doesn't exist or query failed
+                }
+            }; // conn is dropped here
+
+            if let Some(base_path) = base_path {
+                // Create OverlayFS with HostFS base, loading existing whiteouts
+                eprintln!("Using overlay filesystem with base: {}", base_path);
+                let hostfs = HostFS::new(&base_path)?;
+                let hostfs = hostfs.with_fuse_mountpoint(mountpoint_ino);
+                let overlay = OverlayFS::new(Arc::new(hostfs), agentfs.fs);
+                overlay.load().await?; // Load persisted whiteouts and origin mappings
+                Ok::<Arc<Mutex<dyn FileSystem + Send>>, anyhow::Error>(Arc::new(Mutex::new(
+                    overlay,
+                )))
+            } else {
+                // Plain AgentFS
+                Ok(Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>)
+            }
+        })?;
+
+        let mount_opts = MountOpts {
+            mountpoint: mountpoint.clone(),
+            backend: MountBackend::Fuse,
+            fsname: fsname.clone(),
+            uid: args.uid,
+            gid: args.gid,
+            allow_other: args.allow_other,
+            allow_root: args.allow_root,
+            auto_unmount: args.auto_unmount,
+            // Prefer lazy detach on Ctrl+C path to reduce stale mountpoint risk.
+            lazy_unmount: true,
+            timeout: std::time::Duration::from_secs(10),
+        };
+
+        rt.block_on(async {
+            let _mount_handle = mount_fs(fs, mount_opts).await?;
+            eprintln!("Mounted at {}", mountpoint.display());
+            eprintln!("Press Ctrl+C to unmount and exit.");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = wait_for_external_unmount(mountpoint.clone()) => {
+                    eprintln!(
+                        "Mountpoint {} was unmounted externally; exiting foreground mode.",
+                        mountpoint.display()
+                    );
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        return Ok(());
+    }
+
+    let opts = AgentFSOptions::resolve(&args.id_or_path)?;
     let id_or_path = args.id_or_path.clone();
     let mount = move || {
         let rt = crate::get_runtime();
@@ -290,15 +370,59 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
         crate::fuse::mount(fs, fuse_opts, rt)
     };
 
-    if args.foreground {
-        mount()
-    } else {
-        crate::daemon::daemonize(
-            mount,
-            move || is_mounted(&mountpoint),
-            std::time::Duration::from_secs(10),
-        )
+    crate::daemon::daemonize(
+        mount,
+        move || is_mounted(&mountpoint),
+        std::time::Duration::from_secs(10),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn canonicalize_mountpoint_with_recovery(mountpoint: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(mountpoint) {
+        Ok(path) => Ok(path),
+        Err(err) if err.raw_os_error() == Some(libc::ENOTCONN) => {
+            eprintln!(
+                "Detected stale FUSE mountpoint state at {} (ENOTCONN); attempting lazy unmount recovery.",
+                mountpoint.display()
+            );
+            lazy_unmount_fuse(mountpoint)?;
+            std::fs::canonicalize(mountpoint).with_context(|| {
+                format!(
+                    "Mountpoint {} is still unavailable after stale mountpoint recovery",
+                    mountpoint.display()
+                )
+            })
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            anyhow::bail!("Mountpoint does not exist: {}", mountpoint.display());
+        }
+        Err(err) => Err(err)
+            .with_context(|| format!("Failed to access mountpoint {}", mountpoint.display())),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn lazy_unmount_fuse(mountpoint: &Path) -> Result<()> {
+    const FUSERMOUNT_COMMANDS: &[&str] = &["fusermount3", "fusermount"];
+    for cmd in FUSERMOUNT_COMMANDS {
+        let result = std::process::Command::new(cmd)
+            .args(["-uz"])
+            .arg(mountpoint.as_os_str())
+            .status();
+
+        match result {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(_) => continue,  // Command ran but failed, try next.
+            Err(_) => continue, // Command not found, try next.
+        }
+    }
+
+    anyhow::bail!(
+        "Failed to auto-recover stale mountpoint {}. Try: fusermount -uz {}",
+        mountpoint.display(),
+        mountpoint.display()
+    )
 }
 
 /// Mount the agent filesystem using NFS over localhost.
@@ -509,6 +633,27 @@ fn is_mounted(path: &std::path::Path) -> bool {
 
     // Different device IDs means it's a mountpoint
     path_meta.dev() != parent_meta.dev()
+}
+
+/// Wait until a mounted path is externally unmounted.
+///
+/// This keeps foreground mount mode compatible with test harnesses that
+/// unmount using `fusermount -u` and then wait for the foreground process.
+#[cfg(target_os = "linux")]
+async fn wait_for_external_unmount(mountpoint: PathBuf) {
+    let mut consecutive_not_mounted = 0u8;
+    loop {
+        if is_mounted(&mountpoint) {
+            consecutive_not_mounted = 0;
+        } else {
+            consecutive_not_mounted = consecutive_not_mounted.saturating_add(1);
+            // Require multiple consecutive misses to avoid transient mount-state races.
+            if consecutive_not_mounted >= 3 {
+                return;
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
 }
 
 /// List all currently mounted agentfs filesystems (Linux)
