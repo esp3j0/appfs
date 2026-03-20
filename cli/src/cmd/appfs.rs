@@ -35,7 +35,9 @@ const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
 const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
 const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
 const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_V2_SNAPSHOT_COALESCE_WINDOW_MS";
+const SNAPSHOT_PUBLISH_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS";
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
+const SNAPSHOT_EXPAND_JOURNAL_FILENAME: &str = "snapshot-expand.state.res.json";
 
 const ERR_PAGER_HANDLE_NOT_FOUND: &str = "PAGER_HANDLE_NOT_FOUND";
 const ERR_PAGER_HANDLE_EXPIRED: &str = "PAGER_HANDLE_EXPIRED";
@@ -319,6 +321,23 @@ struct ActionCursorDoc {
     actions: HashMap<String, ActionCursorState>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SnapshotExpandJournalDoc {
+    #[serde(default)]
+    resources: HashMap<String, SnapshotExpandJournalEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotExpandJournalEntry {
+    resource_path: String,
+    status: String,
+    request_id: String,
+    started_at: String,
+    updated_at: String,
+    #[serde(default)]
+    temp_artifact: Option<String>,
+}
+
 struct AppfsAdapter {
     app_id: String,
     session_id: String,
@@ -330,6 +349,7 @@ struct AppfsAdapter {
     replay_dir: PathBuf,
     jobs_path: PathBuf,
     action_cursors_path: PathBuf,
+    snapshot_expand_journal_path: PathBuf,
     cursor: CursorState,
     next_seq: i64,
     action_cursors: HashMap<String, ActionCursorState>,
@@ -337,6 +357,7 @@ struct AppfsAdapter {
     handle_aliases: HashMap<String, String>,
     snapshot_states: HashMap<String, SnapshotCacheState>,
     snapshot_recent_expands: HashMap<String, Instant>,
+    snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
     streaming_jobs: Vec<StreamingJob>,
     actionline_v2_strict: bool,
     business_adapter: Box<dyn AppAdapterV1>,
@@ -356,6 +377,9 @@ impl AppfsAdapter {
         let replay_dir = app_dir.join("_stream").join("from-seq");
         let jobs_path = app_dir.join("_stream").join("inflight.jobs.res.json");
         let action_cursors_path = app_dir.join("_stream").join(ACTION_CURSORS_FILENAME);
+        let snapshot_expand_journal_path = app_dir
+            .join("_stream")
+            .join(SNAPSHOT_EXPAND_JOURNAL_FILENAME);
 
         if !app_dir.exists() {
             anyhow::bail!("App directory not found: {}", app_dir.display());
@@ -463,6 +487,7 @@ impl AppfsAdapter {
             replay_dir,
             jobs_path: jobs_path.clone(),
             action_cursors_path: action_cursors_path.clone(),
+            snapshot_expand_journal_path: snapshot_expand_journal_path.clone(),
             cursor,
             next_seq,
             action_cursors: Self::load_action_cursors(&action_cursors_path)?,
@@ -470,11 +495,15 @@ impl AppfsAdapter {
             handle_aliases: HashMap::new(),
             snapshot_states: HashMap::new(),
             snapshot_recent_expands: HashMap::new(),
+            snapshot_expand_journal: Self::load_snapshot_expand_journal(
+                &snapshot_expand_journal_path,
+            )?,
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_adapter,
         };
         adapter.initialize_snapshot_states();
+        adapter.recover_snapshot_expand_journal()?;
         adapter.load_known_handles()?;
         Ok(adapter)
     }
@@ -546,6 +575,127 @@ impl AppfsAdapter {
             }
             None => false,
         }
+    }
+
+    fn snapshot_expand_temp_rel_path(&self, resource_rel: &str) -> String {
+        let mut sanitized = String::with_capacity(resource_rel.len() + 16);
+        for ch in resource_rel.chars() {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                sanitized.push(ch);
+            } else {
+                sanitized.push('_');
+            }
+        }
+        if sanitized.is_empty() {
+            sanitized.push_str("snapshot");
+        }
+        if sanitized.len() > 160 {
+            sanitized = deterministic_shorten_segment(&sanitized, 160);
+        }
+        format!(
+            "/_stream/snapshot-expand-tmp/{}.pending.jsonl",
+            sanitized
+        )
+    }
+
+    fn snapshot_expand_temp_abs_path(&self, resource_rel: &str) -> PathBuf {
+        self.app_dir.join(
+            self.snapshot_expand_temp_rel_path(resource_rel)
+                .trim_start_matches('/'),
+        )
+    }
+
+    fn update_snapshot_expand_journal(
+        &mut self,
+        resource_rel: &str,
+        status: &str,
+        request_id: &str,
+        temp_artifact: Option<String>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let resource_path = format!("/{}", resource_rel);
+        let entry = self
+            .snapshot_expand_journal
+            .entry(resource_rel.to_string())
+            .or_insert_with(|| SnapshotExpandJournalEntry {
+                resource_path: resource_path.clone(),
+                status: status.to_string(),
+                request_id: request_id.to_string(),
+                started_at: now.clone(),
+                updated_at: now.clone(),
+                temp_artifact: temp_artifact.clone(),
+            });
+
+        entry.resource_path = resource_path;
+        entry.status = status.to_string();
+        entry.request_id = request_id.to_string();
+        entry.updated_at = now;
+        if entry.started_at.is_empty() {
+            entry.started_at = Utc::now().to_rfc3339();
+        }
+        if temp_artifact.is_some() {
+            entry.temp_artifact = temp_artifact;
+        }
+        self.save_snapshot_expand_journal()
+    }
+
+    fn clear_snapshot_expand_journal_entry(&mut self, resource_rel: &str) -> Result<()> {
+        if self.snapshot_expand_journal.remove(resource_rel).is_some() {
+            self.save_snapshot_expand_journal()?;
+        }
+        Ok(())
+    }
+
+    fn recover_snapshot_expand_journal(&mut self) -> Result<()> {
+        if self.snapshot_expand_journal.is_empty() {
+            return Ok(());
+        }
+
+        let entries: Vec<(String, SnapshotExpandJournalEntry)> = self
+            .snapshot_expand_journal
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (resource_rel, entry) in entries {
+            let mut cleaned_temp = false;
+            if let Some(temp_artifact) = entry.temp_artifact.clone() {
+                let temp_abs = self.app_dir.join(temp_artifact.trim_start_matches('/'));
+                if temp_abs.exists() {
+                    fs::remove_file(&temp_abs).with_context(|| {
+                        format!(
+                            "Failed to remove unfinished snapshot temp artifact {}",
+                            temp_abs.display()
+                        )
+                    })?;
+                    cleaned_temp = true;
+                }
+            }
+
+            self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Cold);
+            self.clear_snapshot_recent_expand(&resource_rel);
+            eprintln!(
+                "[recovery] snapshot expand incomplete resource=/{} status={} cleaned_temp={} -> cold",
+                resource_rel, entry.status, cleaned_temp
+            );
+
+            self.emit_event(
+                "/_snapshot/refresh.act",
+                &format!("req-rec-{}", Uuid::new_v4().simple()),
+                "cache.recovery",
+                Some(json!({
+                    "path": format!("/{}", resource_rel),
+                    "status_before": entry.status,
+                    "cleaned_temp": cleaned_temp,
+                    "phase": "recovered",
+                })),
+                None,
+                None,
+            )?;
+        }
+
+        self.snapshot_expand_journal.clear();
+        self.save_snapshot_expand_journal()
     }
 
     fn poll_once(&mut self) -> Result<()> {
@@ -1293,6 +1443,14 @@ impl AppfsAdapter {
         self.clear_snapshot_recent_expand(resource_rel);
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Cold);
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Warming);
+        let temp_artifact = self.snapshot_expand_temp_rel_path(resource_rel);
+        let temp_artifact_abs = self.snapshot_expand_temp_abs_path(resource_rel);
+        self.update_snapshot_expand_journal(
+            resource_rel,
+            "warming",
+            request_id,
+            Some(temp_artifact.clone()),
+        )?;
 
         eprintln!(
             "[cache] miss, expanding resource={} phase=read_through reason={} timeout_ms={} on_timeout={}",
@@ -1332,6 +1490,7 @@ impl AppfsAdapter {
                 snapshot_spec.read_through_timeout_ms,
                 snapshot_spec.on_timeout.as_str()
             );
+            self.clear_snapshot_expand_journal_entry(resource_rel)?;
             return self.handle_snapshot_cache_expand_hook(
                 action_path,
                 request_id,
@@ -1360,6 +1519,7 @@ impl AppfsAdapter {
                     None,
                     client_token.clone(),
                 )?;
+                self.clear_snapshot_expand_journal_entry(resource_rel)?;
                 return self.handle_snapshot_cache_expand_hook(
                     action_path,
                     request_id,
@@ -1403,12 +1563,19 @@ impl AppfsAdapter {
                 "expand_publish",
                 client_token,
             )?;
+            self.clear_snapshot_expand_journal_entry(resource_rel)?;
             return Ok(ProcessOutcome::Consumed);
         }
 
-        self.materialize_snapshot_file(resource_rel, &expanded_jsonl)?;
+        self.materialize_snapshot_file(
+            resource_rel,
+            &expanded_jsonl,
+            &temp_artifact_abs,
+            request_id,
+        )?;
         self.transition_snapshot_state(resource_rel, SnapshotCacheState::Hot);
         self.mark_snapshot_recent_expand(resource_rel);
+        self.clear_snapshot_expand_journal_entry(resource_rel)?;
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
         eprintln!(
@@ -1509,7 +1676,13 @@ impl AppfsAdapter {
         Ok(out)
     }
 
-    fn materialize_snapshot_file(&self, resource_rel: &str, content: &str) -> Result<()> {
+    fn materialize_snapshot_file(
+        &mut self,
+        resource_rel: &str,
+        content: &str,
+        temp_path: &Path,
+        request_id: &str,
+    ) -> Result<()> {
         let abs = self.app_dir.join(resource_rel);
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -1520,22 +1693,49 @@ impl AppfsAdapter {
             })?;
         }
 
-        let tmp = abs.with_extension(format!("jsonl.tmp-{}", Uuid::new_v4().simple()));
-        fs::write(&tmp, content).with_context(|| {
-            format!(
-                "Failed to write snapshot expansion temp file {}",
-                tmp.display()
-            )
-        })?;
-        if abs.exists() {
-            fs::remove_file(&abs).with_context(|| {
-                format!("Failed to remove stale snapshot file {}", abs.display())
+        if let Some(parent) = temp_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create snapshot temp parent directory {}",
+                    parent.display()
+                )
             })?;
         }
-        fs::rename(&tmp, &abs).with_context(|| {
+
+        fs::write(temp_path, content).with_context(|| {
+            format!(
+                "Failed to write snapshot expansion temp file {}",
+                temp_path.display()
+            )
+        })?;
+        let temp_rel = format!(
+            "/{}",
+            temp_path
+                .strip_prefix(&self.app_dir)
+                .unwrap_or(temp_path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        );
+        self.update_snapshot_expand_journal(
+            resource_rel,
+            "publishing",
+            request_id,
+            Some(temp_rel),
+        )?;
+
+        let publish_delay_ms = snapshot_publish_delay_ms();
+        if publish_delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(publish_delay_ms));
+        }
+
+        if abs.exists() {
+            fs::remove_file(&abs)
+                .with_context(|| format!("Failed to remove stale snapshot file {}", abs.display()))?;
+        }
+        fs::rename(temp_path, &abs).with_context(|| {
             format!(
                 "Failed to publish snapshot expansion from {} to {}",
-                tmp.display(),
+                temp_path.display(),
                 abs.display()
             )
         })?;
@@ -2036,6 +2236,51 @@ impl AppfsAdapter {
         Ok(())
     }
 
+    fn load_snapshot_expand_journal(
+        path: &Path,
+    ) -> Result<HashMap<String, SnapshotExpandJournalEntry>> {
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let doc: SnapshotExpandJournalDoc = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(doc.resources)
+    }
+
+    fn save_snapshot_expand_journal(&self) -> Result<()> {
+        let tmp_path = self.snapshot_expand_journal_path.with_extension("res.json.tmp");
+        let doc = SnapshotExpandJournalDoc {
+            resources: self.snapshot_expand_journal.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&doc)?;
+        fs::write(&tmp_path, bytes).with_context(|| {
+            format!(
+                "Failed to write snapshot expand journal temp file {}",
+                tmp_path.display()
+            )
+        })?;
+
+        if self.snapshot_expand_journal_path.exists() {
+            fs::remove_file(&self.snapshot_expand_journal_path).with_context(|| {
+                format!(
+                    "Failed to remove old snapshot expand journal file {}",
+                    self.snapshot_expand_journal_path.display()
+                )
+            })?;
+        }
+
+        fs::rename(&tmp_path, &self.snapshot_expand_journal_path).with_context(|| {
+            format!(
+                "Failed to move snapshot expand journal temp file {} to {}",
+                tmp_path.display(),
+                self.snapshot_expand_journal_path.display()
+            )
+        })?;
+        Ok(())
+    }
+
     fn collect_action_files(&self) -> Result<Vec<PathBuf>> {
         let mut out = Vec::new();
         collect_files_with_suffix(&self.app_dir, ".act", &mut out)?;
@@ -2365,6 +2610,13 @@ fn env_flag_enabled(name: &str) -> bool {
 
 fn snapshot_expand_delay_ms() -> u64 {
     std::env::var(SNAPSHOT_EXPAND_DELAY_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn snapshot_publish_delay_ms() -> u64 {
+    std::env::var(SNAPSHOT_PUBLISH_DELAY_ENV)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(0)
