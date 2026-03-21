@@ -205,6 +205,30 @@ wait_recovery_event() {
     return 1
 }
 
+assert_journal_entry_cleared() {
+    python3 - "$JOURNAL" <<'PY'
+import json
+import os
+import sys
+
+journal = sys.argv[1]
+target = "chats/chat-001/messages.res.jsonl"
+
+if not os.path.exists(journal):
+    raise SystemExit("journal file missing after recovery")
+
+with open(journal, "r", encoding="utf-8") as f:
+    doc = json.load(f)
+
+resources = doc.get("resources")
+if not isinstance(resources, dict):
+    raise SystemExit("journal resources must be an object")
+
+if target in resources:
+    raise SystemExit("journal entry still present after recovery")
+PY
+}
+
 banner "AppFS v2 CT2-006 Journal Recovery for Incomplete Expand"
 require_cmd python3
 ensure_agentfs_bin
@@ -247,7 +271,8 @@ pass "adapter restarted for recovery scan"
 wait_recovery_event 20 || fail "missing cache.recovery evidence after restart"
 grep -F -q "[recovery] snapshot expand incomplete resource=/chats/chat-001/messages.res.jsonl" "$ADAPTER_LOG" || fail "missing recovery log anchor"
 [ ! -f "$temp_artifact_abs" ] || fail "recovery should clean pending temp artifact"
-pass "restart recovery cleaned incomplete expansion and emitted recovery evidence"
+assert_journal_entry_cleared || fail "recovery should clear journal entry for target resource"
+pass "restart recovery cleaned incomplete expansion, cleared journal entry, and emitted recovery evidence"
 
 token_recover="ct2-006-recover-$$"
 printf '{"resource_path":"/chats/chat-001/messages.res.jsonl","client_token":"%s"}\n' "$token_recover" >> "$REFRESH_ACT" || fail "failed to submit refresh after recovery"
