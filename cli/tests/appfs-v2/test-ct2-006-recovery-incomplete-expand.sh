@@ -65,36 +65,38 @@ wait_token_event() {
 }
 
 ensure_agentfs_bin() {
+    if command -v cargo >/dev/null 2>&1; then
+        say "Building Linux agentfs binary for CT2 v2 tests..."
+        if (cd "$CLI_DIR" && cargo build --quiet); then
+            if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
+                AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
+                return 0
+            fi
+            say "Linux build command succeeded but target/debug/agentfs is missing; trying Windows fallback binary..."
+        else
+            say "Linux build unavailable; trying Windows fallback binary..."
+        fi
+    fi
+
+    if command -v cargo.exe >/dev/null 2>&1; then
+        say "Building Windows agentfs binary for CT2 v2 tests..."
+        if (cd "$CLI_DIR" && cargo.exe build --quiet); then
+            if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
+                AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
+                return 0
+            fi
+            say "Windows build command succeeded but target/debug/agentfs.exe is missing; falling back to existing binaries..."
+        else
+            say "Windows build unavailable; falling back to existing binaries..."
+        fi
+    fi
+
     if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
         AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
         return 0
     fi
 
     if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    if command -v cargo >/dev/null 2>&1; then
-        build_cmd="cargo"
-        say "Building Linux agentfs binary for CT2 v2 tests..."
-        if (cd "$CLI_DIR" && "$build_cmd" build --quiet); then
-            if [ ! -f "$CLI_DIR/target/debug/agentfs" ]; then
-                fail "linux cargo build succeeded but $CLI_DIR/target/debug/agentfs is missing"
-            fi
-            AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-            return 0
-        fi
-        say "Linux build unavailable; trying Windows fallback binary..."
-    fi
-
-    if command -v cargo.exe >/dev/null 2>&1; then
-        build_cmd="cargo.exe"
-        say "Building Windows agentfs binary for CT2 v2 tests..."
-        (cd "$CLI_DIR" && "$build_cmd" build --quiet)
-        if [ ! -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-            fail "windows cargo build succeeded but $CLI_DIR/target/debug/agentfs.exe is missing"
-        fi
         AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
         return 0
     fi
