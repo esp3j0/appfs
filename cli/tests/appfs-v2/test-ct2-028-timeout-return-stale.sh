@@ -240,6 +240,50 @@ stop_adapter
 
 reload_fixture_app
 patch_manifest_timeout_return_stale
+cat >"$SNAPSHOT_FILE" <<'EOF'
+{"id":"ok-1","text":"valid line"}
+{"id":
+EOF
+pass "prepared timeout-return_stale scenario with malformed stale cache"
+
+bad_hash_before="$(sha256sum "$SNAPSHOT_FILE" | awk '{print $1}')"
+start_adapter 200 1
+pass "adapter started for timeout-return_stale with malformed stale cache"
+
+wait_writable "$REFRESH_ACT" 10 || fail "snapshot refresh sink remained non-writable in malformed-stale scenario: $REFRESH_ACT"
+token_bad_stale="ct2-028-bad-stale-$$"
+printf '{"resource_path":"/chats/chat-001/messages.res.jsonl","client_token":"%s"}\n' "$token_bad_stale" >> "$REFRESH_ACT" || fail "failed to submit refresh for malformed-stale scenario"
+wait_token_event "$token_bad_stale" "$EVENTS" 20 || fail "malformed-stale token event timeout"
+wait_token_type_event "$token_bad_stale" "action.failed" "$EVENTS" 20 || fail "malformed-stale action.failed timeout"
+
+event_bad_fail="$(grep "$token_bad_stale" "$EVENTS" 2>/dev/null | grep "\"type\":\"action.failed\"" | tail -n 1 || true)"
+[ -n "$event_bad_fail" ] || fail "missing malformed-stale action event"
+assert_json_expr "$event_bad_fail" 'obj.get("type") == "action.failed"' "malformed-stale should emit action.failed"
+assert_json_expr "$event_bad_fail" 'obj.get("error", {}).get("code") == "CACHE_MISS_EXPAND_FAILED"' "malformed-stale should map to CACHE_MISS_EXPAND_FAILED"
+if grep "$token_bad_stale" "$EVENTS" 2>/dev/null | grep -q "\"type\":\"action.completed\""; then
+    fail "malformed-stale must not emit action.completed"
+fi
+
+expand_bad_line="$(grep "$token_bad_stale" "$EVENTS" 2>/dev/null | grep "\"type\":\"cache.expand\"" | tail -n 1 || true)"
+[ -n "$expand_bad_line" ] || fail "missing cache.expand evidence for malformed-stale scenario"
+assert_json_expr "$expand_bad_line" 'obj.get("content", {}).get("phase") == "failed"' "malformed-stale cache.expand phase should be failed"
+assert_json_expr "$expand_bad_line" 'obj.get("content", {}).get("failure_reason") == "timeout"' "malformed-stale cache.expand reason should be timeout"
+assert_json_expr "$expand_bad_line" 'obj.get("content", {}).get("on_timeout") == "return_stale"' "malformed-stale cache.expand should expose on_timeout=return_stale"
+assert_json_expr "$expand_bad_line" 'obj.get("content", {}).get("stale_reason") == "stale_cache_unhealthy"' "malformed-stale should expose stale_cache_unhealthy reason"
+assert_json_expr "$expand_bad_line" 'bool(obj.get("content", {}).get("stale_detail"))' "malformed-stale should expose stale_detail"
+
+if grep "$token_bad_stale" "$EVENTS" 2>/dev/null | grep -q "\"type\":\"cache.stale\""; then
+    fail "malformed-stale scenario must not emit cache.stale"
+fi
+bad_hash_after="$(sha256sum "$SNAPSHOT_FILE" | awk '{print $1}')"
+[ "$bad_hash_before" = "$bad_hash_after" ] || fail "malformed-stale timeout should not mutate stale cache bytes"
+grep -F -q "[cache] timeout_return_stale unavailable resource=/chats/chat-001/messages.res.jsonl reason=stale_cache_unhealthy" "$ADAPTER_LOG" || fail "missing malformed-stale timeout_return_stale unavailable log"
+pass "timeout-return_stale with malformed stale cache is rejected deterministically"
+
+stop_adapter
+
+reload_fixture_app
+patch_manifest_timeout_return_stale
 rm -f "$SNAPSHOT_FILE"
 pass "prepared timeout-return_stale scenario without stale cache"
 
@@ -262,6 +306,7 @@ expand_fail_line="$(grep "$token_no_stale" "$EVENTS" 2>/dev/null | grep "\"type\
 assert_json_expr "$expand_fail_line" 'obj.get("content", {}).get("phase") == "failed"' "no-stale cache.expand phase should be failed"
 assert_json_expr "$expand_fail_line" 'obj.get("content", {}).get("failure_reason") == "timeout"' "no-stale cache.expand reason should be timeout"
 assert_json_expr "$expand_fail_line" 'obj.get("content", {}).get("on_timeout") == "return_stale"' "no-stale cache.expand should expose on_timeout=return_stale"
+assert_json_expr "$expand_fail_line" 'obj.get("content", {}).get("stale_reason") == "no_stale_cache"' "no-stale cache.expand should expose stale_reason=no_stale_cache"
 
 if grep "$token_no_stale" "$EVENTS" 2>/dev/null | grep -q "\"type\":\"cache.stale\""; then
     fail "no-stale scenario must not emit cache.stale"
