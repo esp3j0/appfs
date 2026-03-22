@@ -454,21 +454,21 @@ impl AppfsAdapter {
                 );
             }
             Ok(action_dispatcher::DispatchRoute::BusinessSubmit) => {}
-            Err(action_dispatcher::DispatchRouteParseError::MalformedPagingFetchNext) => {
+            Err(action_dispatcher::DispatchRouteParseError::PagingFetchNext) => {
                 eprintln!(
                     "AppFS adapter rejected malformed paging handle at submit-time: {}",
                     normalized_path
                 );
                 return Ok(ProcessOutcome::Consumed);
             }
-            Err(action_dispatcher::DispatchRouteParseError::MalformedPagingClose) => {
+            Err(action_dispatcher::DispatchRouteParseError::PagingClose) => {
                 eprintln!(
                     "AppFS adapter rejected malformed paging close handle at submit-time: {}",
                     normalized_path
                 );
                 return Ok(ProcessOutcome::Consumed);
             }
-            Err(action_dispatcher::DispatchRouteParseError::MalformedSnapshotRefresh) => {
+            Err(action_dispatcher::DispatchRouteParseError::SnapshotRefresh) => {
                 eprintln!(
                     "AppFS adapter rejected malformed snapshot refresh payload at submit-time: {}",
                     normalized_path
