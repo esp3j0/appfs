@@ -688,35 +688,4 @@ impl AppfsAdapter {
         })?;
         Ok(())
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn emit_snapshot_too_large(
-        &mut self,
-        action_path: &str,
-        request_id: &str,
-        resource_path: &str,
-        size_bytes: usize,
-        max_size: usize,
-        phase: &str,
-        client_token: Option<String>,
-    ) -> Result<()> {
-        self.emit_event(
-            action_path,
-            request_id,
-            "action.failed",
-            None,
-            Some(json!({
-                "code": ERR_SNAPSHOT_TOO_LARGE,
-                "message": format!(
-                    "snapshot resource exceeds max_materialized_bytes: bytes={size_bytes} max={max_size}"
-                ),
-                "retryable": false,
-                "resource_path": resource_path,
-                "phase": phase,
-                "size": size_bytes,
-                "max_size": max_size,
-            })),
-            client_token,
-        )
-    }
 }
