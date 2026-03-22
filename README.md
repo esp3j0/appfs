@@ -28,8 +28,8 @@ The design target is practical LLM + bash operation:
 # 1) subscribe app event stream first
 tail -f /app/aiim/_stream/events.evt.jsonl
 
-# 2) trigger an action by append JSONL
-printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
+# 2) trigger an action by append ActionLineV2 JSONL
+printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) read resources directly
 cat /app/aiim/contacts/zhangsan/profile.res.json
@@ -37,7 +37,7 @@ cat /app/aiim/contacts/zhangsan/profile.res.json
 # 4) snapshot resources are full files (.res.jsonl), live resources keep paging
 cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 cat /app/aiim/feed/recommendations.res.json
-printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
+printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## Available Actions (AIIM Fixture)
@@ -67,7 +67,17 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
 
 ## Runtime Quick Start (HTTP Bridge)
 
-### Windows (PowerShell, 4 Steps)
+The runtime demo has five moving parts:
+
+1. AgentFS mount
+2. AIIM fixture copied into the mounted tree
+3. HTTP bridge connector
+4. `agentfs serve appfs` backend runtime
+5. A separate terminal that appends `.act` lines and tails `_stream/events.evt.jsonl`
+
+If step 4 is missing, `.act` lines will not be consumed. Mount + bridge alone are not enough.
+
+### Windows (PowerShell, 5 Steps)
 
 1. Mount AgentFS (Terminal A).
 
@@ -91,7 +101,7 @@ cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
 uv run python bridge_server.py
 ```
 
-4. Start AppFS runtime and operate files (Terminal D/E).
+4. Start AppFS backend runtime (Terminal D).
 
 ```powershell
 cd C:\Users\esp3j\rep\agentfs\cli
@@ -99,29 +109,38 @@ $env:APPFS_ADAPTER_HTTP_ENDPOINT = "http://127.0.0.1:8080"
 cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
 ```
 
+Expected startup signal:
+
+```text
+AppFS adapter using HTTP bridge endpoint: http://127.0.0.1:8080
+AppFS adapter started for ...
+```
+
+5. Operate files and watch events (Terminal E).
+
 ```powershell
 # watch stream (separate terminal)
 Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 
-# trigger action (append JSONL, one JSON per line)
-Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
+# trigger action (append ActionLineV2 JSONL, one JSON object per line)
+Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}'
 
 # snapshot resource is directly searchable
 Get-Content C:\mnt\win-real\aiim\chats\chat-001\messages.res.jsonl | Select-String "hello"
 
 # live resource keeps paging
 Get-Content C:\mnt\win-real\aiim\feed\recommendations.res.json -Raw
-Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_live_7f2c"}'
-Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_live_7f2c"}'
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}'
 
 # explicit snapshot refresh (cache/materialization checkpoint)
-Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"resource_path":"/chats/chat-001/messages.res.jsonl"}'
+Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}'
 
 # read resource
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
 ```
 
-### Linux (bash, 4 Steps)
+### Linux (bash, 5 Steps)
 
 1. Mount AgentFS (Terminal A).
 
@@ -146,30 +165,39 @@ cd /path/to/agentfs/examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
-4. Start AppFS runtime and operate files (Terminal D/E).
+4. Start AppFS backend runtime (Terminal D).
 
 ```bash
 cd /path/to/agentfs/cli
 APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --root /tmp/appfs-real --app-id aiim
 ```
 
+Expected startup signal:
+
+```text
+AppFS adapter using HTTP bridge endpoint: http://127.0.0.1:8080
+AppFS adapter started for ...
+```
+
+5. Operate files and watch events (Terminal E).
+
 ```bash
 # watch stream (separate terminal)
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
-# trigger action (append JSONL)
-printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+# trigger action (append ActionLineV2 JSONL)
+printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
 # snapshot resource is directly searchable
 cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 
 # live resource keeps paging
 cat /tmp/appfs-real/aiim/feed/recommendations.res.json
-printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # explicit snapshot refresh (cache/materialization checkpoint)
-printf '{"resource_path":"/chats/chat-001/messages.res.jsonl"}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
+printf '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # read resource
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -177,25 +205,59 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 
 Notes:
 
-1. `.act` sink semantics are append-only JSONL. Submit with `>>` (or PowerShell `Add-Content`) and write one JSON object per line.
-2. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
-3. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
-4. Runtime also has compatibility recovery for shell-expanded multiline JSON fragments; it may merge adjacent lines back into one JSON request. Preferred client format is still single-line JSON with escaped `\\n`.
+1. `.act` sink semantics are append-only JSONL. Submit with `>>` (or PowerShell `Add-Content`) and write one ActionLineV2 JSON object per line.
+2. `serve appfs` must be running before `.act` lines will be consumed. The mount and the bridge do not process action files by themselves.
+3. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
+4. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
+5. Runtime also has compatibility recovery for shell-expanded multiline JSON fragments; it may merge adjacent lines back into one JSON request. Preferred client format is still single-line JSON with escaped `\\n`.
 
 ## Architecture
 
-- Draw.io source: [docs/v1/architecture/appfs-v0.1-architecture.drawio](docs/v1/architecture/appfs-v0.1-architecture.drawio)
-- SVG preview: [docs/v1/architecture/appfs-v0.1-architecture.svg](docs/v1/architecture/appfs-v0.1-architecture.svg)
-- Spec baseline: [APPFS-v0.1.md](docs/v1/APPFS-v0.1.md)
+### v0.2 Backend + Connector Call Chain
 
-The architecture has four layers:
+```mermaid
+flowchart TD
+    A["Agent shell / PowerShell / bash"] --> B["AgentFS mount<br/>Windows: WinFsp<br/>Linux: FUSE"]
+    B --> C["AppFS tree<br/>_meta / _stream / _paging / _snapshot / domain paths"]
+    C --> D["`agentfs serve appfs`<br/>v0.2 backend runtime"]
 
-1. Agent shell operations (`cat`, `echo`, `tail`).
-2. AppFS namespace and contract files (`_meta`, `_stream`, `_paging`, `_snapshot`, domain paths).
-3. AppFS runtime in `agentfs serve appfs` (routing, validation, stream persistence, replay).
-4. Business adapter implementations (in-process or HTTP/gRPC bridge) that call real app backends.
+    D --> E["Action Dispatcher<br/>ActionLineV2 parse + validation"]
+    D --> F["Snapshot Cache Manager<br/>prewarm / read-through / stale handling"]
+    D --> G["Journal + Recovery"]
+    D --> H["Event Engine + Paging"]
 
-![AppFS v0.1 Architecture](docs/v1/architecture/appfs-v0.1-architecture.svg)
+    D --> I["Connector transport"]
+    I --> J["In-process adapter"]
+    I --> K["HTTP bridge adapter"]
+    I --> L["gRPC bridge adapter"]
+
+    K --> M["HTTP bridge service"]
+    L --> N["gRPC bridge service"]
+    J --> O["Real app backend or reference demo backend"]
+    M --> O
+    N --> O
+
+    H --> C
+    F --> C
+    G --> C
+```
+
+### What `serve appfs` Does in v0.2
+
+`cargo run -- serve appfs --root ... --app-id ...` starts the AppFS backend runtime. In the current implementation it is a long-running process with a poll/event loop, but its role is no longer a thin v0.1 sidecar.
+
+In v0.2 it is responsible for:
+
+1. loading manifest, action specs, snapshot specs, paging controls, and runtime policy;
+2. selecting and initializing the connector transport (in-process / HTTP bridge / gRPC bridge);
+3. enforcing ActionLineV2 validation and submit-time reject behavior;
+4. driving snapshot prewarm, read-through expansion, timeout fallback, journal recovery, and paging;
+5. writing events, replay artifacts, cursors, and materialized resource files back into the mounted tree.
+
+Put differently:
+
+1. **v0.1** `serve appfs`: primarily a sidecar/reference runtime around action sinks and bridge dispatch.
+2. **v0.2** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector only provides app-specific upstream calls.
 
 ## Conformance Quick Start
 
