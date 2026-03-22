@@ -224,7 +224,10 @@ mod tests {
     fn demo_adapter_prewarm_snapshot_meta() {
         let mut adapter = DemoAppAdapterV1::new("aiim".to_string());
         let meta = adapter
-            .prewarm_snapshot_meta("/chats/chat-001/messages.res.jsonl", Duration::from_millis(50))
+            .prewarm_snapshot_meta(
+                "/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(50),
+            )
             .expect("prewarm should succeed");
         assert_eq!(meta.size_bytes, Some(5000));
         assert_eq!(meta.revision.as_deref(), Some("demo-v1"));
