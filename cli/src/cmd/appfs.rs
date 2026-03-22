@@ -20,10 +20,13 @@ mod bridge_resilience;
 mod action_dispatcher;
 mod grpc_bridge_adapter;
 mod http_bridge_adapter;
+mod journal;
+mod recovery;
 
 use bridge_resilience::BridgeRuntimeOptions;
 use grpc_bridge_adapter::GrpcBridgeAdapterV1;
 use http_bridge_adapter::HttpBridgeAdapterV1;
+use journal::SnapshotExpandJournalEntry;
 
 const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
@@ -297,23 +300,6 @@ struct ActionCursorState {
 struct ActionCursorDoc {
     #[serde(default)]
     actions: HashMap<String, ActionCursorState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct SnapshotExpandJournalDoc {
-    #[serde(default)]
-    resources: HashMap<String, SnapshotExpandJournalEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SnapshotExpandJournalEntry {
-    resource_path: String,
-    status: String,
-    request_id: String,
-    started_at: String,
-    updated_at: String,
-    #[serde(default)]
-    temp_artifact: Option<String>,
 }
 
 struct AppfsAdapter {
@@ -619,206 +605,6 @@ impl AppfsAdapter {
         }
 
         Ok(valid_lines)
-    }
-
-    fn resolve_snapshot_expand_cleanup_target(
-        &self,
-        temp_artifact: &str,
-    ) -> std::result::Result<PathBuf, String> {
-        let trimmed = temp_artifact.trim();
-        if trimmed.is_empty() {
-            return Err("empty_temp_artifact".to_string());
-        }
-
-        let rel_raw = trimmed.trim_start_matches(['/', '\\']);
-        let rel_path = Path::new(rel_raw);
-        if rel_path.is_absolute() {
-            return Err("absolute_temp_artifact_path".to_string());
-        }
-
-        let mut normalized = PathBuf::new();
-        for component in rel_path.components() {
-            match component {
-                Component::Normal(seg) => normalized.push(seg),
-                Component::CurDir => {}
-                Component::ParentDir => return Err("parent_dir_component_not_allowed".to_string()),
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err("root_or_prefix_component_not_allowed".to_string())
-                }
-            }
-        }
-
-        if normalized.as_os_str().is_empty() {
-            return Err("empty_normalized_temp_artifact_path".to_string());
-        }
-
-        let allowed_prefix = Path::new("_stream").join("snapshot-expand-tmp");
-        if !normalized.starts_with(&allowed_prefix) {
-            return Err(format!(
-                "temp_artifact_outside_allowed_prefix path={}",
-                normalized.display()
-            ));
-        }
-
-        let app_root_canonical = fs::canonicalize(&self.app_dir)
-            .map_err(|err| format!("canonicalize_app_root_failed: {err}"))?;
-        let joined = self.app_dir.join(&normalized);
-
-        if joined.exists() {
-            let target_canonical = fs::canonicalize(&joined)
-                .map_err(|err| format!("canonicalize_temp_artifact_failed: {err}"))?;
-            if !target_canonical.starts_with(&app_root_canonical) {
-                return Err(format!(
-                    "temp_artifact_outside_app_root target={} app_root={}",
-                    target_canonical.display(),
-                    app_root_canonical.display()
-                ));
-            }
-            return Ok(joined);
-        }
-
-        let Some(parent) = joined.parent() else {
-            return Err("temp_artifact_has_no_parent".to_string());
-        };
-        if parent.exists() {
-            let parent_canonical = fs::canonicalize(parent)
-                .map_err(|err| format!("canonicalize_temp_artifact_parent_failed: {err}"))?;
-            if !parent_canonical.starts_with(&app_root_canonical) {
-                return Err(format!(
-                    "temp_artifact_parent_outside_app_root parent={} app_root={}",
-                    parent_canonical.display(),
-                    app_root_canonical.display()
-                ));
-            }
-        }
-
-        Ok(joined)
-    }
-
-    fn update_snapshot_expand_journal(
-        &mut self,
-        resource_rel: &str,
-        status: &str,
-        request_id: &str,
-        temp_artifact: Option<String>,
-    ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let resource_path = format!("/{}", resource_rel);
-        let entry = self
-            .snapshot_expand_journal
-            .entry(resource_rel.to_string())
-            .or_insert_with(|| SnapshotExpandJournalEntry {
-                resource_path: resource_path.clone(),
-                status: status.to_string(),
-                request_id: request_id.to_string(),
-                started_at: now.clone(),
-                updated_at: now.clone(),
-                temp_artifact: temp_artifact.clone(),
-            });
-
-        entry.resource_path = resource_path;
-        entry.status = status.to_string();
-        entry.request_id = request_id.to_string();
-        entry.updated_at = now;
-        if entry.started_at.is_empty() {
-            entry.started_at = Utc::now().to_rfc3339();
-        }
-        if temp_artifact.is_some() {
-            entry.temp_artifact = temp_artifact;
-        }
-        self.save_snapshot_expand_journal()
-    }
-
-    fn clear_snapshot_expand_journal_entry(&mut self, resource_rel: &str) -> Result<()> {
-        if self.snapshot_expand_journal.remove(resource_rel).is_some() {
-            self.save_snapshot_expand_journal()?;
-        }
-        Ok(())
-    }
-
-    fn recover_snapshot_expand_journal(&mut self) -> Result<()> {
-        if self.snapshot_expand_journal.is_empty() {
-            return Ok(());
-        }
-
-        let entries: Vec<(String, SnapshotExpandJournalEntry)> = self
-            .snapshot_expand_journal
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        for (resource_rel, entry) in entries {
-            let mut cleaned_temp = false;
-            let mut cleanup_status = "not_requested";
-            let mut cleanup_detail: Option<String> = None;
-            if let Some(temp_artifact) = entry.temp_artifact.clone() {
-                match self.resolve_snapshot_expand_cleanup_target(&temp_artifact) {
-                    Ok(temp_abs) => {
-                        if temp_abs.exists() {
-                            match fs::remove_file(&temp_abs) {
-                                Ok(_) => {
-                                    cleaned_temp = true;
-                                    cleanup_status = "deleted";
-                                }
-                                Err(err) => {
-                                    cleanup_status = "delete_failed";
-                                    cleanup_detail = Some(err.to_string());
-                                    eprintln!(
-                                        "[recovery] snapshot temp cleanup failed resource=/{} artifact={} err={}",
-                                        resource_rel,
-                                        temp_abs.display(),
-                                        err
-                                    );
-                                }
-                            }
-                        } else {
-                            cleanup_status = "missing";
-                        }
-                    }
-                    Err(reason) => {
-                        cleanup_status = "rejected";
-                        cleanup_detail = Some(reason.clone());
-                        eprintln!(
-                            "[recovery] snapshot temp cleanup skipped resource=/{} artifact={} reason={}",
-                            resource_rel, temp_artifact, reason
-                        );
-                    }
-                }
-            }
-
-            self.transition_snapshot_state(&resource_rel, SnapshotCacheState::Cold);
-            self.clear_snapshot_recent_expand(&resource_rel);
-            eprintln!(
-                "[recovery] snapshot expand incomplete resource=/{} status={} cleaned_temp={} cleanup_status={} -> cold",
-                resource_rel, entry.status, cleaned_temp, cleanup_status
-            );
-            if let Some(detail) = cleanup_detail.as_deref() {
-                eprintln!(
-                    "[recovery] snapshot expand cleanup detail resource=/{} detail={}",
-                    resource_rel, detail
-                );
-            }
-
-            self.emit_event(
-                "/_snapshot/refresh.act",
-                &format!("req-rec-{}", Uuid::new_v4().simple()),
-                "cache.recovery",
-                Some(json!({
-                    "path": format!("/{}", resource_rel),
-                    "status_before": entry.status,
-                    "cleaned_temp": cleaned_temp,
-                    "cleanup_status": cleanup_status,
-                    "cleanup_detail": cleanup_detail,
-                    "temp_artifact": entry.temp_artifact,
-                    "phase": "recovered",
-                })),
-                None,
-                None,
-            )?;
-        }
-
-        self.snapshot_expand_journal.clear();
-        self.save_snapshot_expand_journal()
     }
 
     fn poll_once(&mut self) -> Result<()> {
@@ -2475,53 +2261,6 @@ impl AppfsAdapter {
                 "Failed to move action cursor temp file {} to {}",
                 tmp_path.display(),
                 self.action_cursors_path.display()
-            )
-        })?;
-        Ok(())
-    }
-
-    fn load_snapshot_expand_journal(
-        path: &Path,
-    ) -> Result<HashMap<String, SnapshotExpandJournalEntry>> {
-        if !path.exists() {
-            return Ok(HashMap::new());
-        }
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
-        let doc: SnapshotExpandJournalDoc = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse {}", path.display()))?;
-        Ok(doc.resources)
-    }
-
-    fn save_snapshot_expand_journal(&self) -> Result<()> {
-        let tmp_path = self
-            .snapshot_expand_journal_path
-            .with_extension("res.json.tmp");
-        let doc = SnapshotExpandJournalDoc {
-            resources: self.snapshot_expand_journal.clone(),
-        };
-        let bytes = serde_json::to_vec_pretty(&doc)?;
-        fs::write(&tmp_path, bytes).with_context(|| {
-            format!(
-                "Failed to write snapshot expand journal temp file {}",
-                tmp_path.display()
-            )
-        })?;
-
-        if self.snapshot_expand_journal_path.exists() {
-            fs::remove_file(&self.snapshot_expand_journal_path).with_context(|| {
-                format!(
-                    "Failed to remove old snapshot expand journal file {}",
-                    self.snapshot_expand_journal_path.display()
-                )
-            })?;
-        }
-
-        fs::rename(&tmp_path, &self.snapshot_expand_journal_path).with_context(|| {
-            format!(
-                "Failed to move snapshot expand journal temp file {} to {}",
-                tmp_path.display(),
-                self.snapshot_expand_journal_path.display()
             )
         })?;
         Ok(())
