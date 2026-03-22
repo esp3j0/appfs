@@ -71,6 +71,17 @@ pub enum AdapterControlOutcomeV1 {
     Completed { content: JsonValue },
 }
 
+/// v0.1 snapshot prewarm metadata payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AdapterSnapshotMetaV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_sec: Option<u64>,
+}
+
 /// v0.1 frozen adapter error contract.
 #[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -126,6 +137,20 @@ pub trait AppAdapterV1: Send {
         Err(AdapterErrorV1::Rejected {
             code: "NOT_SUPPORTED".to_string(),
             message: "control action is not supported by this adapter".to_string(),
+            retryable: false,
+        })
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<AdapterSnapshotMetaV1, AdapterErrorV1> {
+        let _ = resource_path;
+        let _ = timeout;
+        Err(AdapterErrorV1::Rejected {
+            code: "NOT_SUPPORTED".to_string(),
+            message: "snapshot prewarm metadata is not supported by this adapter".to_string(),
             retryable: false,
         })
     }

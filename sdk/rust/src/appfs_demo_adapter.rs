@@ -1,9 +1,10 @@
 use crate::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
-    AdapterInputModeV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-    RequestContextV1,
+    AdapterInputModeV1, AdapterSnapshotMetaV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1,
+    AppAdapterV1, RequestContextV1,
 };
 use serde_json::{json, Value as JsonValue};
+use std::time::Duration;
 
 /// Reference demo adapter implementation for AppFS v0.1.
 ///
@@ -67,6 +68,39 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
         }
     }
 
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+    ) -> std::result::Result<AdapterSnapshotMetaV1, AdapterErrorV1> {
+        let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
+        let delay_ms = std::env::var("APPFS_V2_PREWARM_DELAY_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        if delay_ms > timeout_ms {
+            std::thread::sleep(Duration::from_millis(timeout_ms));
+            return Err(AdapterErrorV1::Rejected {
+                code: "TIMEOUT".to_string(),
+                message: format!(
+                    "prewarm timeout resource={resource_path} delay_ms={delay_ms} timeout_ms={timeout_ms}"
+                ),
+                retryable: true,
+            });
+        }
+
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+
+        Ok(AdapterSnapshotMetaV1 {
+            size_bytes: Some(5000),
+            revision: Some("demo-v1".to_string()),
+            ttl_sec: Some(60),
+        })
+    }
+
     fn submit_control_action(
         &mut self,
         _path: &str,
@@ -113,6 +147,7 @@ mod tests {
         AdapterControlActionV1, AdapterControlOutcomeV1, AdapterExecutionModeV1,
         AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
     };
+    use std::time::Duration;
 
     fn ctx() -> RequestContextV1 {
         RequestContextV1 {
@@ -183,5 +218,18 @@ mod tests {
                 assert_eq!(content["handle_id"], "ph_abc");
             }
         }
+    }
+
+    #[test]
+    fn demo_adapter_prewarm_snapshot_meta() {
+        let mut adapter = DemoAppAdapterV1::new("aiim".to_string());
+        let meta = adapter
+            .prewarm_snapshot_meta(
+                "/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(50),
+            )
+            .expect("prewarm should succeed");
+        assert_eq!(meta.size_bytes, Some(5000));
+        assert_eq!(meta.revision.as_deref(), Some("demo-v1"));
     }
 }
