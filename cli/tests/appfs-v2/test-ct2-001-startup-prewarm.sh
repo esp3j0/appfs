@@ -8,7 +8,7 @@ DIR="$(dirname "$0")"
 SCRIPT_DIR="$(CDPATH= cd -- "$DIR" && pwd)"
 CLI_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$CLI_DIR/.." && pwd)"
-AGENTFS_BIN="${AGENTFS_BIN:-$CLI_DIR/target/debug/agentfs}"
+AGENTFS_BIN="${AGENTFS_BIN:-}"
 
 TMP_ROOT=""
 ADAPTER_PID=""
@@ -44,44 +44,6 @@ wait_log_contains() {
         sleep 1
     done
     return 1
-}
-
-ensure_agentfs_bin() {
-    if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-        return 0
-    fi
-
-    if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    if command -v cargo >/dev/null 2>&1; then
-        build_cmd="cargo"
-        say "Building Linux agentfs binary for CT2 v2 tests..."
-        if (cd "$CLI_DIR" && "$build_cmd" build --quiet); then
-            if [ ! -f "$CLI_DIR/target/debug/agentfs" ]; then
-                fail "linux cargo build succeeded but $CLI_DIR/target/debug/agentfs is missing"
-            fi
-            AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-            return 0
-        fi
-        say "Linux build unavailable; trying Windows fallback binary..."
-    fi
-
-    if command -v cargo.exe >/dev/null 2>&1; then
-        build_cmd="cargo.exe"
-        say "Building Windows agentfs binary for CT2 v2 tests..."
-        (cd "$CLI_DIR" && "$build_cmd" build --quiet)
-        if [ ! -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-            fail "windows cargo build succeeded but $CLI_DIR/target/debug/agentfs.exe is missing"
-        fi
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    fail "missing cargo/cargo.exe; set AGENTFS_BIN to an existing binary"
 }
 
 reload_fixture_app() {
@@ -162,7 +124,7 @@ start_adapter_with_prewarm_delay() {
 
 banner "AppFS v2 CT2-001 Startup Prewarm"
 require_cmd python3
-ensure_agentfs_bin
+ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
 TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-001.XXXXXX")"

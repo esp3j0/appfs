@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Required AppFS gate: static + live (in-process)
+  # Required AppFS gate: v0.1 baseline smoke + v2 CT2 required set (linux)
   appfs-contract-gate:
     name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
@@ -34,18 +34,25 @@ jobs:
     - name: Build CLI
       run: cargo build --verbose
 
-    - name: Run AppFS static contract suite
+    - name: Run AppFS v0.1 static contract suite (baseline)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_STATIC_FIXTURE: "1"
         APPFS_ROOT: ${{ github.workspace }}/examples/appfs
       run: sh ./tests/test-appfs-contract.sh
 
-    - name: Run AppFS live contract suite
+    - name: Run AppFS v0.1 live contract suite (baseline smoke)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
       run: sh ./tests/appfs/run-live-with-adapter.sh
+
+    - name: Run AppFS v2 contract suite (CT2 required set)
+      env:
+        APPFS_V2_CONTRACT_TESTS: "1"
+        APPFS_V2_STRICT: "1"
+        APPFS_V2_BUILD_BEFORE_RUN: "0"
+      run: sh ./tests/test-appfs-v2-contract.sh
 
   # Required AppFS gate: live HTTP bridge path
   appfs-contract-gate-http-bridge:
