@@ -652,7 +652,7 @@ impl AppfsAdapter {
             return Err("empty_temp_artifact".to_string());
         }
 
-        let rel_raw = trimmed.trim_start_matches(|ch| ch == '/' || ch == '\\');
+        let rel_raw = trimmed.trim_start_matches(['/', '\\']);
         let rel_path = Path::new(rel_raw);
         if rel_path.is_absolute() {
             return Err("absolute_temp_artifact_path".to_string());
