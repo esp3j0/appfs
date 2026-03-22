@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod bridge_resilience;
+mod action_dispatcher;
 mod grpc_bridge_adapter;
 mod http_bridge_adapter;
 
@@ -268,29 +269,6 @@ struct PagingHandle {
     closed: bool,
     owner_session: String,
     expires_at_ts: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-struct PagingRequest {
-    handle_id: String,
-    session_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct SnapshotRefreshRequest {
-    resource_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedActionLineV2 {
-    client_token: String,
-    payload_json: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActionLineV2ValidationError {
-    code: &'static str,
-    reason: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -992,23 +970,25 @@ impl AppfsAdapter {
                 }
             }
 
-            if self.actionline_v2_strict {
-                match parse_action_line_v2(&payload) {
-                    Ok(parsed) => {
-                        client_token_override = Some(parsed.client_token);
-                        payload = parsed.payload_json;
-                    }
-                    Err(validation) => {
-                        let len = payload.len();
-                        eprintln!(
-                            "AppFS adapter rejected action payload for {rel}: validation={} len={len} reason={}",
-                            validation.code, validation.reason
-                        );
-                        cursor.offset = payload_line_end as u64;
-                        cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
-                        position = payload_line_end;
-                        continue;
-                    }
+            match action_dispatcher::normalize_actionline_v2_payload(
+                &payload,
+                self.actionline_v2_strict,
+            ) {
+                Ok(Some(parsed)) => {
+                    client_token_override = Some(parsed.client_token);
+                    payload = parsed.payload_json;
+                }
+                Ok(None) => {}
+                Err(validation) => {
+                    let len = payload.len();
+                    eprintln!(
+                        "AppFS adapter rejected action payload for {rel}: validation={} len={len} reason={}",
+                        validation.code, validation.reason
+                    );
+                    cursor.offset = payload_line_end as u64;
+                    cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    position = payload_line_end;
+                    continue;
                 }
             }
 
@@ -1050,7 +1030,7 @@ impl AppfsAdapter {
         payload: &str,
         client_token_override: Option<String>,
     ) -> Result<ProcessOutcome> {
-        if let Err(code) = validate_payload(spec, payload) {
+        if let Err(code) = action_dispatcher::validate_submit_payload(spec, payload) {
             eprintln!(
                 "AppFS adapter rejected action payload for {rel}: validation={code} len={}",
                 payload.len()
@@ -1062,80 +1042,69 @@ impl AppfsAdapter {
         let request_id = Self::new_request_id();
         let client_token = client_token_override.or_else(|| extract_client_token(payload));
 
-        if normalized_path == "/_paging/fetch_next.act" {
-            match parse_paging_request(payload) {
-                Ok(request) => {
-                    if !is_handle_format_valid(&request.handle_id) {
-                        eprintln!(
-                            "AppFS adapter rejected invalid handle format at submit-time: {}",
-                            normalized_path
-                        );
-                        return Ok(ProcessOutcome::Consumed);
-                    }
-                    return self.handle_fetch_next(
-                        &normalized_path,
-                        &request_id,
-                        &request.handle_id,
-                        request.session_id.as_deref(),
-                        client_token,
-                    );
-                }
-                Err(_) => {
+        match action_dispatcher::route_action(&normalized_path, payload) {
+            Ok(action_dispatcher::DispatchRoute::PagingFetchNext(request)) => {
+                if !is_handle_format_valid(&request.handle_id) {
                     eprintln!(
-                        "AppFS adapter rejected malformed paging handle at submit-time: {}",
+                        "AppFS adapter rejected invalid handle format at submit-time: {}",
                         normalized_path
                     );
                     return Ok(ProcessOutcome::Consumed);
                 }
-            };
-        }
-
-        if normalized_path == "/_paging/close.act" {
-            match parse_paging_request(payload) {
-                Ok(request) => {
-                    if !is_handle_format_valid(&request.handle_id) {
-                        eprintln!(
-                            "AppFS adapter rejected invalid close handle format at submit-time: {}",
-                            normalized_path
-                        );
-                        return Ok(ProcessOutcome::Consumed);
-                    }
-                    return self.handle_close_handle(
-                        &normalized_path,
-                        &request_id,
-                        &request.handle_id,
-                        request.session_id.as_deref(),
-                        client_token,
-                    );
-                }
-                Err(_) => {
+                return self.handle_fetch_next(
+                    &normalized_path,
+                    &request_id,
+                    &request.handle_id,
+                    request.session_id.as_deref(),
+                    client_token,
+                );
+            }
+            Ok(action_dispatcher::DispatchRoute::PagingClose(request)) => {
+                if !is_handle_format_valid(&request.handle_id) {
                     eprintln!(
-                        "AppFS adapter rejected malformed paging close handle at submit-time: {}",
+                        "AppFS adapter rejected invalid close handle format at submit-time: {}",
                         normalized_path
                     );
                     return Ok(ProcessOutcome::Consumed);
                 }
-            };
-        }
-
-        if normalized_path == "/_snapshot/refresh.act" {
-            match parse_snapshot_refresh_request(payload) {
-                Ok(request) => {
-                    return self.handle_snapshot_refresh(
-                        &normalized_path,
-                        &request_id,
-                        &request.resource_path,
-                        client_token,
-                    );
-                }
-                Err(_) => {
-                    eprintln!(
-                        "AppFS adapter rejected malformed snapshot refresh payload at submit-time: {}",
-                        normalized_path
-                    );
-                    return Ok(ProcessOutcome::Consumed);
-                }
-            };
+                return self.handle_close_handle(
+                    &normalized_path,
+                    &request_id,
+                    &request.handle_id,
+                    request.session_id.as_deref(),
+                    client_token,
+                );
+            }
+            Ok(action_dispatcher::DispatchRoute::SnapshotRefresh(request)) => {
+                return self.handle_snapshot_refresh(
+                    &normalized_path,
+                    &request_id,
+                    &request.resource_path,
+                    client_token,
+                );
+            }
+            Ok(action_dispatcher::DispatchRoute::BusinessSubmit) => {}
+            Err(action_dispatcher::DispatchRouteParseError::MalformedPagingFetchNext) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed paging handle at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
+            Err(action_dispatcher::DispatchRouteParseError::MalformedPagingClose) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed paging close handle at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
+            Err(action_dispatcher::DispatchRouteParseError::MalformedSnapshotRefresh) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed snapshot refresh payload at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
         }
 
         let request_ctx = RequestContextV1 {
@@ -2927,91 +2896,6 @@ fn parse_snapshot_on_timeout_policy(value: Option<&str>) -> SnapshotOnTimeoutPol
     }
 }
 
-fn parse_action_line_v2(
-    line: &str,
-) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
-    let json =
-        serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
-            code: ERR_INVALID_PAYLOAD,
-            reason: "action line must be valid json",
-        })?;
-
-    let object = json.as_object().ok_or(ActionLineV2ValidationError {
-        code: ERR_INVALID_ARGUMENT,
-        reason: "action line must be a json object",
-    })?;
-
-    if object.contains_key("mode") {
-        return Err(ActionLineV2ValidationError {
-            code: ERR_INVALID_ARGUMENT,
-            reason: "mode field is not allowed in ActionLineV2",
-        });
-    }
-
-    let version = object
-        .get("version")
-        .and_then(|value| value.as_str())
-        .ok_or(ActionLineV2ValidationError {
-            code: ERR_INVALID_ARGUMENT,
-            reason: "version is required",
-        })?;
-
-    if version != "2.0" {
-        return Err(ActionLineV2ValidationError {
-            code: ERR_INVALID_ARGUMENT,
-            reason: "version must be 2.0",
-        });
-    }
-
-    let client_token = object
-        .get("client_token")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or(ActionLineV2ValidationError {
-            code: ERR_INVALID_ARGUMENT,
-            reason: "client_token is required",
-        })?
-        .to_string();
-
-    let payload = object
-        .get("payload")
-        .and_then(|value| value.as_object())
-        .ok_or(ActionLineV2ValidationError {
-            code: ERR_INVALID_ARGUMENT,
-            reason: "payload must be a json object",
-        })?;
-
-    let payload_json = serde_json::to_string(payload).map_err(|_| ActionLineV2ValidationError {
-        code: ERR_INVALID_PAYLOAD,
-        reason: "payload serialization failed",
-    })?;
-
-    Ok(ParsedActionLineV2 {
-        client_token,
-        payload_json,
-    })
-}
-
-fn validate_payload(spec: &ActionSpec, payload: &str) -> std::result::Result<(), &'static str> {
-    if let Some(max) = spec.max_payload_bytes {
-        if payload.len() > max {
-            return Err("EMSGSIZE");
-        }
-    }
-
-    if payload.trim().is_empty() {
-        return Err(ERR_INVALID_ARGUMENT);
-    }
-
-    match spec.input_mode {
-        InputMode::Json => {
-            serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_PAYLOAD)?;
-            Ok(())
-        }
-    }
-}
-
 fn action_template_matches(template: &str, rel_path: &str) -> bool {
     let template = template.trim_matches('/');
     let rel_path = rel_path.trim_matches('/');
@@ -3146,37 +3030,6 @@ fn extract_client_token(payload: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn parse_paging_request(payload: &str) -> std::result::Result<PagingRequest, &'static str> {
-    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
-    let handle_id = json
-        .get("handle_id")
-        .and_then(|v| v.as_str())
-        .ok_or(ERR_INVALID_ARGUMENT)?;
-    let session_id = json
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned);
-    Ok(PagingRequest {
-        handle_id: handle_id.trim().to_string(),
-        session_id,
-    })
-}
-
-fn parse_snapshot_refresh_request(
-    payload: &str,
-) -> std::result::Result<SnapshotRefreshRequest, &'static str> {
-    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
-    let resource_path = json
-        .get("resource_path")
-        .and_then(|v| v.as_str())
-        .ok_or(ERR_INVALID_ARGUMENT)?;
-    Ok(SnapshotRefreshRequest {
-        resource_path: resource_path.trim().to_string(),
-    })
-}
-
 fn normalize_resource_rel_path(path: &str) -> Option<String> {
     let normalized = path.trim().trim_start_matches('/').replace('\\', "/");
     if normalized.is_empty() {
@@ -3249,12 +3102,15 @@ mod tests {
     use serde_json::Value;
 
     use super::{
+        action_dispatcher::{
+            parse_action_line_v2, parse_paging_request, parse_snapshot_refresh_request,
+            validate_submit_payload as validate_payload,
+        },
         action_template_matches, boundary_probe_from_bytes, decode_jsonl_line,
         deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
         is_handle_format_valid, is_safe_resource_rel_path, normalize_resource_rel_path,
-        normalize_runtime_handle_id, parse_action_line_v2, parse_paging_request,
-        parse_snapshot_on_timeout_policy, parse_snapshot_refresh_request,
-        recover_multiline_json_payload, template_specificity, validate_payload, ActionSpec,
+        normalize_runtime_handle_id, parse_snapshot_on_timeout_policy, recover_multiline_json_payload,
+        template_specificity, ActionSpec,
         ExecutionMode, InputMode, SnapshotOnTimeoutPolicy, ERR_INVALID_ARGUMENT,
         ERR_INVALID_PAYLOAD, MAX_SEGMENT_BYTES,
     };
