@@ -1,3 +1,4 @@
+use agentfs_sdk::AdapterErrorV1;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value as JsonValue};
@@ -26,6 +27,51 @@ impl AppfsAdapter {
                 Err(_) => SnapshotCacheState::Cold,
             };
             self.snapshot_states.insert(rel, state);
+        }
+    }
+
+    pub(super) fn startup_prewarm_snapshots(&mut self) {
+        let mut prewarm_specs: Vec<SnapshotSpec> = self
+            .snapshot_specs
+            .iter()
+            .filter(|spec| spec.prewarm)
+            .cloned()
+            .collect();
+        prewarm_specs.sort_by(|lhs, rhs| lhs.template.cmp(&rhs.template));
+
+        for spec in prewarm_specs {
+            let resource_path = format!("/{}", spec.template);
+            let timeout = Duration::from_millis(spec.prewarm_timeout_ms.max(1));
+            match self
+                .business_adapter
+                .prewarm_snapshot_meta(&resource_path, timeout)
+            {
+                Ok(meta) => {
+                    self.transition_snapshot_state(&spec.template, SnapshotCacheState::Hot);
+                    eprintln!(
+                        "[prewarm] resource={resource_path} state=hot size_bytes={} revision={}",
+                        meta.size_bytes
+                            .map(|size| size.to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        meta.revision.unwrap_or_else(|| "unknown".to_string())
+                    );
+                }
+                Err(err) if is_prewarm_timeout(&err) => {
+                    self.transition_snapshot_state(&spec.template, SnapshotCacheState::Cold);
+                    eprintln!(
+                        "[prewarm] timeout resource={resource_path} state=cold timeout_ms={} err={}",
+                        spec.prewarm_timeout_ms,
+                        prewarm_error_summary(&err)
+                    );
+                }
+                Err(err) => {
+                    self.transition_snapshot_state(&spec.template, SnapshotCacheState::Cold);
+                    eprintln!(
+                        "[prewarm] failed resource={resource_path} state=cold err={}",
+                        prewarm_error_summary(&err)
+                    );
+                }
+            }
         }
     }
 
@@ -705,5 +751,30 @@ impl AppfsAdapter {
             )
         })?;
         Ok(())
+    }
+}
+
+fn is_prewarm_timeout(err: &AdapterErrorV1) -> bool {
+    match err {
+        AdapterErrorV1::Rejected { code, message, .. } => {
+            code.eq_ignore_ascii_case("TIMEOUT")
+                || message
+                    .split_whitespace()
+                    .any(|segment| segment.eq_ignore_ascii_case("timeout"))
+        }
+        AdapterErrorV1::Internal { message } => message
+            .split_whitespace()
+            .any(|segment| segment.eq_ignore_ascii_case("timeout")),
+    }
+}
+
+fn prewarm_error_summary(err: &AdapterErrorV1) -> String {
+    match err {
+        AdapterErrorV1::Rejected {
+            code,
+            message,
+            retryable,
+        } => format!("code={code} retryable={retryable} message={message}"),
+        AdapterErrorV1::Internal { message } => format!("internal message={message}"),
     }
 }

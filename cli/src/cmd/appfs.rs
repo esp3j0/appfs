@@ -32,6 +32,7 @@ const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
 const MAX_RECOVERY_BYTES: usize = 65536;
 const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
 const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
 const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
@@ -162,6 +163,8 @@ struct ActionSpec {
 struct SnapshotSpec {
     template: String,
     max_materialized_bytes: usize,
+    prewarm: bool,
+    prewarm_timeout_ms: u64,
     read_through_timeout_ms: u64,
     on_timeout: SnapshotOnTimeoutPolicy,
 }
@@ -242,6 +245,10 @@ struct ManifestPagingDoc {
 struct ManifestSnapshotDoc {
     #[serde(default)]
     max_materialized_bytes: Option<usize>,
+    #[serde(default)]
+    prewarm: Option<bool>,
+    #[serde(default)]
+    prewarm_timeout_ms: Option<u64>,
     #[serde(default)]
     read_through_timeout_ms: Option<u64>,
     #[serde(default)]

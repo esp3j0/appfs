@@ -21,8 +21,9 @@ pub use turso::sync::{DatabaseSyncStats, PartialBootstrapStrategy, PartialSyncOp
 // Re-export filesystem types
 pub use appfs_adapter::{
     is_appfs_adapter_sdk_v01_compatible, AdapterControlActionV1, AdapterControlOutcomeV1,
-    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterStreamingPlanV1,
-    AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1, APPFS_ADAPTER_SDK_VERSION,
+    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+    APPFS_ADAPTER_SDK_VERSION,
 };
 pub use appfs_adapter_testkit::{
     default_request_context_v1, run_error_case_matrix_v1, run_required_case_matrix_v1,

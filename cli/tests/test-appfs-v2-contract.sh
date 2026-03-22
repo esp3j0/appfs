@@ -11,6 +11,7 @@ fi
 echo "Running AppFS v2 contract skeleton tests..."
 
 tests="
+$DIR/appfs-v2/test-ct2-001-startup-prewarm.sh
 $DIR/appfs-v2/test-ct2-002-snapshot-hit.sh
 $DIR/appfs-v2/test-ct2-003-read-miss-expand.sh
 $DIR/appfs-v2/test-ct2-004-concurrent-dedupe.sh
