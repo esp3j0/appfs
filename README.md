@@ -217,12 +217,12 @@ Notes:
 
 ```mermaid
 flowchart TD
-    A["Agent shell / PowerShell / bash"] --> B["AgentFS mount<br/>Windows: WinFsp<br/>Linux: FUSE"]
-    B --> C["AppFS tree<br/>_meta / _stream / _paging / _snapshot / domain paths"]
-    C --> D["`agentfs serve appfs`<br/>v0.2 backend runtime"]
+    A["Agent shell / PowerShell / bash"] --> B["AgentFS mount (Windows: WinFsp, Linux: FUSE)"]
+    B --> C["AppFS tree (_meta, _stream, _paging, _snapshot, domain paths)"]
+    C --> D["agentfs serve appfs (v0.2 backend runtime)"]
 
-    D --> E["Action Dispatcher<br/>ActionLineV2 parse + validation"]
-    D --> F["Snapshot Cache Manager<br/>prewarm / read-through / stale handling"]
+    D --> E["Action Dispatcher (ActionLineV2 parse + validation)"]
+    D --> F["Snapshot Cache Manager (prewarm, read-through, stale handling)"]
     D --> G["Journal + Recovery"]
     D --> H["Event Engine + Paging"]
 

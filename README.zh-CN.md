@@ -28,8 +28,8 @@ AppFS 的目标是把不同应用统一成一套文件系统交互模型，让 a
 # 1) 先订阅事件流
 tail -f /app/aiim/_stream/events.evt.jsonl
 
-# 2) 以 append JSONL 触发动作
-printf '{"text":"hello"}\n' >> /app/aiim/contacts/zhangsan/send_message.act
+# 2) 以 append ActionLineV2 JSONL 触发动作
+printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) 直接读取资源
 cat /app/aiim/contacts/zhangsan/profile.res.json
@@ -37,7 +37,7 @@ cat /app/aiim/contacts/zhangsan/profile.res.json
 # 4) snapshot 资源是完整文件（.res.jsonl），live 资源继续分页
 cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 cat /app/aiim/feed/recommendations.res.json
-printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
+printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}\n' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## 可用动作（AIIM 夹具）
@@ -67,7 +67,17 @@ printf '{"handle_id":"<from-page>"}\n' >> /app/aiim/_paging/fetch_next.act
 
 ## 运行时快速开始（HTTP Bridge）
 
-### Windows（PowerShell，4 步）
+这个 runtime demo 有五个组成部分：
+
+1. AgentFS 挂载
+2. 将 AIIM fixture 拷入挂载树
+3. 启动 HTTP bridge connector
+4. 启动 `agentfs serve appfs` backend runtime
+5. 用单独终端 append `.act` 并 tail `_stream/events.evt.jsonl`
+
+如果缺少第 4 步，`.act` 写入不会被消费。只有 mount 和 bridge 还不够。
+
+### Windows（PowerShell，5 步）
 
 1. 挂载 AgentFS（终端 A）。
 
@@ -91,7 +101,7 @@ cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
 uv run python bridge_server.py
 ```
 
-4. 启动 AppFS runtime 并操作文件（终端 D/E）。
+4. 启动 AppFS backend runtime（终端 D）。
 
 ```powershell
 cd C:\Users\esp3j\rep\agentfs\cli
@@ -99,29 +109,38 @@ $env:APPFS_ADAPTER_HTTP_ENDPOINT = "http://127.0.0.1:8080"
 cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
 ```
 
+预期启动信号：
+
+```text
+AppFS adapter using HTTP bridge endpoint: http://127.0.0.1:8080
+AppFS adapter started for ...
+```
+
+5. 操作文件并观察事件（终端 E）。
+
 ```powershell
 # 订阅事件流（单独终端）
 Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 
-# 触发动作（append JSONL，一行一个 JSON）
-Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"text":"hello"}'
+# 触发动作（append ActionLineV2 JSONL，一行一个 JSON 对象）
+Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}'
 
 # snapshot 资源可直接检索
 Get-Content C:\mnt\win-real\aiim\chats\chat-001\messages.res.jsonl | Select-String "hello"
 
 # live 资源继续分页
 Get-Content C:\mnt\win-real\aiim\feed\recommendations.res.json -Raw
-Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"handle_id":"ph_live_7f2c"}'
-Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"handle_id":"ph_live_7f2c"}'
+Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}'
+Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}'
 
 # 显式触发 snapshot 刷新（缓存/物化检查点）
-Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"resource_path":"/chats/chat-001/messages.res.jsonl"}'
+Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}'
 
 # 读取资源
 Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
 ```
 
-### Linux（bash，4 步）
+### Linux（bash，5 步）
 
 1. 挂载 AgentFS（终端 A）。
 
@@ -146,30 +165,39 @@ cd /path/to/agentfs/examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
-4. 启动 AppFS runtime 并操作文件（终端 D/E）。
+4. 启动 AppFS backend runtime（终端 D）。
 
 ```bash
 cd /path/to/agentfs/cli
 APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --root /tmp/appfs-real --app-id aiim
 ```
 
+预期启动信号：
+
+```text
+AppFS adapter using HTTP bridge endpoint: http://127.0.0.1:8080
+AppFS adapter started for ...
+```
+
+5. 操作文件并观察事件（终端 E）。
+
 ```bash
 # 订阅事件流（单独终端）
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
-# 触发动作（append JSONL）
-printf '{"text":"hello"}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+# 触发动作（append ActionLineV2 JSONL）
+printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
 # snapshot 资源可直接检索
 cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 
 # live 资源继续分页
 cat /tmp/appfs-real/aiim/feed/recommendations.res.json
-printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"handle_id":"ph_live_7f2c"}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+printf '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # 显式触发 snapshot 刷新（缓存/物化检查点）
-printf '{"resource_path":"/chats/chat-001/messages.res.jsonl"}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
+printf '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # 读取资源
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -177,25 +205,59 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 
 注意：
 
-1. `.act` 统一为 append-only JSONL：使用 `>>`（或 PowerShell `Add-Content`）提交，一行一个 JSON。
-2. 对 `.act` 使用 `>` 覆写/截断会被视为非法变更，runtime 只记录诊断日志并跳过该批内容。
-3. 运行时语义为 `at-least-once`，建议业务层基于 `client_token`/`request_id` 做幂等去重。
-4. runtime 会兼容 shell 展开导致的多行 JSON 片段，并尝试合并相邻行恢复为单次请求；推荐写法仍是单行 JSON，并在字符串中使用转义 `\\n`。
+1. `.act` 统一为 append-only JSONL：使用 `>>`（或 PowerShell `Add-Content`）提交，一行一个 ActionLineV2 JSON 对象。
+2. `serve appfs` 必须运行，`.act` 写入才会被消费。仅有 mount 和 bridge 不会处理动作文件。
+3. 对 `.act` 使用 `>` 覆写/截断会被视为非法变更，runtime 只记录诊断日志并跳过该批内容。
+4. 运行时语义为 `at-least-once`，建议业务层基于 `client_token`/`request_id` 做幂等去重。
+5. runtime 会兼容 shell 展开导致的多行 JSON 片段，并尝试合并相邻行恢复为单次请求；推荐写法仍是单行 JSON，并在字符串中使用转义 `\\n`。
 
 ## 架构
 
-- Draw.io 源文件：[docs/v1/architecture/appfs-v0.1-architecture.drawio](docs/v1/architecture/appfs-v0.1-architecture.drawio)
-- SVG 预览：[docs/v1/architecture/appfs-v0.1-architecture.svg](docs/v1/architecture/appfs-v0.1-architecture.svg)
-- 规范基线：[APPFS-v0.1.md](docs/v1/APPFS-v0.1.md)
+### v0.2 Backend + Connector 调用链
 
-架构共四层：
+```mermaid
+flowchart TD
+    A["Agent shell / PowerShell / bash"] --> B["AgentFS 挂载（Windows: WinFsp，Linux: FUSE）"]
+    B --> C["AppFS 树（_meta、_stream、_paging、_snapshot、业务路径）"]
+    C --> D["agentfs serve appfs（v0.2 backend runtime）"]
 
-1. Agent shell 操作层（`cat`、`echo`、`tail`）。
-2. AppFS 命名空间与契约文件层（`_meta`、`_stream`、`_paging`、`_snapshot`、业务路径）。
-3. `agentfs serve appfs` runtime 层（路由、校验、流持久化、重放）。
-4. 业务适配器层（进程内，或 HTTP/gRPC bridge）对接真实应用后端。
+    D --> E["Action Dispatcher（ActionLineV2 解析与校验）"]
+    D --> F["Snapshot Cache Manager（prewarm、read-through、stale）"]
+    D --> G["Journal + Recovery"]
+    D --> H["Event Engine + Paging"]
 
-![AppFS v0.1 Architecture](docs/v1/architecture/appfs-v0.1-architecture.svg)
+    D --> I["Connector transport"]
+    I --> J["进程内 adapter"]
+    I --> K["HTTP bridge adapter"]
+    I --> L["gRPC bridge adapter"]
+
+    K --> M["HTTP bridge service"]
+    L --> N["gRPC bridge service"]
+    J --> O["真实 app backend 或 reference demo backend"]
+    M --> O
+    N --> O
+
+    H --> C
+    F --> C
+    G --> C
+```
+
+### v0.2 中 `serve appfs` 的职责
+
+`cargo run -- serve appfs --root ... --app-id ...` 启动的是 AppFS backend runtime。当前实现里它仍然是一个长驻进程，内部有 poll/event loop，但它已经不再是 v0.1 那种薄 sidecar。
+
+在 v0.2 里它负责：
+
+1. 装载 manifest、action spec、snapshot spec、paging 控制与运行策略；
+2. 选择并初始化 connector transport（进程内 / HTTP bridge / gRPC bridge）；
+3. 执行 ActionLineV2 校验与 submit-time reject；
+4. 驱动 snapshot prewarm、read-through、timeout fallback、journal recovery 与 paging；
+5. 把事件、重放、cursor 与物化资源文件回写到挂载树。
+
+换句话说：
+
+1. **v0.1** 的 `serve appfs`：更接近 sidecar/reference runtime，主要围绕 action sink 和 bridge 转发。
+2. **v0.2** 的 `serve appfs`：是承接 AppFS 协议语义的 backend runtime，connector 只负责 app-specific 的上游调用。
 
 ## 一致性快速开始
 
