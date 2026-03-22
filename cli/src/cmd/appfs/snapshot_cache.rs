@@ -1,6 +1,20 @@
-use super::*;
-use std::io::BufRead;
+use anyhow::{Context, Result};
+use chrono::Utc;
+use serde_json::{json, Value as JsonValue};
+use std::fs;
+use std::io::{BufRead, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use super::errors::{ERR_CACHE_MISS_EXPAND_FAILED, ERR_INVALID_ARGUMENT};
+use super::shared::{
+    decode_jsonl_line, deterministic_shorten_segment, is_safe_resource_rel_path,
+    normalize_resource_rel_path, snapshot_coalesce_window_ms, snapshot_expand_delay_ms,
+    snapshot_force_expand_on_refresh, snapshot_publish_delay_ms,
+};
+use super::{
+    AppfsAdapter, ProcessOutcome, SnapshotCacheState, SnapshotOnTimeoutPolicy, SnapshotSpec,
+};
 
 impl AppfsAdapter {
     pub(super) fn initialize_snapshot_states(&mut self) {
@@ -22,7 +36,11 @@ impl AppfsAdapter {
             .unwrap_or(SnapshotCacheState::Cold)
     }
 
-    pub(super) fn transition_snapshot_state(&mut self, resource_rel: &str, next: SnapshotCacheState) {
+    pub(super) fn transition_snapshot_state(
+        &mut self,
+        resource_rel: &str,
+        next: SnapshotCacheState,
+    ) {
         let prev = self.snapshot_state_for(resource_rel);
         if prev != next {
             eprintln!(

@@ -1,4 +1,11 @@
-use super::*;
+use anyhow::Result;
+use serde_json::json;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
+
+use super::journal::SnapshotExpandJournalEntry;
+use super::{AppfsAdapter, SnapshotCacheState};
 
 impl AppfsAdapter {
     pub(super) fn resolve_snapshot_expand_cleanup_target(
