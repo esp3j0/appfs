@@ -1,4 +1,11 @@
-use super::*;
+use anyhow::{Context, Result};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+use super::AppfsAdapter;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(super) struct SnapshotExpandJournalDoc {
@@ -52,10 +59,7 @@ impl AppfsAdapter {
         self.save_snapshot_expand_journal()
     }
 
-    pub(super) fn clear_snapshot_expand_journal_entry(
-        &mut self,
-        resource_rel: &str,
-    ) -> Result<()> {
+    pub(super) fn clear_snapshot_expand_journal_entry(&mut self, resource_rel: &str) -> Result<()> {
         if self.snapshot_expand_journal.remove(resource_rel).is_some() {
             self.save_snapshot_expand_journal()?;
         }

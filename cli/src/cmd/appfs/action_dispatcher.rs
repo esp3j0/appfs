@@ -1,6 +1,7 @@
 use serde_json::Value as JsonValue;
 
-use super::{ActionSpec, InputMode, ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
+use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
+use super::{ActionSpec, InputMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ParsedActionLineV2 {
