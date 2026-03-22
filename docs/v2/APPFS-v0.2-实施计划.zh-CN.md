@@ -164,6 +164,7 @@ Issue 模板：
 | [真实 App 对接规范](./APPFS-v0.2-真实App对接规范.zh-CN.md) | 接入前置清单、映射规则 | Frozen (Phase A) |
 | [实施计划](./APPFS-v0.2-实施计划.zh-CN.md) | Phase A~E 阶段门禁 | Frozen (Phase A) |
 | [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md) | Phase E 迁移、灰度、回退、处置与 issue 生成规则 | Draft (Phase E) |
+| [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md) | Phase E required/informational/rollout 证据模板与审查口径 | Draft (Phase E) |
 | [backend-mode-requirements-draft](./APPFS-v0.2-backend-mode-requirements-draft.zh-CN.md) | 需求草案（已 superseded） | Superseded |
 
 ## 9. 约束
@@ -187,3 +188,5 @@ Issue 模板：
 5. [非功能性需求](./APPFS-v0.2-非功能性需求.zh-CN.md)
 6. [合同测试 CT2](./APPFS-v0.2-合同测试CT2.zh-CN.md)
 7. [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md)
+7. [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md)
+8. [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md)
