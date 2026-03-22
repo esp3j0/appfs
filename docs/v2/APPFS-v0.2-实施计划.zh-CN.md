@@ -1,7 +1,7 @@
 # APPFS v0.2 实施计划（阶段门禁）
 
-- 版本：`v0.2-draft`
-- 状态：`Frozen (Phase A, 2026-03-20)`
+- 版本：`v0.2`
+- 状态：`Completed (Phase E, 2026-03-22)`
 - 依赖文档：[总览](./APPFS-v0.2-总览.zh-CN.md), [接口规范](./APPFS-v0.2-接口规范.zh-CN.md), [合同测试 CT2](./APPFS-v0.2-合同测试CT2.zh-CN.md), [能力分级](./APPFS-v0.2-能力分级.zh-CN.md)
 
 ## 1. 目标
@@ -163,8 +163,9 @@ Issue 模板：
 | [Connector 接口](./APPFS-v0.2-Connector接口.zh-CN.md) | 真实 app 对接层契约 | Frozen (Phase A) |
 | [真实 App 对接规范](./APPFS-v0.2-真实App对接规范.zh-CN.md) | 接入前置清单、映射规则 | Frozen (Phase A) |
 | [实施计划](./APPFS-v0.2-实施计划.zh-CN.md) | Phase A~E 阶段门禁 | Frozen (Phase A) |
-| [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md) | Phase E 迁移、灰度、回退、处置与 issue 生成规则 | Draft (Phase E) |
-| [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md) | Phase E required/informational/rollout 证据模板与审查口径 | Draft (Phase E) |
+| [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md) | Phase E 迁移、灰度、回退、处置与 issue 生成规则 | Completed (Phase E) |
+| [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md) | Phase E required/informational/rollout 证据模板与审查口径 | Completed (Phase E) |
+| [完成总结（2026-03-22）](./APPFS-v0.2-完成总结-2026-03-22.zh-CN.md) | 本轮 v0.2 实施完成状态、门禁结果与后续方向 | Completed |
 | [backend-mode-requirements-draft](./APPFS-v0.2-backend-mode-requirements-draft.zh-CN.md) | 需求草案（已 superseded） | Superseded |
 
 ## 9. 约束
@@ -188,5 +189,5 @@ Issue 模板：
 5. [非功能性需求](./APPFS-v0.2-非功能性需求.zh-CN.md)
 6. [合同测试 CT2](./APPFS-v0.2-合同测试CT2.zh-CN.md)
 7. [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md)
-7. [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md)
-8. [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md)
+8. [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md)
+9. [完成总结（2026-03-22）](./APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
