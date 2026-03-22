@@ -36,9 +36,9 @@ pub(super) enum DispatchRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DispatchRouteParseError {
-    MalformedPagingFetchNext,
-    MalformedPagingClose,
-    MalformedSnapshotRefresh,
+    PagingFetchNext,
+    PagingClose,
+    SnapshotRefresh,
 }
 
 pub(super) fn normalize_actionline_v2_payload(
@@ -58,17 +58,17 @@ pub(super) fn route_action(
     if normalized_path == "/_paging/fetch_next.act" {
         return parse_paging_request(payload)
             .map(DispatchRoute::PagingFetchNext)
-            .map_err(|_| DispatchRouteParseError::MalformedPagingFetchNext);
+            .map_err(|_| DispatchRouteParseError::PagingFetchNext);
     }
     if normalized_path == "/_paging/close.act" {
         return parse_paging_request(payload)
             .map(DispatchRoute::PagingClose)
-            .map_err(|_| DispatchRouteParseError::MalformedPagingClose);
+            .map_err(|_| DispatchRouteParseError::PagingClose);
     }
     if normalized_path == "/_snapshot/refresh.act" {
         return parse_snapshot_refresh_request(payload)
             .map(DispatchRoute::SnapshotRefresh)
-            .map_err(|_| DispatchRouteParseError::MalformedSnapshotRefresh);
+            .map_err(|_| DispatchRouteParseError::SnapshotRefresh);
     }
 
     Ok(DispatchRoute::BusinessSubmit)
