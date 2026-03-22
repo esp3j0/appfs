@@ -27,7 +27,7 @@ use super::{
     ExecutionMode, InputMode, ManifestContract, ManifestDoc, ProcessOutcome, SnapshotSpec,
     StreamingJob, ACTION_CURSORS_FILENAME, DEFAULT_RETENTION_HINT_SEC,
     DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES, DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS,
-    SNAPSHOT_EXPAND_JOURNAL_FILENAME,
+    DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
 impl AppfsAdapter {
@@ -172,6 +172,7 @@ impl AppfsAdapter {
         adapter.initialize_snapshot_states();
         adapter.recover_snapshot_expand_journal()?;
         adapter.load_known_handles()?;
+        adapter.startup_prewarm_snapshots();
         Ok(adapter)
     }
 
@@ -644,6 +645,21 @@ impl AppfsAdapter {
                                     "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
                                 );
                             }
+                            let prewarm = node
+                                .snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.prewarm)
+                                .unwrap_or(true);
+                            let prewarm_timeout_ms = node
+                                .snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.prewarm_timeout_ms)
+                                .unwrap_or(DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS);
+                            if prewarm_timeout_ms == 0 {
+                                anyhow::bail!(
+                                    "snapshot.prewarm_timeout_ms must be > 0 for resource template={template}"
+                                );
+                            }
                             let read_through_timeout_ms = node
                                 .snapshot
                                 .as_ref()
@@ -662,6 +678,8 @@ impl AppfsAdapter {
                             snapshot_specs.push(SnapshotSpec {
                                 template: template.trim_start_matches('/').to_string(),
                                 max_materialized_bytes,
+                                prewarm,
+                                prewarm_timeout_ms,
                                 read_through_timeout_ms,
                                 on_timeout,
                             });
