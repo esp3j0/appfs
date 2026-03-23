@@ -41,7 +41,7 @@ Subset selection (for bridge-specific CI/local runs):
 ```bash
 cd cli
 APPFS_V2_CONTRACT_TESTS=1 \
-APPFS_V2_REQUIRED_CASES='ct2-001,ct2-002,ct2-007,ct2-008,ct2-009' \
+APPFS_V2_REQUIRED_CASES='ct2-002,ct2-007,ct2-008,ct2-009' \
 APPFS_V2_EXTENDED_CASES='none' \
 ./tests/test-appfs-v2-contract.sh
 ```
@@ -49,7 +49,7 @@ APPFS_V2_EXTENDED_CASES='none' \
 ```bash
 cd cli
 APPFS_V2_CONTRACT_TESTS=1 \
-APPFS_V2_REQUIRED_CASES='test-ct2-001-startup-prewarm.sh test-ct2-009-dual-shape.sh' \
+APPFS_V2_REQUIRED_CASES='test-ct2-002-snapshot-hit.sh test-ct2-009-dual-shape.sh' \
 APPFS_V2_EXTENDED_CASES='ct2-028' \
 ./tests/test-appfs-v2-contract.sh
 ```

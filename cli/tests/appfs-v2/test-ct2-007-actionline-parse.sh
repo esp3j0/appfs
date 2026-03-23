@@ -63,44 +63,6 @@ assert_json_expr() {
     fi
 }
 
-ensure_agentfs_bin() {
-    if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-        return 0
-    fi
-
-    if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    if command -v cargo >/dev/null 2>&1; then
-        build_cmd="cargo"
-        say "Building Linux agentfs binary for CT2 v2 tests..."
-        if (cd "$CLI_DIR" && "$build_cmd" build --quiet); then
-            if [ ! -f "$CLI_DIR/target/debug/agentfs" ]; then
-                fail "linux cargo build succeeded but $CLI_DIR/target/debug/agentfs is missing"
-            fi
-            AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-            return 0
-        fi
-        say "Linux build unavailable; trying Windows fallback binary..."
-    fi
-
-    if command -v cargo.exe >/dev/null 2>&1; then
-        build_cmd="cargo.exe"
-        say "Building Windows agentfs binary for CT2 v2 tests..."
-        (cd "$CLI_DIR" && "$build_cmd" build --quiet)
-        if [ ! -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-            fail "windows cargo build succeeded but $CLI_DIR/target/debug/agentfs.exe is missing"
-        fi
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    fail "missing cargo/cargo.exe; set AGENTFS_BIN to an existing binary"
-}
-
 assert_token_completed() {
     token="$1"
     line="$(grep "$token" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
@@ -112,7 +74,7 @@ assert_token_completed() {
 
 banner "AppFS v2 CT2-007 ActionLineV2 Parse"
 require_cmd python3
-ensure_agentfs_bin
+ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
 TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-007.XXXXXX")"
@@ -126,26 +88,7 @@ assert_file "$ACTION"
 assert_file "$EVENTS"
 
 ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-runtime_root="$TMP_ROOT"
-case "$AGENTFS_BIN" in
-    *.exe)
-        win_bin="$AGENTFS_BIN"
-        if command -v wslpath >/dev/null 2>&1; then
-            runtime_root="$(wslpath -w "$TMP_ROOT")"
-            win_bin="$(wslpath -w "$AGENTFS_BIN")"
-        fi
-        cmd.exe /C "set APPFS_V2_ACTIONLINE_STRICT=1&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
-        ;;
-    *)
-        APPFS_V2_ACTIONLINE_STRICT=1 "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
-        ;;
-esac
-ADAPTER_PID=$!
-sleep 1
-if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
-    tail -n 120 "$ADAPTER_LOG" 2>/dev/null || true
-    fail "appfs adapter failed to start"
-fi
+ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 1)"
 pass "adapter started with APPFS_V2_ACTIONLINE_STRICT=1"
 
 wait_writable "$ACTION" 10 || fail "action sink remained non-writable: $ACTION"
