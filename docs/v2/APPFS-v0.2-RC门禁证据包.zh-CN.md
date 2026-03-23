@@ -1,7 +1,7 @@
 # APPFS v0.2 RC 门禁证据包
 
-- 版本：`v0.2-rc-draft`
-- 状态：`Draft (Phase E, 2026-03-22)`
+- 版本：`v0.2-rc-final`
+- 状态：`Completed (Phase E, 2026-03-22)`
 - 依赖文档：
   - [APPFS-v0.2-实施计划.zh-CN.md](./APPFS-v0.2-实施计划.zh-CN.md)
   - [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
