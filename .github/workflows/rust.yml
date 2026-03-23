@@ -54,9 +54,9 @@ jobs:
         APPFS_V2_BUILD_BEFORE_RUN: "0"
       run: sh ./tests/test-appfs-v2-contract.sh
 
-  # Required AppFS gate: live HTTP bridge path
+  # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
-    name: AppFS Contract Gate (linux, http bridge)
+    name: AppFS Contract Gate (linux, http bridge, legacy v0.1 baseline)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     defaults:
@@ -117,7 +117,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS live contract suite (HTTP bridge mode)
+    - name: Run AppFS v0.1 live contract suite (legacy baseline, HTTP bridge)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
@@ -142,9 +142,9 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Required AppFS gate: v2 contract subset over HTTP bridge path
+  # Required AppFS v0.2 bridge gate: CT2 subset over HTTP bridge path
   appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Gate (linux, http bridge, v2)
+    name: AppFS Contract Gate (linux, http bridge, v0.2 required subset)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     defaults:
@@ -205,7 +205,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v2 contract subset (HTTP bridge mode)
+    - name: Run AppFS v0.2 contract subset (HTTP bridge mode)
       env:
         APPFS_V2_CONTRACT_TESTS: "1"
         APPFS_V2_STRICT: "1"
@@ -226,9 +226,9 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS gate: live gRPC bridge path (keeps signal without blocking merge)
+  # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
   appfs-contract-gate-grpc-bridge:
-    name: AppFS Contract Gate (linux, grpc bridge)
+    name: AppFS Contract Gate (linux, grpc bridge, legacy v0.1 baseline)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -292,7 +292,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS live contract suite (gRPC bridge mode)
+    - name: Run AppFS v0.1 live contract suite (legacy baseline, gRPC bridge)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
@@ -317,9 +317,10 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS gate: v2 contract subset over gRPC bridge path
+  # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path
+  # Follow-up #58 tracks CT2-009 parity before any required-tier escalation.
   appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Gate (linux, grpc bridge, v2)
+    name: AppFS Contract Gate (linux, grpc bridge, v0.2 informational subset)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -383,7 +384,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v2 contract subset (gRPC bridge mode)
+    - name: Run AppFS v0.2 contract subset (gRPC bridge mode, informational)
       env:
         APPFS_V2_CONTRACT_TESTS: "1"
         APPFS_V2_STRICT: "1"
