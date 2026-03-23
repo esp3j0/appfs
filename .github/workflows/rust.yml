@@ -317,6 +317,93 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
         fi
 
+  # Informational AppFS gate: v2 contract subset over gRPC bridge path
+  appfs-contract-gate-grpc-bridge-v2:
+    name: AppFS Contract Gate (linux, grpc bridge, v2)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: appfs-contract-gate
+    if: always()
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install system dependencies
+      run: |
+        ../scripts/install-deps.sh
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build CLI
+      run: cargo build --verbose
+
+    - name: Install gRPC bridge dependencies
+      run: |
+        cd ../examples/appfs/grpc-bridge/python
+        python3 -m pip install --upgrade pip
+        python3 -m pip install -r requirements.txt
+        python3 -m grpc_tools.protoc \
+          -I ../proto \
+          --python_out=. \
+          --grpc_python_out=. \
+          ../proto/appfs_adapter_v1.proto
+
+    - name: Start gRPC bridge (v2)
+      run: |
+        cd ../examples/appfs/grpc-bridge/python
+        nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge-v2.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-grpc-bridge-v2.pid"
+        python3 - <<'PY'
+        import socket
+        import sys
+        import time
+
+        for _ in range(30):
+            sock = socket.socket()
+            sock.settimeout(1.0)
+            try:
+                sock.connect(("127.0.0.1", 50051))
+                sock.close()
+                sys.exit(0)
+            except OSError:
+                time.sleep(1)
+        print("gRPC bridge did not become ready on 127.0.0.1:50051", file=sys.stderr)
+        sys.exit(1)
+        PY
+
+    - name: Run AppFS v2 contract subset (gRPC bridge mode)
+      env:
+        APPFS_V2_CONTRACT_TESTS: "1"
+        APPFS_V2_STRICT: "1"
+        APPFS_V2_BUILD_BEFORE_RUN: "0"
+        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_V2_EXTENDED_CASES: "none"
+        APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
+      run: sh ./tests/test-appfs-v2-contract.sh
+
+    - name: Dump gRPC bridge log on failure (v2)
+      if: failure()
+      run: tail -n 200 "$RUNNER_TEMP/appfs-grpc-bridge-v2.log" || true
+
+    - name: Stop gRPC bridge (v2)
+      if: always()
+      run: |
+        if [ -f "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid")" 2>/dev/null || true
+        fi
+
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.project }})
     runs-on: ${{ matrix.os }}
