@@ -54,9 +54,9 @@ jobs:
         APPFS_V2_BUILD_BEFORE_RUN: "0"
       run: sh ./tests/test-appfs-v2-contract.sh
 
-  # Required AppFS gate: live HTTP bridge path
+  # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
-    name: AppFS Contract Gate (linux, http bridge)
+    name: AppFS Contract Gate (linux, http bridge, legacy v0.1 baseline)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     defaults:
@@ -117,7 +117,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS live contract suite (HTTP bridge mode)
+    - name: Run AppFS v0.1 live contract suite (legacy baseline, HTTP bridge)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
@@ -142,9 +142,94 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS gate: live gRPC bridge path (keeps signal without blocking merge)
+  # Required AppFS v0.2 bridge gate: CT2 subset over HTTP bridge path.
+  # Use the historical check-run name so existing branch protection keeps working.
+  appfs-contract-gate-http-bridge-v2:
+    name: AppFS Contract Gate (linux, http bridge)
+    runs-on: ubuntu-latest
+    needs: appfs-contract-gate
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+
+    - name: Install system dependencies
+      run: |
+        ../scripts/install-deps.sh
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build CLI
+      run: cargo build --verbose
+
+    - name: Run HTTP bridge unit tests
+      run: |
+        cd ../examples/appfs/http-bridge/python
+        uv run python -m unittest discover -s tests -t . -p "test_*.py"
+
+    - name: Start HTTP bridge
+      run: |
+        cd ../examples/appfs/http-bridge/python
+        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-v2.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-http-bridge-v2.pid"
+        uv run python - <<'PY'
+        import socket
+        import sys
+        import time
+
+        for _ in range(30):
+            sock = socket.socket()
+            sock.settimeout(1.0)
+            try:
+                sock.connect(("127.0.0.1", 8080))
+                sock.close()
+                sys.exit(0)
+            except OSError:
+                time.sleep(1)
+        print("HTTP bridge did not become ready on 127.0.0.1:8080", file=sys.stderr)
+        sys.exit(1)
+        PY
+
+    - name: Run AppFS v0.2 contract subset (HTTP bridge mode)
+      env:
+        APPFS_V2_CONTRACT_TESTS: "1"
+        APPFS_V2_STRICT: "1"
+        APPFS_V2_BUILD_BEFORE_RUN: "0"
+        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_V2_EXTENDED_CASES: "none"
+        APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
+      run: sh ./tests/test-appfs-v2-contract.sh
+
+    - name: Dump HTTP bridge log on failure (v2)
+      if: failure()
+      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-v2.log" || true
+
+    - name: Stop HTTP bridge (v2)
+      if: always()
+      run: |
+        if [ -f "$RUNNER_TEMP/appfs-http-bridge-v2.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2.pid")" 2>/dev/null || true
+        fi
+
+  # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
   appfs-contract-gate-grpc-bridge:
-    name: AppFS Contract Gate (linux, grpc bridge)
+    name: AppFS Contract Gate (linux, grpc bridge, legacy v0.1 baseline)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -208,7 +293,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS live contract suite (gRPC bridge mode)
+    - name: Run AppFS v0.1 live contract suite (legacy baseline, gRPC bridge)
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_TIMEOUT_SEC: "30"
@@ -231,6 +316,107 @@ jobs:
       run: |
         if [ -f "$RUNNER_TEMP/appfs-grpc-bridge.pid" ]; then
           kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
+        fi
+
+  # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path.
+  # Use the historical check-run name so existing branch protection keeps working.
+  # Follow-up #58 tracks CT2-009 parity before any required-tier escalation.
+  appfs-contract-gate-grpc-bridge-v2:
+    name: AppFS Contract Gate (linux, grpc bridge)
+    runs-on: ubuntu-latest
+    needs: appfs-contract-gate
+    if: always()
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install system dependencies
+      run: |
+        ../scripts/install-deps.sh
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build CLI
+      run: cargo build --verbose
+
+    - name: Install gRPC bridge dependencies
+      run: |
+        cd ../examples/appfs/grpc-bridge/python
+        python3 -m pip install --upgrade pip
+        python3 -m pip install -r requirements.txt
+        python3 -m grpc_tools.protoc \
+          -I ../proto \
+          --python_out=. \
+          --grpc_python_out=. \
+          ../proto/appfs_adapter_v1.proto
+
+    - name: Start gRPC bridge (v2)
+      run: |
+        cd ../examples/appfs/grpc-bridge/python
+        nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge-v2.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-grpc-bridge-v2.pid"
+        python3 - <<'PY'
+        import socket
+        import sys
+        import time
+
+        for _ in range(30):
+            sock = socket.socket()
+            sock.settimeout(1.0)
+            try:
+                sock.connect(("127.0.0.1", 50051))
+                sock.close()
+                sys.exit(0)
+            except OSError:
+                time.sleep(1)
+        print("gRPC bridge did not become ready on 127.0.0.1:50051", file=sys.stderr)
+        sys.exit(1)
+        PY
+
+    - name: Run AppFS v0.2 contract subset (gRPC bridge mode, informational)
+      id: grpc_v2_subset
+      continue-on-error: true
+      env:
+        APPFS_V2_CONTRACT_TESTS: "1"
+        APPFS_V2_STRICT: "1"
+        APPFS_V2_BUILD_BEFORE_RUN: "0"
+        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_V2_EXTENDED_CASES: "none"
+        APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
+      run: sh ./tests/test-appfs-v2-contract.sh
+
+    - name: Summarize gRPC bridge informational result
+      if: always()
+      run: |
+        if [ "${{ steps.grpc_v2_subset.outcome }}" = "failure" ]; then
+          echo "AppFS v0.2 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Follow-up #58 tracks CT2-009 parity before any required-tier escalation." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v0.2 gRPC bridge subset failed; non-blocking informational signal. Follow-up #58 tracks CT2-009 parity."
+        else
+          echo "AppFS v0.2 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Dump gRPC bridge log on failure (v2)
+      if: steps.grpc_v2_subset.outcome == 'failure'
+      run: tail -n 200 "$RUNNER_TEMP/appfs-grpc-bridge-v2.log" || true
+
+    - name: Stop gRPC bridge (v2)
+      if: always()
+      run: |
+        if [ -f "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid")" 2>/dev/null || true
         fi
 
   test:
