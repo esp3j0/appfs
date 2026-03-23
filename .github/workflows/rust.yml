@@ -142,9 +142,10 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Required AppFS v0.2 bridge gate: CT2 subset over HTTP bridge path
+  # Required AppFS v0.2 bridge gate: CT2 subset over HTTP bridge path.
+  # Use the historical check-run name so existing branch protection keeps working.
   appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Gate (linux, http bridge, v0.2 required subset)
+    name: AppFS Contract Gate (linux, http bridge)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     defaults:
@@ -317,10 +318,11 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path
+  # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path.
+  # Use the historical check-run name so existing branch protection keeps working.
   # Follow-up #58 tracks CT2-009 parity before any required-tier escalation.
   appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Gate (linux, grpc bridge, v0.2 informational subset)
+    name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     if: always()
