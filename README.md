@@ -29,7 +29,7 @@ The design target is practical LLM + bash operation:
 tail -f /app/aiim/_stream/events.evt.jsonl
 
 # 2) trigger an action by append ActionLineV2 JSONL
-printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /app/aiim/contacts/zhangsan/send_message.act
+echo '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) read resources directly
 cat /app/aiim/contacts/zhangsan/profile.res.json
@@ -37,7 +37,7 @@ cat /app/aiim/contacts/zhangsan/profile.res.json
 # 4) snapshot resources are full files (.res.jsonl), live resources keep paging
 cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 cat /app/aiim/feed/recommendations.res.json
-printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}\n' >> /app/aiim/_paging/fetch_next.act
+echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## Available Actions (AIIM Fixture)
@@ -66,6 +66,16 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
    - `input_mode`: `json`
 
 ## Runtime Quick Start (HTTP Bridge)
+
+This quick start runs the `v0.2` backend runtime with a reference/demo connector exposed through the Python HTTP bridge. It demonstrates the backend protocol path and runtime behavior; it is not a production connector rollout.
+
+Prerequisites:
+
+1. Rust toolchain with `cargo` available.
+2. Python environment with `uv` available for the bridge example.
+3. Port `127.0.0.1:8080` available for the HTTP bridge.
+4. Windows: WinFsp installed before running `agentfs mount`.
+5. Linux: FUSE mount support available and a writable mount path prepared.
 
 The runtime demo has five moving parts:
 
@@ -186,18 +196,18 @@ AppFS adapter started for ...
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
 # trigger action (append ActionLineV2 JSONL)
-printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+echo '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
 # snapshot resource is directly searchable
 cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 
 # live resource keeps paging
 cat /tmp/appfs-real/aiim/feed/recommendations.res.json
-printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+echo '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # explicit snapshot refresh (cache/materialization checkpoint)
-printf '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
+echo '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # read resource
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -259,80 +269,61 @@ Put differently:
 1. **v0.1** `serve appfs`: primarily a sidecar/reference runtime around action sinks and bridge dispatch.
 2. **v0.2** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector only provides app-specific upstream calls.
 
-## Conformance Quick Start
+## v0.2 Connector Developer Path
 
-### 1) Static Contract Checks
+AppFS v0.2 connector development targets app-specific upstream integration. The backend runtime owns protocol semantics, cache lifecycle, recovery, events, and paging; the connector only implements upstream calls and mappings. Transport can be in-process, HTTP, or gRPC.
 
-```bash
-cd cli
-APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs" sh ./tests/test-appfs-contract.sh
-```
+Current v0.2 connector references are maintained in Chinese and should be treated as the canonical implementation guidance:
 
-### 2) Live Conformance (In-Process Adapter)
+1. [APPFS-v0.2-总览.zh-CN.md](docs/v2/APPFS-v0.2-总览.zh-CN.md)
+2. [APPFS-v0.2-Connector接口.zh-CN.md](docs/v2/APPFS-v0.2-Connector接口.zh-CN.md)
+3. [APPFS-v0.2-真实App对接规范.zh-CN.md](docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md)
+4. [APPFS-v0.2-后端架构.zh-CN.md](docs/v2/APPFS-v0.2-后端架构.zh-CN.md)
+5. [APPFS-v0.2-合同测试CT2.zh-CN.md](docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md)
+6. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
 
-Linux + FUSE environment required:
+Minimum connector integration checklist:
 
-```bash
-cd examples/appfs
-sh ./run-conformance.sh inprocess
-```
+1. Model snapshot/live/action resources and control paths first.
+2. Define cursor, ID, error-code, and auth mappings before coding transport glue.
+3. Implement the minimum capability set: `prewarm_snapshot_meta`, `fetch_snapshot_chunk`, `fetch_live_page`, `submit_action`, and `health`.
+4. Validate with required `CT2-001..009`; treat `CT2-010` as informational cross-platform evidence.
 
-### 3) Live Conformance (Out-of-Process Bridges)
+## v0.1 Legacy Reference
 
-```bash
-cd examples/appfs
-sh ./run-conformance.sh http-python
-sh ./run-conformance.sh grpc-python
-```
+`v0.1` is frozen and retained as legacy/reference/baseline material. New integrations should target the `v0.2` connector path by default.
 
-## Adapter Developer Path
+For v0.1 reference materials, see:
 
-Start here:
-
-1. [APPFS-adapter-developer-guide-v0.1.md](docs/v1/APPFS-adapter-developer-guide-v0.1.md)
-2. [examples/appfs/ADAPTER-QUICKSTART.md](examples/appfs/ADAPTER-QUICKSTART.md)
-3. [APPFS-adapter-requirements-v0.1.md](docs/v1/APPFS-adapter-requirements-v0.1.md)
-4. [APPFS-compatibility-matrix-v0.1.md](docs/v1/APPFS-compatibility-matrix-v0.1.md)
-5. [APPFS-conformance-v0.1.md](docs/v1/APPFS-conformance-v0.1.md)
-6. [APPFS-contract-tests-v0.1.md](docs/v1/APPFS-contract-tests-v0.1.md)
-7. [APPFS-adapter-structure-mapping-v0.1.md](docs/v1/APPFS-adapter-structure-mapping-v0.1.md)
-
-Key compatibility commitments:
-
-1. Language-neutral implementation is allowed.
-2. Compatibility is judged by behavior and conformance tests.
-3. Adapter interface surface is frozen for `v0.1.x` (additive changes only).
-4. Troubleshooting baseline is documented in the developer guide (`port`, `uv`, `grpc`, `CT-017`, mount issues).
+1. [APPFS-v0.1.md](docs/v1/APPFS-v0.1.md)
+2. [APPFS-adapter-developer-guide-v0.1.md](docs/v1/APPFS-adapter-developer-guide-v0.1.md)
+3. [APPFS-contract-tests-v0.1.md](docs/v1/APPFS-contract-tests-v0.1.md)
 
 ## Repository Map (AppFS-Relevant)
 
-1. `docs/v1/APPFS-v0.1.md`: core protocol.
-2. `docs/v1/APPFS-adapter-requirements-v0.1.md`: adapter requirements.
-3. `docs/v1/APPFS-adapter-developer-guide-v0.1.md`: end-to-end developer workflow and troubleshooting.
-4. `docs/v1/APPFS-adapter-structure-mapping-v0.1.md`: app structure definition and node-to-handler mapping workflow.
-5. `docs/v1/APPFS-compatibility-matrix-v0.1.md`: language/transport/capability compatibility and acceptance commands.
-6. `docs/v1/APPFS-adapter-implementation-plan-v0.1.md`: implementation plan and milestones.
-7. `examples/appfs/`: reference fixtures and bridge examples.
-8. `examples/appfs/new-adapter.sh`: scaffold generator for Python HTTP bridge adapters.
-9. `cli/src/cmd/appfs.rs`: AppFS runtime command implementation.
-10. `cli/tests/appfs/`: live contract and resilience suites (`CT-001` to `CT-022`).
+1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`: v0.2 goals, terminology, and scope.
+2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`: connector contract and minimum capability surface.
+3. `docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md`: real-app integration checklist and mapping rules.
+4. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`: backend component boundaries, state machine, and data flow.
+5. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`: required and informational contract cases.
+6. `examples/appfs/`: reference fixtures and bridge examples.
+7. `cli/src/cmd/appfs/`: AppFS runtime modules (`core`, `snapshot_cache`, `recovery`, `events`, `paging`).
 
 ## Current Status
 
-Current branch has AppFS v0.1 contract suite and RC closure artifacts, including:
+AppFS v0.2 implementation is complete for the current round:
 
-1. Release checklist and notes.
-2. RC closure record.
-3. Static and live conformance gates for in-process and bridge modes.
+1. Phase A through Phase E are completed.
+2. Linux required contract set `CT2-001..009` is green.
+3. `CT2-010` minimal cross-platform matrix is available as informational evidence.
+4. `v0.1` remains in the repo as baseline/reference material and regression context.
 
-For release details, see:
+For release and closeout details, see:
 
-1. [APPFS-release-checklist-v0.1-rc1.md](docs/v1/APPFS-release-checklist-v0.1-rc1.md)
-2. [APPFS-release-notes-v0.1-rc1.md](docs/v1/APPFS-release-notes-v0.1-rc1.md)
-3. [APPFS-rc-closure-v0.1.md](docs/v1/APPFS-rc-closure-v0.1.md)
-4. [APPFS-v0.1.0-rc2-freeze.md](docs/v1/APPFS-v0.1.0-rc2-freeze.md)
-5. [APPFS-migration-note-v0.1.0-rc2.md](docs/v1/APPFS-migration-note-v0.1.0-rc2.md)
-6. [APPFS-project-status-and-roadmap-2026-03-17.md](docs/v1/APPFS-project-status-and-roadmap-2026-03-17.md)
+1. [APPFS-v0.2-实施计划.zh-CN.md](docs/v2/APPFS-v0.2-实施计划.zh-CN.md)
+2. [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](docs/v2/APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
+3. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
+4. [APPFS-v0.2-RC门禁证据包.zh-CN.md](docs/v2/APPFS-v0.2-RC门禁证据包.zh-CN.md)
 
 ## License
 

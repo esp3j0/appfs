@@ -29,7 +29,7 @@ AppFS 的目标是把不同应用统一成一套文件系统交互模型，让 a
 tail -f /app/aiim/_stream/events.evt.jsonl
 
 # 2) 以 append ActionLineV2 JSONL 触发动作
-printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /app/aiim/contacts/zhangsan/send_message.act
+echo '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}' >> /app/aiim/contacts/zhangsan/send_message.act
 
 # 3) 直接读取资源
 cat /app/aiim/contacts/zhangsan/profile.res.json
@@ -37,7 +37,7 @@ cat /app/aiim/contacts/zhangsan/profile.res.json
 # 4) snapshot 资源是完整文件（.res.jsonl），live 资源继续分页
 cat /app/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 cat /app/aiim/feed/recommendations.res.json
-printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}\n' >> /app/aiim/_paging/fetch_next.act
+echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>"}}' >> /app/aiim/_paging/fetch_next.act
 ```
 
 ## 可用动作（AIIM 夹具）
@@ -66,6 +66,16 @@ printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-pag
    - `input_mode`: `json`
 
 ## 运行时快速开始（HTTP Bridge）
+
+这套 quick start 运行的是 `v0.2` backend runtime，加上通过 Python HTTP bridge 暴露的 reference/demo connector。它展示的是 backend 协议链路和 runtime 行为，不等于生产 connector 已接入完成。
+
+环境前置条件：
+
+1. 已安装 Rust toolchain，且 `cargo` 可用。
+2. 已准备 Python 环境，且 bridge 示例可通过 `uv` 运行。
+3. `127.0.0.1:8080` 端口未被占用。
+4. Windows：运行 `agentfs mount` 前已安装 WinFsp。
+5. Linux：具备 FUSE 挂载能力，且已准备可写挂载目录。
 
 这个 runtime demo 有五个组成部分：
 
@@ -186,18 +196,18 @@ AppFS adapter started for ...
 tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 
 # 触发动作（append ActionLineV2 JSONL）
-printf '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}\n' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
+echo '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
 # snapshot 资源可直接检索
 cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 
 # live 资源继续分页
 cat /tmp/appfs-real/aiim/feed/recommendations.res.json
-printf '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
-printf '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}\n' >> /tmp/appfs-real/aiim/_paging/close.act
+echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
+echo '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/close.act
 
 # 显式触发 snapshot 刷新（缓存/物化检查点）
-printf '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}\n' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
+echo '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # 读取资源
 cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
@@ -259,81 +269,61 @@ flowchart TD
 1. **v0.1** 的 `serve appfs`：更接近 sidecar/reference runtime，主要围绕 action sink 和 bridge 转发。
 2. **v0.2** 的 `serve appfs`：是承接 AppFS 协议语义的 backend runtime，connector 只负责 app-specific 的上游调用。
 
-## 一致性快速开始
+## v0.2 Connector 接入路径
 
-### 1) 静态契约检查
+AppFS v0.2 的 connector 负责 app-specific 的上游调用与映射；backend runtime 负责协议语义、缓存生命周期、恢复、事件与分页。transport 可以是进程内、HTTP 或 gRPC。
 
-```bash
-cd cli
-APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs" sh ./tests/test-appfs-contract.sh
-```
+当前 v0.2 connector 的权威接入资料在 `docs/v2` 下，建议阅读顺序：
 
-### 2) Live 一致性（进程内适配器）
+1. [APPFS-v0.2-总览.zh-CN.md](docs/v2/APPFS-v0.2-总览.zh-CN.md)
+2. [APPFS-v0.2-Connector接口.zh-CN.md](docs/v2/APPFS-v0.2-Connector接口.zh-CN.md)
+3. [APPFS-v0.2-真实App对接规范.zh-CN.md](docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md)
+4. [APPFS-v0.2-后端架构.zh-CN.md](docs/v2/APPFS-v0.2-后端架构.zh-CN.md)
+5. [APPFS-v0.2-合同测试CT2.zh-CN.md](docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md)
+6. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
 
-Linux + FUSE 环境：
+最小接入检查点：
 
-```bash
-cd examples/appfs
-sh ./run-conformance.sh inprocess
-```
+1. 先完成 snapshot/live/action 资源建模与控制路径定义。
+2. 再完成 cursor、ID、错误码、鉴权状态的映射。
+3. 然后实现最小 Connector 能力集：`prewarm_snapshot_meta`、`fetch_snapshot_chunk`、`fetch_live_page`、`submit_action`、`health`。
+4. 最后使用 required `CT2-001..009` 验证，并把 `CT2-010` 作为 informational 补充证据。
 
-### 3) Live 一致性（进程外 bridge）
+## v0.1 Legacy Reference（遗留参考）
 
-```bash
-cd examples/appfs
-sh ./run-conformance.sh http-python
-sh ./run-conformance.sh grpc-python
-```
+`v0.1` 已冻结，当前定位是 legacy/reference/baseline。新的接入默认走 `v0.2 connector` 路线。
 
-## Adapter Developer Path（中文）
+如需查看 v0.1 参考资料，请跳转：
 
-建议阅读顺序：
-
-1. [APPFS-adapter-developer-guide-v0.1.zh-CN.md](docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md)
-2. [ADAPTER-QUICKSTART.zh-CN.md](examples/appfs/ADAPTER-QUICKSTART.zh-CN.md)
-3. [APPFS-adapter-requirements-v0.1.zh-CN.md](docs/v1/APPFS-adapter-requirements-v0.1.zh-CN.md)
-4. [APPFS-compatibility-matrix-v0.1.zh-CN.md](docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md)
-5. [APPFS-conformance-v0.1.zh-CN.md](docs/v1/APPFS-conformance-v0.1.zh-CN.md)
-6. [APPFS-contract-tests-v0.1.zh-CN.md](docs/v1/APPFS-contract-tests-v0.1.zh-CN.md)
-7. [APPFS-adapter-structure-mapping-v0.1.zh-CN.md](docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md)
-
-兼容性承诺：
-
-1. 允许任意语言实现，只要协议行为一致。
-2. 兼容性以行为与一致性测试结果判定。
-3. `v0.1.x` 期间接口面冻结，仅允许向后兼容增量扩展。
-4. 常见排障基线统一在开发指南中维护。
+1. [APPFS-v0.1.md](docs/v1/APPFS-v0.1.md)
+2. [APPFS-adapter-developer-guide-v0.1.zh-CN.md](docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md)
+3. [APPFS-contract-tests-v0.1.zh-CN.md](docs/v1/APPFS-contract-tests-v0.1.zh-CN.md)
 
 ## AppFS 相关目录
 
-1. `docs/v1/APPFS-v0.1.md`：核心协议。
-2. `docs/v1/APPFS-adapter-requirements-v0.1.md`：适配器要求。
-3. `docs/v1/APPFS-adapter-developer-guide-v0.1.md`：英文开发指南。
-4. `docs/v1/APPFS-adapter-developer-guide-v0.1.zh-CN.md`：中文开发指南。
-5. `docs/v1/APPFS-adapter-structure-mapping-v0.1.md`：结构定义与桥接映射（英文）。
-6. `docs/v1/APPFS-adapter-structure-mapping-v0.1.zh-CN.md`：结构定义与桥接映射（中文）。
-7. `docs/v1/APPFS-compatibility-matrix-v0.1.md`：兼容性矩阵（英文）。
-8. `docs/v1/APPFS-compatibility-matrix-v0.1.zh-CN.md`：兼容性矩阵（中文）。
-9. `examples/appfs/`：参考夹具、bridge 示例与脚手架。
-10. `cli/src/cmd/appfs.rs`：AppFS runtime 命令实现。
-11. `cli/tests/appfs/`：live 契约与韧性测试（`CT-001` 到 `CT-022`）。
+1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`：v0.2 目标、边界与术语。
+2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`：connector 契约与最小能力面。
+3. `docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md`：真实 app 接入前置清单与映射规则。
+4. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`：backend 组件边界、状态机与数据流。
+5. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`：required / informational 合同测试集。
+6. `examples/appfs/`：参考夹具与 bridge 示例。
+7. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`snapshot_cache`、`recovery`、`events`、`paging`）。
 
 ## 当前状态
 
-当前分支已包含 AppFS v0.1 契约套件与 RC 收口产物，包括：
+当前仓库中的 AppFS v0.2 本轮实现已完成：
 
-1. 发布检查清单与发布说明。
-2. RC 收口记录。
-3. 进程内与 bridge 模式的 static/live 一致性门禁。
+1. Phase A ~ E 已收口。
+2. Linux required 集 `CT2-001..009` 已完成。
+3. `CT2-010` 最小跨平台矩阵已完成，作为 informational 证据保留。
+4. `v0.1` 保留为 baseline/reference 与回归对照材料。
 
-发布相关文档：
+收口与发布相关文档：
 
-1. [APPFS-release-checklist-v0.1-rc1.md](docs/v1/APPFS-release-checklist-v0.1-rc1.md)
-2. [APPFS-release-notes-v0.1-rc1.md](docs/v1/APPFS-release-notes-v0.1-rc1.md)
-3. [APPFS-rc-closure-v0.1.md](docs/v1/APPFS-rc-closure-v0.1.md)
-4. [APPFS-v0.1.0-rc2-freeze.md](docs/v1/APPFS-v0.1.0-rc2-freeze.md)
-5. [APPFS-migration-note-v0.1.0-rc2.md](docs/v1/APPFS-migration-note-v0.1.0-rc2.md)
-6. [APPFS-project-status-and-roadmap-2026-03-17.md](docs/v1/APPFS-project-status-and-roadmap-2026-03-17.md)
+1. [APPFS-v0.2-实施计划.zh-CN.md](docs/v2/APPFS-v0.2-实施计划.zh-CN.md)
+2. [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](docs/v2/APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
+3. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
+4. [APPFS-v0.2-RC门禁证据包.zh-CN.md](docs/v2/APPFS-v0.2-RC门禁证据包.zh-CN.md)
 
 ## 许可证
 
