@@ -202,6 +202,9 @@ start_appfs_v2_adapter() {
     app_id="$4"
     poll_ms="${5:-50}"
     strict_actionline="${6:-0}"
+    snapshot_expand_delay_ms="${7:-}"
+    snapshot_publish_delay_ms="${8:-}"
+    snapshot_refresh_force_expand="${9:-}"
 
     wait_bridge_endpoint_ready
 
@@ -239,20 +242,37 @@ start_appfs_v2_adapter() {
                 runtime_root="$(cygpath -w "$root_dir")"
                 win_bin="$(cygpath -w "$bin_path")"
             fi
+            cmd_prefix=""
             if [ "$strict_actionline" = "1" ]; then
-                cmd.exe /C "set APPFS_V2_ACTIONLINE_STRICT=1&& $win_bin serve appfs --root $runtime_root --app-id $app_id --poll-ms $poll_ms$bridge_args" >"$adapter_log" 2>&1 &
-            else
-                cmd.exe /C "$win_bin serve appfs --root $runtime_root --app-id $app_id --poll-ms $poll_ms$bridge_args" >"$adapter_log" 2>&1 &
+                cmd_prefix="${cmd_prefix}set APPFS_V2_ACTIONLINE_STRICT=1&& "
             fi
+            if [ -n "$snapshot_expand_delay_ms" ]; then
+                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms&& "
+            fi
+            if [ -n "$snapshot_publish_delay_ms" ]; then
+                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms&& "
+            fi
+            if [ -n "$snapshot_refresh_force_expand" ]; then
+                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand&& "
+            fi
+            cmd.exe /C "${cmd_prefix}$win_bin serve appfs --root $runtime_root --app-id $app_id --poll-ms $poll_ms$bridge_args" >"$adapter_log" 2>&1 &
             ;;
         *)
+            env_args=""
             if [ "$strict_actionline" = "1" ]; then
-                # shellcheck disable=SC2086
-                APPFS_V2_ACTIONLINE_STRICT=1 "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --poll-ms "$poll_ms" $bridge_args >"$adapter_log" 2>&1 &
-            else
-                # shellcheck disable=SC2086
-                "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --poll-ms "$poll_ms" $bridge_args >"$adapter_log" 2>&1 &
+                env_args="$env_args APPFS_V2_ACTIONLINE_STRICT=1"
             fi
+            if [ -n "$snapshot_expand_delay_ms" ]; then
+                env_args="$env_args APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms"
+            fi
+            if [ -n "$snapshot_publish_delay_ms" ]; then
+                env_args="$env_args APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms"
+            fi
+            if [ -n "$snapshot_refresh_force_expand" ]; then
+                env_args="$env_args APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand"
+            fi
+            # shellcheck disable=SC2086
+            env $env_args "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --poll-ms "$poll_ms" $bridge_args >"$adapter_log" 2>&1 &
             ;;
     esac
 

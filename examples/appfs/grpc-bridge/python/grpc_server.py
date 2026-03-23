@@ -131,7 +131,7 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
                     "handle_id": action.handle_id,
                     "page_no": action.page_no,
                     "has_more": action.has_more,
-                    "mode": "snapshot",
+                    "mode": "live",
                 },
             }
             return pb2.SubmitControlActionResponse(

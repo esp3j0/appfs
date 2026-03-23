@@ -141,26 +141,7 @@ reload_fixture_app() {
 start_adapter_with_delay() {
     delay_ms="${1:-0}"
     ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-    runtime_root="$TMP_ROOT"
-    case "$AGENTFS_BIN" in
-        *.exe)
-            win_bin="$AGENTFS_BIN"
-            if command -v wslpath >/dev/null 2>&1; then
-                runtime_root="$(wslpath -w "$TMP_ROOT")"
-                win_bin="$(wslpath -w "$AGENTFS_BIN")"
-            fi
-            cmd.exe /C "set APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$delay_ms&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
-            ;;
-        *)
-            APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS="$delay_ms" "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
-            ;;
-    esac
-    ADAPTER_PID=$!
-    sleep 1
-    if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        tail -n 120 "$ADAPTER_LOG" 2>/dev/null || true
-        fail "appfs adapter failed to start"
-    fi
+    ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0 "$delay_ms" "" "")"
 }
 
 patch_manifest_timeout_fail() {

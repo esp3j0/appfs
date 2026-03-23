@@ -142,7 +142,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Required AppFS v0.2 bridge gate: CT2 subset over HTTP bridge path.
+  # Required AppFS v0.2 bridge gate: stable CT2 subset over HTTP bridge path.
   # Use the historical check-run name so existing branch protection keeps working.
   appfs-contract-gate-http-bridge-v2:
     name: AppFS Contract Gate (linux, http bridge)
@@ -211,7 +211,7 @@ jobs:
         APPFS_V2_CONTRACT_TESTS: "1"
         APPFS_V2_STRICT: "1"
         APPFS_V2_BUILD_BEFORE_RUN: "0"
-        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-003,ct2-004,ct2-005,ct2-007,ct2-008,ct2-009"
         APPFS_V2_EXTENDED_CASES: "none"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
       run: sh ./tests/test-appfs-v2-contract.sh
@@ -225,6 +225,103 @@ jobs:
       run: |
         if [ -f "$RUNNER_TEMP/appfs-http-bridge-v2.pid" ]; then
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2.pid")" 2>/dev/null || true
+        fi
+
+  # Informational AppFS v0.2 bridge gate: higher-risk CT2 coverage over HTTP bridge path.
+  appfs-contract-gate-http-bridge-v2-high-risk:
+    name: AppFS Contract Gate (linux, http bridge, v0.2 high-risk signal)
+    runs-on: ubuntu-latest
+    needs: appfs-contract-gate
+    if: always()
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+
+    - name: Install system dependencies
+      run: |
+        ../scripts/install-deps.sh
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build CLI
+      run: cargo build --verbose
+
+    - name: Run HTTP bridge unit tests
+      run: |
+        cd ../examples/appfs/http-bridge/python
+        uv run python -m unittest discover -s tests -t . -p "test_*.py"
+
+    - name: Start HTTP bridge (v2 high-risk)
+      run: |
+        cd ../examples/appfs/http-bridge/python
+        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid"
+        uv run python - <<'PY'
+        import socket
+        import sys
+        import time
+
+        for _ in range(30):
+            sock = socket.socket()
+            sock.settimeout(1.0)
+            try:
+                sock.connect(("127.0.0.1", 8080))
+                sock.close()
+                sys.exit(0)
+            except OSError:
+                time.sleep(1)
+        print("HTTP bridge did not become ready on 127.0.0.1:8080", file=sys.stderr)
+        sys.exit(1)
+        PY
+
+    - name: Run AppFS v0.2 high-risk bridge coverage (HTTP mode, informational)
+      id: http_v2_high_risk
+      continue-on-error: true
+      env:
+        APPFS_V2_CONTRACT_TESTS: "1"
+        APPFS_V2_STRICT: "1"
+        APPFS_V2_BUILD_BEFORE_RUN: "0"
+        APPFS_V2_REQUIRED_CASES: "ct2-006"
+        APPFS_V2_EXTENDED_CASES: "ct2-028"
+        APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
+      run: sh ./tests/test-appfs-v2-contract.sh
+
+    - name: Summarize HTTP bridge high-risk informational result
+      if: always()
+      run: |
+        if [ "${{ steps.http_v2_high_risk.outcome }}" = "failure" ]; then
+          echo "AppFS v0.2 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v0.2 HTTP bridge high-risk coverage failed; non-blocking informational signal."
+        else
+          echo "AppFS v0.2 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Dump HTTP bridge log on failure (v2 high-risk)
+      if: steps.http_v2_high_risk.outcome == 'failure'
+      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.log" || true
+
+    - name: Stop HTTP bridge (v2 high-risk)
+      if: always()
+      run: |
+        if [ -f "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid")" 2>/dev/null || true
         fi
 
   # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
@@ -320,7 +417,7 @@ jobs:
 
   # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path.
   # Use the historical check-run name so existing branch protection keeps working.
-  # Follow-up #58 tracks CT2-009 parity before any required-tier escalation.
+  # Keep this gate informational even after CT2-009 parity closure.
   appfs-contract-gate-grpc-bridge-v2:
     name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest

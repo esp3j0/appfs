@@ -118,26 +118,7 @@ start_adapter() {
     expand_delay_ms="${1:-0}"
     publish_delay_ms="${2:-0}"
     ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-    runtime_root="$TMP_ROOT"
-    case "$AGENTFS_BIN" in
-        *.exe)
-            win_bin="$AGENTFS_BIN"
-            if command -v wslpath >/dev/null 2>&1; then
-                runtime_root="$(wslpath -w "$TMP_ROOT")"
-                win_bin="$(wslpath -w "$AGENTFS_BIN")"
-            fi
-            cmd.exe /C "set APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$expand_delay_ms&& set APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$publish_delay_ms&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
-            ;;
-        *)
-            APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS="$expand_delay_ms" APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS="$publish_delay_ms" "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
-            ;;
-    esac
-    ADAPTER_PID=$!
-    sleep 1
-    if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
-        tail -n 120 "$ADAPTER_LOG" 2>/dev/null || true
-        fail "appfs adapter failed to start"
-    fi
+    ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0 "$expand_delay_ms" "$publish_delay_ms" "")"
 }
 
 journal_temp_artifact() {
