@@ -269,29 +269,17 @@ flowchart TD
 1. **v0.1** 的 `serve appfs`：更接近 sidecar/reference runtime，主要围绕 action sink 和 bridge 转发。
 2. **v0.2** 的 `serve appfs`：是承接 AppFS 协议语义的 backend runtime，connector 只负责 app-specific 的上游调用。
 
-## v0.2 Connector 接入路径
+## v0.2 Connector 状态说明
 
-AppFS v0.2 的 connector 负责 app-specific 的上游调用与映射；backend runtime 负责协议语义、缓存生命周期、恢复、事件与分页。transport 可以是进程内、HTTP 或 gRPC。
+`v0.2.0` 的定位是 backend/runtime 基线与合同门禁收口，不再作为“真实 app connector 可直接对接”的完成能力声明。真实 app 的 connector 化已转入 `v0.3` 主线。
 
-当前 v0.2 connector 的权威接入资料在 `docs/v2` 下，建议阅读顺序：
+当前规划与执行基线请看：
 
-1. [APPFS-v0.2-总览.zh-CN.md](docs/v2/APPFS-v0.2-总览.zh-CN.md)
-2. [APPFS-v0.2-Connector接口.zh-CN.md](docs/v2/APPFS-v0.2-Connector接口.zh-CN.md)
-3. [APPFS-v0.2-真实App对接规范.zh-CN.md](docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md)
-4. [APPFS-v0.2-后端架构.zh-CN.md](docs/v2/APPFS-v0.2-后端架构.zh-CN.md)
-5. [APPFS-v0.2-合同测试CT2.zh-CN.md](docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md)
-6. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
-
-最小接入检查点：
-
-1. 先完成 snapshot/live/action 资源建模与控制路径定义。
-2. 再完成 cursor、ID、错误码、鉴权状态的映射。
-3. 然后实现最小 Connector 能力集：`prewarm_snapshot_meta`、`fetch_snapshot_chunk`、`fetch_live_page`、`submit_action`、`health`。
-4. 最后使用 required `CT2-001..009` 验证，并把 `CT2-010` 作为 informational 补充证据。
+1. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
 
 ## v0.1 Legacy Reference（遗留参考）
 
-`v0.1` 已冻结，当前定位是 legacy/reference/baseline。新的接入默认走 `v0.2 connector` 路线。
+`v0.1` 已冻结，当前定位是 legacy/reference/baseline。新的接入默认走 `v0.3 connectorization` 路线。
 
 如需查看 v0.1 参考资料，请跳转：
 
@@ -303,9 +291,9 @@ AppFS v0.2 的 connector 负责 app-specific 的上游调用与映射；backend 
 
 1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`：v0.2 目标、边界与术语。
 2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`：connector 契约与最小能力面。
-3. `docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md`：真实 app 接入前置清单与映射规则。
-4. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`：backend 组件边界、状态机与数据流。
-5. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`：required / informational 合同测试集。
+3. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`：backend 组件边界、状态机与数据流。
+4. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`：required / informational 合同测试集。
+5. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`：v0.3 connectorization 范围、issue 清单与门禁口径。
 6. `examples/appfs/`：参考夹具与 bridge 示例。
 7. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`snapshot_cache`、`recovery`、`events`、`paging`）。
 
@@ -316,7 +304,8 @@ AppFS v0.2 的 connector 负责 app-specific 的上游调用与映射；backend 
 1. Phase A ~ E 已收口。
 2. Linux required 集 `CT2-001..009` 已完成。
 3. `CT2-010` 最小跨平台矩阵已完成，作为 informational 证据保留。
-4. `v0.1` 保留为 baseline/reference 与回归对照材料。
+4. 真实 app connector 对接不作为 `v0.2` 已完成项，已转入 `v0.3` 主线跟进。
+5. `v0.1` 保留为 baseline/reference 与回归对照材料。
 
 收口与发布相关文档：
 

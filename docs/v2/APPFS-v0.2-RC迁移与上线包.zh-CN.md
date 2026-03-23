@@ -4,14 +4,13 @@
 - 状态：`Completed (Phase E, 2026-03-22)`
 - 依赖文档：
   - [APPFS-v0.2-实施计划.zh-CN.md](./APPFS-v0.2-实施计划.zh-CN.md)
-  - [APPFS-v0.2-真实App对接规范.zh-CN.md](./APPFS-v0.2-真实App对接规范.zh-CN.md)
   - [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
+  - [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](./APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
 
 ## 1. 目标与适用范围
 
 1. 将 Phase E 的迁移、灰度、回退、处置策略落为可执行操作包。
 2. 支持三类场景：
-   - 新 app 接入 v0.2；
    - 现有 app 能力灰度（按租户/资源类型）；
    - RC 审查与发布决策。
 3. 不新增协议功能，不改变 CT2 语义，仅定义上线运营策略。
@@ -171,7 +170,7 @@
 - 标题：[Phase E][<app>] <tenant-wave> <resource-type> migration/rollout
 - 引用文档：
   - APPFS-v0.2-RC迁移与上线包.zh-CN.md#<章节>
-  - APPFS-v0.2-真实App对接规范.zh-CN.md#10-迁移与上线策略
+  - APPFS-v0.3-实施计划.zh-CN.md
 - 范围：
   - app: <app>
   - tenant wave: <wave>
@@ -197,5 +196,5 @@
 ## 11. 关联文档
 
 1. [APPFS-v0.2-实施计划.zh-CN.md](./APPFS-v0.2-实施计划.zh-CN.md)
-2. [APPFS-v0.2-真实App对接规范.zh-CN.md](./APPFS-v0.2-真实App对接规范.zh-CN.md)
-3. [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
+2. [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
+3. [APPFS-v0.3-实施计划.zh-CN.md](../v3/APPFS-v0.3-实施计划.zh-CN.md)

@@ -168,4 +168,6 @@ v0.2 采用三级能力分级，详见 [能力分级](./APPFS-v0.2-能力分级.
 | [合同测试 CT2](./APPFS-v0.2-合同测试CT2.zh-CN.md) | CT2-001~CT2-010 验收标准 |
 | [实施计划](./APPFS-v0.2-实施计划.zh-CN.md) | Phase A~E 阶段门禁 |
 | [Connector 接口](./APPFS-v0.2-Connector接口.zh-CN.md) | 真实 app 对接层契约 |
-| [真实 App 对接规范](./APPFS-v0.2-真实App对接规范.zh-CN.md) | 接入前置清单、映射规则 |
+| [v0.3 实施计划](../v3/APPFS-v0.3-实施计划.zh-CN.md) | v0.3 connectorization 承接计划与门禁 |
+
+说明：v0.2 文档集不再承载“真实 app 对接执行指南”，相关内容已转入 v0.3 规划线。

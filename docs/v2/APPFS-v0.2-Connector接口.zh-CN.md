@@ -379,9 +379,9 @@ Connector 必须把上游错误映射到统一最小集：
 
 ## 11. 验收
 
-1. 任一实现者可据此完成 Connector 最小实现。
-2. 任一 app 可通过 Connector 接入 v0.2 Core，而无需改 Core 协议。
-3. 可直接映射到 CT2 与后续真实 app 认证用例。
+1. 本文保留为 v0.2 Phase A 契约骨架，不构成 v0.2.0 “可直接对接真实 app”的完成声明。
+2. v0.2.0 主线以 runtime/gate 收口为准；真实 app connectorization 由 v0.3 承接。
+3. v0.3 实施前，不应以本文单独作为对外接入承诺依据。
 
 ## 12. 关联文档
 
@@ -389,4 +389,4 @@ Connector 必须把上游错误映射到统一最小集：
 2. [接口规范](./APPFS-v0.2-接口规范.zh-CN.md)
 3. [后端架构](./APPFS-v0.2-后端架构.zh-CN.md)
 4. [能力分级](./APPFS-v0.2-能力分级.zh-CN.md)
-5. [真实 App 对接规范](./APPFS-v0.2-真实App对接规范.zh-CN.md)
+5. [v0.3 实施计划](../v3/APPFS-v0.3-实施计划.zh-CN.md)

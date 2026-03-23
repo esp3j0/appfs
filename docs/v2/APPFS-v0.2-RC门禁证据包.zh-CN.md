@@ -5,7 +5,7 @@
 - 依赖文档：
   - [APPFS-v0.2-实施计划.zh-CN.md](./APPFS-v0.2-实施计划.zh-CN.md)
   - [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
-  - [APPFS-v0.2-真实App对接规范.zh-CN.md](./APPFS-v0.2-真实App对接规范.zh-CN.md)
+  - [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](./APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
 
 ## 1. 目标与适用范围
 
@@ -13,7 +13,7 @@
 2. 适用于：
    - 发布评审（是否进入放量）；
    - 事故后复盘（是否回退/降级）；
-   - 新 app 接入的 RC 合规检查。
+   - 历史 RC 证据留档与后续版本门禁口径对照。
 3. 本文只定义证据口径与模板，不改协议语义，不引入 runtime 新功能。
 
 ## 2. 当前 RC 基线说明
@@ -214,4 +214,4 @@
 
 1. [APPFS-v0.2-实施计划.zh-CN.md](./APPFS-v0.2-实施计划.zh-CN.md)
 2. [APPFS-v0.2-合同测试CT2.zh-CN.md](./APPFS-v0.2-合同测试CT2.zh-CN.md)
-3. [APPFS-v0.2-真实App对接规范.zh-CN.md](./APPFS-v0.2-真实App对接规范.zh-CN.md)
+3. [APPFS-v0.3-实施计划.zh-CN.md](../v3/APPFS-v0.3-实施计划.zh-CN.md)

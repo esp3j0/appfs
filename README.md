@@ -269,29 +269,17 @@ Put differently:
 1. **v0.1** `serve appfs`: primarily a sidecar/reference runtime around action sinks and bridge dispatch.
 2. **v0.2** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector only provides app-specific upstream calls.
 
-## v0.2 Connector Developer Path
+## v0.2 Connector Status
 
-AppFS v0.2 connector development targets app-specific upstream integration. The backend runtime owns protocol semantics, cache lifecycle, recovery, events, and paging; the connector only implements upstream calls and mappings. Transport can be in-process, HTTP, or gRPC.
+`v0.2.0` should be treated as backend/runtime baseline and contract-gate closure only. Real-app connector onboarding is not claimed as a completed `v0.2` capability and has been moved to the `v0.3` connectorization line.
 
-Current v0.2 connector references are maintained in Chinese and should be treated as the canonical implementation guidance:
+For current planning and execution baseline, see:
 
-1. [APPFS-v0.2-总览.zh-CN.md](docs/v2/APPFS-v0.2-总览.zh-CN.md)
-2. [APPFS-v0.2-Connector接口.zh-CN.md](docs/v2/APPFS-v0.2-Connector接口.zh-CN.md)
-3. [APPFS-v0.2-真实App对接规范.zh-CN.md](docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md)
-4. [APPFS-v0.2-后端架构.zh-CN.md](docs/v2/APPFS-v0.2-后端架构.zh-CN.md)
-5. [APPFS-v0.2-合同测试CT2.zh-CN.md](docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md)
-6. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
-
-Minimum connector integration checklist:
-
-1. Model snapshot/live/action resources and control paths first.
-2. Define cursor, ID, error-code, and auth mappings before coding transport glue.
-3. Implement the minimum capability set: `prewarm_snapshot_meta`, `fetch_snapshot_chunk`, `fetch_live_page`, `submit_action`, and `health`.
-4. Validate with required `CT2-001..009`; treat `CT2-010` as informational cross-platform evidence.
+1. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
 
 ## v0.1 Legacy Reference
 
-`v0.1` is frozen and retained as legacy/reference/baseline material. New integrations should target the `v0.2` connector path by default.
+`v0.1` is frozen and retained as legacy/reference/baseline material. New integrations should target the `v0.3` connectorization path by default.
 
 For v0.1 reference materials, see:
 
@@ -303,9 +291,9 @@ For v0.1 reference materials, see:
 
 1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`: v0.2 goals, terminology, and scope.
 2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`: connector contract and minimum capability surface.
-3. `docs/v2/APPFS-v0.2-真实App对接规范.zh-CN.md`: real-app integration checklist and mapping rules.
-4. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`: backend component boundaries, state machine, and data flow.
-5. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`: required and informational contract cases.
+3. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`: backend component boundaries, state machine, and data flow.
+4. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`: required and informational contract cases.
+5. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`: v0.3 connectorization scope, issue map, and gates.
 6. `examples/appfs/`: reference fixtures and bridge examples.
 7. `cli/src/cmd/appfs/`: AppFS runtime modules (`core`, `snapshot_cache`, `recovery`, `events`, `paging`).
 
@@ -316,7 +304,8 @@ AppFS v0.2 implementation is complete for the current round:
 1. Phase A through Phase E are completed.
 2. Linux required contract set `CT2-001..009` is green.
 3. `CT2-010` minimal cross-platform matrix is available as informational evidence.
-4. `v0.1` remains in the repo as baseline/reference material and regression context.
+4. Real-app connector onboarding is not a claimed `v0.2` completion item; it is tracked in the `v0.3` line.
+5. `v0.1` remains in the repo as baseline/reference material and regression context.
 
 For release and closeout details, see:
 

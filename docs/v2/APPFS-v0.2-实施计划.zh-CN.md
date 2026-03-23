@@ -14,7 +14,7 @@
 
 ### 输入
 
-1. v0.2 正式文档集草案（10 个正式文档 + 1 个 superseded 草案）。
+1. v0.2 正式文档集草案（含协议、架构、实施与 RC 文档，以及 1 个 superseded 草案）。
 2. v0.1 差异清单。
 
 ### 输出
@@ -161,7 +161,7 @@ Issue 模板：
 | [非功能性需求](./APPFS-v0.2-非功能性需求.zh-CN.md) | 性能/可靠性/容量目标 | Frozen (Phase A) |
 | [合同测试 CT2](./APPFS-v0.2-合同测试CT2.zh-CN.md) | CT2-001~CT2-010 验收标准 | Frozen (Phase A) |
 | [Connector 接口](./APPFS-v0.2-Connector接口.zh-CN.md) | 真实 app 对接层契约 | Frozen (Phase A) |
-| [真实 App 对接规范](./APPFS-v0.2-真实App对接规范.zh-CN.md) | 接入前置清单、映射规则 | Frozen (Phase A) |
+| [v0.3 实施计划](../v3/APPFS-v0.3-实施计划.zh-CN.md) | 真实 app connectorization 承接计划 | Planning (v0.3) |
 | [实施计划](./APPFS-v0.2-实施计划.zh-CN.md) | Phase A~E 阶段门禁 | Frozen (Phase A) |
 | [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md) | Phase E 迁移、灰度、回退、处置与 issue 生成规则 | Completed (Phase E) |
 | [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md) | Phase E required/informational/rollout 证据模板与审查口径 | Completed (Phase E) |
@@ -191,3 +191,4 @@ Issue 模板：
 7. [RC迁移与上线包](./APPFS-v0.2-RC迁移与上线包.zh-CN.md)
 8. [RC门禁证据包](./APPFS-v0.2-RC门禁证据包.zh-CN.md)
 9. [完成总结（2026-03-22）](./APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
+10. [v0.3 实施计划](../v3/APPFS-v0.3-实施计划.zh-CN.md)
