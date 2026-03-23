@@ -27,7 +27,7 @@ When `base` option is set, the filesystem operates as copy-on-write overlay on a
 ### Platform Differences
 - **Linux**: FUSE mounting, sandbox with syscall interception (reverie)
 - **macOS**: NFSv3 mounting (no FUSE), no sandbox support
-- **Windows**: CLI available but limited (no mount/run commands)
+- **Windows**: WinFsp mounting and AppFS demo/runtime paths are available; sandbox support is not available and Linux remains the primary required gate platform
 
 ## Build Commands
 
