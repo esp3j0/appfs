@@ -71,9 +71,10 @@ sh tests/appfs-v2/test-ct2-010-cross-platform-minimal.sh
 
 Bridge gate tiers (CI steady-state):
 
-1. v0.2 HTTP bridge gate: required CT2 subset (`CT2-002/007/008/009`).
-2. v0.2 gRPC bridge gate: informational CT2 subset (`CT2-002/007/008/009`); follow-up `#58` tracks `CT2-009` parity.
-3. v0.1 live bridge suites: legacy baseline smoke (`tests/appfs/run-live-with-adapter.sh`) kept for bridge-path regression signal.
+1. v0.2 HTTP bridge gate (required): stable CT2 subset (`CT2-002/003/004/005/007/008/009`).
+2. v0.2 HTTP bridge high-risk signal (informational): `CT2-006` (required tier inside signal job) + `CT2-028` (extended tier).
+3. v0.2 gRPC bridge gate (informational): CT2 subset (`CT2-002/007/008/009`).
+4. v0.1 live bridge suites: legacy baseline smoke (`tests/appfs/run-live-with-adapter.sh`) kept for bridge-path regression signal.
 
 Notes:
 
