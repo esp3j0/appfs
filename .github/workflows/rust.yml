@@ -322,7 +322,6 @@ jobs:
   appfs-contract-gate-grpc-bridge-v2:
     name: AppFS Contract Gate (linux, grpc bridge, v0.2 informational subset)
     runs-on: ubuntu-latest
-    continue-on-error: true
     needs: appfs-contract-gate
     if: always()
     defaults:
@@ -385,6 +384,8 @@ jobs:
         PY
 
     - name: Run AppFS v0.2 contract subset (gRPC bridge mode, informational)
+      id: grpc_v2_subset
+      continue-on-error: true
       env:
         APPFS_V2_CONTRACT_TESTS: "1"
         APPFS_V2_STRICT: "1"
@@ -394,8 +395,19 @@ jobs:
         APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
       run: sh ./tests/test-appfs-v2-contract.sh
 
+    - name: Summarize gRPC bridge informational result
+      if: always()
+      run: |
+        if [ "${{ steps.grpc_v2_subset.outcome }}" = "failure" ]; then
+          echo "AppFS v0.2 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Follow-up #58 tracks CT2-009 parity before any required-tier escalation." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v0.2 gRPC bridge subset failed; non-blocking informational signal. Follow-up #58 tracks CT2-009 parity."
+        else
+          echo "AppFS v0.2 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
     - name: Dump gRPC bridge log on failure (v2)
-      if: failure()
+      if: steps.grpc_v2_subset.outcome == 'failure'
       run: tail -n 200 "$RUNNER_TEMP/appfs-grpc-bridge-v2.log" || true
 
     - name: Stop gRPC bridge (v2)
