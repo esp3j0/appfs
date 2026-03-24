@@ -20,10 +20,11 @@ use super::errors::{is_transient_connector_failure, ERR_INVALID_PAYLOAD};
 use super::grpc_bridge_adapter::GrpcBridgeConnectorV2;
 use super::http_bridge_adapter::HttpBridgeConnectorV2;
 use super::shared::{
-    action_template_matches, boundary_probe_from_bytes, collect_files_with_suffix,
-    decode_jsonl_line, env_flag_enabled, extract_client_token, has_odd_unescaped_quotes,
-    is_handle_format_valid, is_safe_action_rel_path, is_transient_action_sink_busy,
-    parse_snapshot_on_timeout_policy, recover_multiline_json_payload, template_specificity,
+    action_template_matches, boundary_probe_from_bytes, classify_multiline_json_payload,
+    collect_files_with_suffix, decode_jsonl_line, env_flag_enabled, extract_client_token,
+    has_odd_unescaped_quotes, is_handle_format_valid, is_safe_action_rel_path,
+    is_transient_action_sink_busy, parse_snapshot_on_timeout_policy, template_specificity,
+    MultilineRecoveryOutcome,
 };
 use super::{
     ActionCursorDoc, ActionCursorState, ActionSpec, AppfsAdapter, AppfsBridgeConfig, CursorState,
@@ -33,6 +34,7 @@ use super::{
     DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct LegacyAdapterConnectorV2 {
     app_id: String,
     transport: ConnectorTransportV2,
@@ -40,6 +42,7 @@ struct LegacyAdapterConnectorV2 {
     live_page_state: HashMap<String, u32>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl LegacyAdapterConnectorV2 {
     fn new(
         app_id: String,
@@ -55,6 +58,7 @@ impl LegacyAdapterConnectorV2 {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_adapter_error_v1_to_connector_error_v2(
     err: agentfs_sdk::AdapterErrorV1,
 ) -> ConnectorErrorV2 {
@@ -496,6 +500,7 @@ impl AppfsAdapter {
             );
             cursor.offset = file_len;
             cursor.boundary_probe = None;
+            cursor.pending_multiline_eof_len = None;
         } else if cursor.offset == file_len {
             return Ok(false);
         }
@@ -522,6 +527,7 @@ impl AppfsAdapter {
             );
             cursor.offset = file_len;
             cursor.boundary_probe = None;
+            cursor.pending_multiline_eof_len = None;
         } else if cursor.offset > 0 && cursor.boundary_probe.is_some() {
             let expected = cursor.boundary_probe.as_deref().unwrap_or_default();
             let current = boundary_probe_from_bytes(&bytes, cursor.offset);
@@ -532,6 +538,7 @@ impl AppfsAdapter {
                 );
                 cursor.offset = file_len;
                 cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                cursor.pending_multiline_eof_len = None;
             }
         }
 
@@ -543,6 +550,7 @@ impl AppfsAdapter {
                 position += 1;
                 cursor.offset = position as u64;
                 cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                cursor.pending_multiline_eof_len = None;
             }
             if position >= bytes.len() {
                 break;
@@ -558,6 +566,7 @@ impl AppfsAdapter {
                 Ok(None) => {
                     cursor.offset = line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    cursor.pending_multiline_eof_len = None;
                     position = line_end;
                     continue;
                 }
@@ -568,6 +577,7 @@ impl AppfsAdapter {
                     );
                     cursor.offset = line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    cursor.pending_multiline_eof_len = None;
                     position = line_end;
                     continue;
                 }
@@ -579,15 +589,38 @@ impl AppfsAdapter {
                 && serde_json::from_str::<JsonValue>(&payload).is_err()
                 && has_odd_unescaped_quotes(&payload)
             {
-                if let Some((merged_payload, merged_line_end, consumed_lines)) =
-                    recover_multiline_json_payload(&bytes, &payload, line_end, &spec)
-                {
-                    eprintln!(
-                        "AppFS adapter normalized shell-expanded newline for {rel}: consumed_lines={consumed_lines}"
-                    );
-                    payload = merged_payload;
-                    payload_line_end = merged_line_end;
+                match classify_multiline_json_payload(&bytes, &payload, line_end, &spec) {
+                    Some(MultilineRecoveryOutcome::Recovered {
+                        merged_payload,
+                        merged_line_end,
+                        consumed_lines,
+                    }) => {
+                        eprintln!(
+                            "AppFS adapter normalized shell-expanded newline for {rel}: consumed_lines={consumed_lines}"
+                        );
+                        payload = merged_payload;
+                        payload_line_end = merged_line_end;
+                        cursor.pending_multiline_eof_len = None;
+                    }
+                    Some(MultilineRecoveryOutcome::PendingAtEof) => {
+                        let pending_len = bytes.len() as u64;
+                        if cursor.pending_multiline_eof_len == Some(pending_len) {
+                            cursor.pending_multiline_eof_len = None;
+                        } else {
+                            eprintln!(
+                                "AppFS adapter deferred incomplete multiline payload for {rel} at offset={}",
+                                cursor.offset
+                            );
+                            cursor.pending_multiline_eof_len = Some(pending_len);
+                            break;
+                        }
+                    }
+                    None => {
+                        cursor.pending_multiline_eof_len = None;
+                    }
                 }
+            } else {
+                cursor.pending_multiline_eof_len = None;
             }
 
             match action_dispatcher::normalize_actionline_v2_payload(
@@ -607,6 +640,7 @@ impl AppfsAdapter {
                     );
                     cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    cursor.pending_multiline_eof_len = None;
                     position = payload_line_end;
                     continue;
                 }
@@ -616,6 +650,7 @@ impl AppfsAdapter {
                 ProcessOutcome::Consumed => {
                     cursor.offset = payload_line_end as u64;
                     cursor.boundary_probe = boundary_probe_from_bytes(&bytes, cursor.offset);
+                    cursor.pending_multiline_eof_len = None;
                     position = payload_line_end;
                 }
                 ProcessOutcome::RetryPending => {
@@ -1122,12 +1157,17 @@ impl AppfsAdapter {
 #[cfg(test)]
 mod tests {
     use super::{map_adapter_error_v1_to_connector_error_v2, LegacyAdapterConnectorV2};
+    use super::{AppfsAdapter, AppfsBridgeConfig};
     use agentfs_sdk::{
         AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
         AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2,
         ConnectorContextV2, ConnectorTransportV2, FetchLivePageRequestV2, RequestContextV1,
     };
-    use serde_json::json;
+    use serde_json::{json, Value as JsonValue};
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::Path;
+    use tempfile::TempDir;
 
     struct PagingCompatAdapter {
         seen_pages: Vec<u64>,
@@ -1237,5 +1277,237 @@ mod tests {
         });
         assert_eq!(err.code, "INTERNAL");
         assert!(err.retryable);
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("create dst dir");
+        for entry in fs::read_dir(src).expect("read src dir") {
+            let entry = entry.expect("dir entry");
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir_recursive(&src_path, &dst_path);
+            } else {
+                fs::copy(&src_path, &dst_path).expect("copy fixture file");
+            }
+        }
+    }
+
+    fn bridge_config() -> AppfsBridgeConfig {
+        AppfsBridgeConfig {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            runtime_options: super::super::BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
+        }
+    }
+
+    fn fixture_adapter() -> (TempDir, AppfsAdapter) {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
+        let app_dir = temp.path().join("aiim");
+        copy_dir_recursive(&fixture, &app_dir);
+
+        fs::write(app_dir.join("_stream").join("events.evt.jsonl"), "").expect("reset events");
+        fs::write(
+            app_dir.join("_stream").join("cursor.res.json"),
+            "{\n  \"min_seq\": 0,\n  \"max_seq\": 0,\n  \"retention_hint_sec\": 86400\n}\n",
+        )
+        .expect("reset cursor");
+        fs::write(
+            app_dir
+                .join("contacts")
+                .join("zhangsan")
+                .join("send_message.act"),
+            "",
+        )
+        .expect("reset action");
+
+        let adapter = AppfsAdapter::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+            bridge_config(),
+        )
+        .expect("fixture adapter");
+
+        (temp, adapter)
+    }
+
+    fn append_text(path: &Path, text: &str) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open append");
+        file.write_all(text.as_bytes()).expect("append text");
+        file.flush().expect("flush append");
+    }
+
+    fn token_events(events_path: &Path, token: &str) -> Vec<JsonValue> {
+        let content = fs::read_to_string(events_path).expect("read events");
+        content
+            .lines()
+            .filter(|line| line.contains(token))
+            .map(|line| serde_json::from_str(line).expect("event json"))
+            .collect()
+    }
+
+    #[test]
+    fn multiline_partial_write_defers_until_payload_is_complete() {
+        let (_temp, mut adapter) = fixture_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("contacts/zhangsan/send_message.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+        let rel = "contacts/zhangsan/send_message.act";
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"baseline\",\"text\":\"baseline\"}\n",
+        );
+        adapter.poll_once().expect("baseline poll");
+        let baseline_offset = adapter
+            .action_cursors
+            .get(rel)
+            .expect("baseline cursor")
+            .offset;
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ct-ml-1\",\"text\":\"你好\n",
+        );
+        adapter.poll_once().expect("poll after first fragment");
+        assert!(token_events(&events_path, "ct-ml-1").is_empty());
+        let cursor = adapter
+            .action_cursors
+            .get(rel)
+            .expect("cursor after first fragment");
+        assert_eq!(cursor.offset, baseline_offset);
+        assert_eq!(
+            cursor.pending_multiline_eof_len,
+            Some(fs::metadata(&action_path).expect("meta").len())
+        );
+
+        append_text(&action_path, "hello\n");
+        adapter.poll_once().expect("poll after second fragment");
+        assert!(token_events(&events_path, "ct-ml-1").is_empty());
+        let cursor = adapter
+            .action_cursors
+            .get(rel)
+            .expect("cursor after second fragment");
+        assert_eq!(cursor.offset, baseline_offset);
+        assert_eq!(
+            cursor.pending_multiline_eof_len,
+            Some(fs::metadata(&action_path).expect("meta").len())
+        );
+
+        append_text(&action_path, "好！\"}\n");
+        adapter.poll_once().expect("poll after final fragment");
+
+        let events = token_events(&events_path, "ct-ml-1");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+        let cursor = adapter
+            .action_cursors
+            .get(rel)
+            .expect("cursor after completion");
+        assert!(cursor.offset > baseline_offset);
+        assert_eq!(cursor.pending_multiline_eof_len, None);
+    }
+
+    #[test]
+    fn stale_incomplete_multiline_is_eventually_consumed_after_no_growth() {
+        let (_temp, mut adapter) = fixture_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("contacts/zhangsan/send_message.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+        let rel = "contacts/zhangsan/send_message.act";
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ct-bad\",\"text\":\"broken\n",
+        );
+        adapter.poll_once().expect("first pending poll");
+        let pending_offset = adapter
+            .action_cursors
+            .get(rel)
+            .expect("pending cursor")
+            .offset;
+        assert_eq!(pending_offset, 0);
+        assert!(token_events(&events_path, "ct-bad").is_empty());
+
+        adapter
+            .poll_once()
+            .expect("second poll consumes stale fragment");
+        let consumed_offset = adapter
+            .action_cursors
+            .get(rel)
+            .expect("consumed cursor")
+            .offset;
+        assert!(consumed_offset > pending_offset);
+        assert!(token_events(&events_path, "ct-bad").is_empty());
+
+        append_text(
+            &action_path,
+            "\n{\"client_token\":\"ct-recover\",\"text\":\"ok\"}\n",
+        );
+        adapter.poll_once().expect("recovery poll");
+
+        let events = token_events(&events_path, "ct-recover");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+    }
+
+    #[test]
+    fn broken_multiline_prefix_does_not_block_valid_append_behind_it() {
+        let (_temp, mut adapter) = fixture_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("contacts/zhangsan/send_message.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+        let rel = "contacts/zhangsan/send_message.act";
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ct-bad\",\"text\":\"broken\n",
+        );
+        adapter.poll_once().expect("first pending poll");
+        assert_eq!(
+            adapter
+                .action_cursors
+                .get(rel)
+                .expect("pending cursor")
+                .offset,
+            0
+        );
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ct-next\",\"text\":\"ok\"}\n",
+        );
+        adapter.poll_once().expect("second poll with valid append");
+
+        assert!(token_events(&events_path, "ct-bad").is_empty());
+        let events = token_events(&events_path, "ct-next");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+        let cursor = adapter
+            .action_cursors
+            .get(rel)
+            .expect("cursor after recovery");
+        assert!(cursor.offset > 0);
+        assert_eq!(cursor.pending_multiline_eof_len, None);
     }
 }

@@ -103,12 +103,21 @@ pub(super) fn has_odd_unescaped_quotes(s: &str) -> bool {
     quote_count % 2 == 1
 }
 
-pub(super) fn recover_multiline_json_payload(
+pub(super) enum MultilineRecoveryOutcome {
+    Recovered {
+        merged_payload: String,
+        merged_line_end: usize,
+        consumed_lines: usize,
+    },
+    PendingAtEof,
+}
+
+pub(super) fn classify_multiline_json_payload(
     bytes: &[u8],
     initial_payload: &str,
     initial_line_end: usize,
     spec: &ActionSpec,
-) -> Option<(String, usize, usize)> {
+) -> Option<MultilineRecoveryOutcome> {
     if !has_odd_unescaped_quotes(initial_payload) {
         return None;
     }
@@ -124,16 +133,20 @@ pub(super) fn recover_multiline_json_payload(
     let mut merged = initial_payload.to_string();
     let mut consumed_lines = 1usize;
     let mut next_position = initial_line_end;
+    let mut exhausted_eof = next_position >= bytes.len();
+    let mut saw_standalone_json_fragment = false;
 
     while consumed_lines < MAX_RECOVERY_LINES {
         while next_position < bytes.len() && bytes[next_position] == 0 {
             next_position += 1;
         }
         if next_position >= bytes.len() {
+            exhausted_eof = true;
             break;
         }
 
         let Some(next_rel_idx) = bytes[next_position..].iter().position(|b| *b == b'\n') else {
+            exhausted_eof = true;
             break;
         };
         let next_end = next_position + next_rel_idx + 1;
@@ -143,6 +156,9 @@ pub(super) fn recover_multiline_json_payload(
             Ok(None) => String::new(),
             Err(_) => break,
         };
+        if serde_json::from_str::<JsonValue>(&next_fragment).is_ok() {
+            saw_standalone_json_fragment = true;
+        }
 
         let candidate_len = merged
             .len()
@@ -157,12 +173,37 @@ pub(super) fn recover_multiline_json_payload(
         consumed_lines += 1;
 
         if serde_json::from_str::<JsonValue>(&merged).is_ok() {
-            return Some((merged, next_end, consumed_lines));
+            return Some(MultilineRecoveryOutcome::Recovered {
+                merged_payload: merged,
+                merged_line_end: next_end,
+                consumed_lines,
+            });
         }
         next_position = next_end;
     }
 
+    if exhausted_eof && !saw_standalone_json_fragment {
+        return Some(MultilineRecoveryOutcome::PendingAtEof);
+    }
+
     None
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn recover_multiline_json_payload(
+    bytes: &[u8],
+    initial_payload: &str,
+    initial_line_end: usize,
+    spec: &ActionSpec,
+) -> Option<(String, usize, usize)> {
+    match classify_multiline_json_payload(bytes, initial_payload, initial_line_end, spec) {
+        Some(MultilineRecoveryOutcome::Recovered {
+            merged_payload,
+            merged_line_end,
+            consumed_lines,
+        }) => Some((merged_payload, merged_line_end, consumed_lines)),
+        _ => None,
+    }
 }
 #[derive(Clone, Copy)]
 enum Utf16Endian {

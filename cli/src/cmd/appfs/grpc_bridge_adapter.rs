@@ -33,6 +33,7 @@ use proto::{
 };
 use proto_v2::appfs_connector_v2_client::AppfsConnectorV2Client;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct GrpcBridgeAdapterV1 {
     app_id: String,
     client: AppfsAdapterBridgeClient<Channel>,
@@ -49,6 +50,7 @@ pub(super) struct GrpcBridgeConnectorV2 {
     circuit_breaker: BridgeCircuitBreaker,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl GrpcBridgeAdapterV1 {
     pub(super) fn new(
         app_id: String,
@@ -276,6 +278,7 @@ impl GrpcBridgeConnectorV2 {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn run_v2_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorErrorV2>
     where
         F: FnMut(AppfsConnectorV2Client<Channel>) -> Result<tonic::Response<Resp>, tonic::Status>,
@@ -500,6 +503,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn health(&mut self, ctx: &ConnectorContextV2) -> Result<HealthStatusV2, ConnectorErrorV2> {
         let req = proto_v2::HealthRequest {
             context: Some(to_proto_context_v2(ctx)),
@@ -517,6 +521,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn prewarm_snapshot_meta(
         &mut self,
         resource_path: &str,
@@ -543,6 +548,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn fetch_snapshot_chunk(
         &mut self,
         request: FetchSnapshotChunkRequestV2,
@@ -566,6 +572,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn fetch_live_page(
         &mut self,
         request: FetchLivePageRequestV2,
@@ -589,6 +596,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn submit_action(
         &mut self,
         request: SubmitActionRequestV2,
@@ -613,6 +621,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_proto_input_mode(mode: AdapterInputModeV1) -> InputMode {
     match mode {
         AdapterInputModeV1::Text => InputMode::Text,
@@ -621,6 +630,7 @@ fn to_proto_input_mode(mode: AdapterInputModeV1) -> InputMode {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_proto_execution_mode(mode: AdapterExecutionModeV1) -> ExecutionMode {
     match mode {
         AdapterExecutionModeV1::Inline => ExecutionMode::Inline,
@@ -628,6 +638,7 @@ fn to_proto_execution_mode(mode: AdapterExecutionModeV1) -> ExecutionMode {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_proto_context(ctx: &RequestContextV1) -> RequestContext {
     RequestContext {
         app_id: ctx.app_id.clone(),
@@ -637,12 +648,14 @@ fn to_proto_context(ctx: &RequestContextV1) -> RequestContext {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_json_text(text: &str, field: &str) -> Result<JsonValue, AdapterErrorV1> {
     serde_json::from_str::<JsonValue>(text).map_err(|err| AdapterErrorV1::Internal {
         message: format!("bridge grpc invalid json in {field}: {err}"),
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_grpc_status(
     method: &str,
     status: tonic::Status,

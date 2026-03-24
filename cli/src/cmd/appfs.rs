@@ -292,6 +292,8 @@ struct ActionCursorState {
     offset: u64,
     #[serde(default)]
     boundary_probe: Option<String>,
+    #[serde(default)]
+    pending_multiline_eof_len: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

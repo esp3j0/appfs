@@ -14,6 +14,7 @@ use agentfs_sdk::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+#[allow(dead_code)]
 pub(super) struct HttpBridgeAdapterV1 {
     app_id: String,
     endpoint: String,
@@ -32,6 +33,7 @@ pub(super) struct HttpBridgeConnectorV2 {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct SubmitActionRequest {
     app_id: String,
     path: String,
@@ -42,6 +44,7 @@ struct SubmitActionRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct SubmitControlRequest {
     app_id: String,
     path: String,
@@ -76,6 +79,7 @@ struct BridgeErrorPayload {
     details: Option<String>,
 }
 
+#[allow(dead_code)]
 impl HttpBridgeAdapterV1 {
     pub(super) fn new(
         app_id: String,
@@ -285,6 +289,7 @@ impl AppConnectorV2 for HttpBridgeConnectorV2 {
     }
 }
 
+#[allow(clippy::too_many_arguments, dead_code)]
 fn post_json_v1<Req, Resp>(
     endpoint: &str,
     timeout: Duration,
@@ -384,6 +389,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn post_json_v2<Req, Resp>(
     endpoint: &str,
     timeout: Duration,
@@ -511,6 +517,7 @@ fn log_observation(
     }
 }
 
+#[allow(dead_code)]
 fn map_status_error_v1(status: u16, body: &str) -> AdapterErrorV1 {
     if let Ok(adapter_error) = serde_json::from_str::<AdapterErrorV1>(body) {
         return adapter_error;

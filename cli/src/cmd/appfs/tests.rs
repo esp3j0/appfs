@@ -64,7 +64,7 @@ fn deterministic_shorten_is_bounded_and_stable() {
 
     assert_eq!(shortened_a, shortened_b);
     assert!(shortened_a.starts_with("ph_"));
-    assert!(shortened_a.as_bytes().len() <= MAX_SEGMENT_BYTES);
+    assert!(shortened_a.len() <= MAX_SEGMENT_BYTES);
 }
 
 #[test]
