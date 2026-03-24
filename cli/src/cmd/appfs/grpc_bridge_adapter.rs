@@ -818,7 +818,7 @@ fn from_proto_fetch_snapshot_chunk_response(
     Ok(FetchSnapshotChunkResponseV2 {
         records,
         emitted_bytes: response.emitted_bytes,
-        next_cursor: normalize_optional_string(response.next_cursor),
+        next_cursor: parse_optional_cursor_v2(response.next_cursor, "snapshot.next_cursor")?,
         has_more: response.has_more,
         revision: response.revision,
     })
@@ -869,7 +869,7 @@ fn from_proto_fetch_live_page_response(
                 }
             },
             expires_at: page.expires_at,
-            next_cursor: normalize_optional_string(page.next_cursor),
+            next_cursor: parse_optional_cursor_v2(page.next_cursor, "live.page.next_cursor")?,
             retry_after_ms: page.retry_after_ms,
         },
     })
@@ -991,8 +991,18 @@ fn parse_json_object_text_v2(text: &str, field: &str) -> Result<JsonValue, Conne
     Ok(value)
 }
 
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
-    value.and_then(|s| if s.is_empty() { None } else { Some(s) })
+fn parse_optional_cursor_v2(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<String>, ConnectorErrorV2> {
+    match value {
+        Some(s) if s.is_empty() => Err(malformed_payload(
+            field,
+            "empty string is not allowed for optional cursor",
+        )),
+        Some(s) => Ok(Some(s)),
+        None => Ok(None),
+    }
 }
 
 fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV2 {
@@ -1670,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_json_and_normalizes_empty_cursor() {
+    fn rejects_malformed_json_and_empty_cursor_payloads() {
         let invalid_json = super::from_proto_fetch_snapshot_chunk_response(
             super::proto_v2::FetchSnapshotChunkResponseV2 {
                 records: vec![super::proto_v2::SnapshotRecordV2 {
@@ -1703,7 +1713,7 @@ mod tests {
         .expect_err("non-object line_json should fail");
         assert!(non_object.message.contains("expected JSON object"));
 
-        let live =
+        let live_empty_cursor =
             super::from_proto_fetch_live_page_response(super::proto_v2::FetchLivePageResponseV2 {
                 items_json: vec!["{\"id\":\"m-1\"}".to_string()],
                 page: Some(super::proto_v2::LivePageInfoV2 {
@@ -1716,10 +1726,10 @@ mod tests {
                     retry_after_ms: None,
                 }),
             })
-            .expect("live payload should parse");
-        assert_eq!(live.page.next_cursor, None);
+            .expect_err("empty live next_cursor should fail");
+        assert!(live_empty_cursor.message.contains("live.page.next_cursor"));
 
-        let snapshot = super::from_proto_fetch_snapshot_chunk_response(
+        let snapshot_empty_cursor = super::from_proto_fetch_snapshot_chunk_response(
             super::proto_v2::FetchSnapshotChunkResponseV2 {
                 records: vec![super::proto_v2::SnapshotRecordV2 {
                     record_key: "rk".to_string(),
@@ -1732,8 +1742,10 @@ mod tests {
                 revision: None,
             },
         )
-        .expect("snapshot payload should parse");
-        assert_eq!(snapshot.next_cursor, None);
+        .expect_err("empty snapshot next_cursor should fail");
+        assert!(snapshot_empty_cursor
+            .message
+            .contains("snapshot.next_cursor"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

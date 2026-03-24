@@ -235,7 +235,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
                     line_json=json.dumps({"id": "m-2", "text": "world"}),
                 ),
             ]
-            emitted_bytes = sum(len(r.line_json.encode("utf-8")) for r in records)
+            emitted_bytes = sum((len(r.line_json.encode("utf-8")) + 1) for r in records)
             return pb2.FetchSnapshotChunkResponse(
                 response=pb2.FetchSnapshotChunkResponseV2(
                     records=records,
@@ -264,7 +264,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             return pb2.FetchSnapshotChunkResponse(
                 response=pb2.FetchSnapshotChunkResponseV2(
                     records=records,
-                    emitted_bytes=sum(len(r.line_json.encode("utf-8")) for r in records),
+                    emitted_bytes=sum((len(r.line_json.encode("utf-8")) + 1) for r in records),
                     has_more=False,
                     revision="grpc-v2-rev-1",
                 )
