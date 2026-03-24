@@ -2,10 +2,10 @@
 
 This example provides:
 
-1. `grpc_server.py`: gRPC implementation of AppFS adapter bridge service.
-2. `http_gateway.py`: HTTP gateway exposing `/v1/submit-action` and `/v1/submit-control-action`, forwarding to gRPC backend.
+1. `grpc_server.py`: gRPC implementation of AppFS connector bridge services.
+2. `http_gateway.py`: legacy HTTP gateway exposing `/v1/submit-action` and `/v1/submit-control-action` (auxiliary example only).
 
-Use the gateway with current runtime (`--adapter-http-endpoint`) while keeping adapter logic behind gRPC.
+For v0.3 runtime main path, use direct gRPC endpoint with `--adapter-grpc-endpoint`.
 
 ## 1. Install dependencies
 
@@ -26,6 +26,8 @@ This generates:
 
 1. `appfs_adapter_v1_pb2.py`
 2. `appfs_adapter_v1_pb2_grpc.py`
+3. `appfs_connector_v2_pb2.py`
+4. `appfs_connector_v2_pb2_grpc.py`
 
 ## 3. Start gRPC server
 
@@ -35,22 +37,14 @@ python3 grpc_server.py
 
 Default listen: `127.0.0.1:50051`.
 
-## 4. Start HTTP gateway
-
-```bash
-python3 http_gateway.py
-```
-
-Default listen: `127.0.0.1:8080`.
-
-## 5. Start AppFS runtime in bridge mode
+## 4. Start AppFS runtime (v0.3 main path: gRPC V2 connector)
 
 ```bash
 cd cli
 agentfs serve appfs \
   --root /app \
   --app-id aiim \
-  --adapter-http-endpoint http://127.0.0.1:8080 \
+  --adapter-grpc-endpoint http://127.0.0.1:50051 \
   --adapter-bridge-max-retries 2 \
   --adapter-bridge-initial-backoff-ms 100 \
   --adapter-bridge-max-backoff-ms 1000 \
@@ -62,7 +56,15 @@ For live harness:
 
 ```bash
 cd cli
-APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 \
+APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051 \
 APPFS_CONTRACT_TESTS=1 \
 sh ./tests/appfs/run-live-with-adapter.sh
+```
+
+## 5. Optional legacy gateway
+
+`http_gateway.py` remains as a compatibility/auxiliary example for V1 HTTP surface and is not the current runtime main path.
+
+```bash
+python3 http_gateway.py
 ```

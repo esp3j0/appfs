@@ -486,7 +486,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
             Some(proto_v2::get_connector_info_response::Result::Info(info)) => {
                 let app_id = info.app_id.clone();
                 self.ensure_app_match(&app_id)?;
-                Ok(from_proto_connector_info(info))
+                from_proto_connector_info(info)
             }
             Some(proto_v2::get_connector_info_response::Result::Error(err)) => {
                 Err(from_proto_connector_error(err))
@@ -508,7 +508,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
             self.run_v2_rpc("Health", |mut client| run_async(client.health(req.clone())))?;
         match response.result {
             Some(proto_v2::health_response::Result::Status(status)) => {
-                Ok(from_proto_health_status(status))
+                from_proto_health_status(status)
             }
             Some(proto_v2::health_response::Result::Error(err)) => {
                 Err(from_proto_connector_error(err))
@@ -705,42 +705,65 @@ fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2
     }
 }
 
-fn from_proto_connector_info(info: proto_v2::ConnectorInfoV2) -> ConnectorInfoV2 {
-    ConnectorInfoV2 {
+fn from_proto_connector_info(
+    info: proto_v2::ConnectorInfoV2,
+) -> Result<ConnectorInfoV2, ConnectorErrorV2> {
+    let transport = proto_v2::ConnectorTransportV2::try_from(info.transport).map_err(|_| {
+        malformed_payload(
+            "connector_info.transport",
+            format!("unknown enum value {}", info.transport),
+        )
+    })?;
+    let transport = match transport {
+        proto_v2::ConnectorTransportV2::InProcess => ConnectorTransportV2::InProcess,
+        proto_v2::ConnectorTransportV2::HttpBridge => ConnectorTransportV2::HttpBridge,
+        proto_v2::ConnectorTransportV2::GrpcBridge => ConnectorTransportV2::GrpcBridge,
+        proto_v2::ConnectorTransportV2::Unspecified => {
+            return Err(malformed_payload(
+                "connector_info.transport",
+                "UNSPECIFIED enum value is not allowed",
+            ))
+        }
+    };
+    Ok(ConnectorInfoV2 {
         connector_id: info.connector_id,
         version: info.version,
         app_id: info.app_id,
-        transport: match proto_v2::ConnectorTransportV2::try_from(info.transport)
-            .unwrap_or(proto_v2::ConnectorTransportV2::Unspecified)
-        {
-            proto_v2::ConnectorTransportV2::InProcess => ConnectorTransportV2::InProcess,
-            proto_v2::ConnectorTransportV2::HttpBridge => ConnectorTransportV2::HttpBridge,
-            proto_v2::ConnectorTransportV2::GrpcBridge
-            | proto_v2::ConnectorTransportV2::Unspecified => ConnectorTransportV2::GrpcBridge,
-        },
+        transport,
         supports_snapshot: info.supports_snapshot,
         supports_live: info.supports_live,
         supports_action: info.supports_action,
         optional_features: info.optional_features,
-    }
+    })
 }
 
-fn from_proto_health_status(status: proto_v2::HealthStatusV2) -> HealthStatusV2 {
-    HealthStatusV2 {
+fn from_proto_health_status(
+    status: proto_v2::HealthStatusV2,
+) -> Result<HealthStatusV2, ConnectorErrorV2> {
+    let auth = proto_v2::AuthStatusV2::try_from(status.auth_status).map_err(|_| {
+        malformed_payload(
+            "health.auth_status",
+            format!("unknown enum value {}", status.auth_status),
+        )
+    })?;
+    let auth_status = match auth {
+        proto_v2::AuthStatusV2::Valid => AuthStatusV2::Valid,
+        proto_v2::AuthStatusV2::Expired => AuthStatusV2::Expired,
+        proto_v2::AuthStatusV2::Refreshing => AuthStatusV2::Refreshing,
+        proto_v2::AuthStatusV2::Invalid => AuthStatusV2::Invalid,
+        proto_v2::AuthStatusV2::Unspecified => {
+            return Err(malformed_payload(
+                "health.auth_status",
+                "UNSPECIFIED enum value is not allowed",
+            ))
+        }
+    };
+    Ok(HealthStatusV2 {
         healthy: status.healthy,
-        auth_status: match proto_v2::AuthStatusV2::try_from(status.auth_status)
-            .unwrap_or(proto_v2::AuthStatusV2::Unspecified)
-        {
-            proto_v2::AuthStatusV2::Valid => AuthStatusV2::Valid,
-            proto_v2::AuthStatusV2::Expired => AuthStatusV2::Expired,
-            proto_v2::AuthStatusV2::Refreshing => AuthStatusV2::Refreshing,
-            proto_v2::AuthStatusV2::Invalid | proto_v2::AuthStatusV2::Unspecified => {
-                AuthStatusV2::Invalid
-            }
-        },
+        auth_status,
         message: status.message,
         checked_at: status.checked_at,
-    }
+    })
 }
 
 fn from_proto_snapshot_meta(meta: proto_v2::SnapshotMetaV2) -> SnapshotMetaV2 {
@@ -789,13 +812,13 @@ fn from_proto_fetch_snapshot_chunk_response(
         records.push(SnapshotRecordV2 {
             record_key: record.record_key,
             ordering_key: record.ordering_key,
-            line: parse_json_text_v2(&record.line_json, "snapshot.records[].line_json")?,
+            line: parse_json_object_text_v2(&record.line_json, "snapshot.records[].line_json")?,
         });
     }
     Ok(FetchSnapshotChunkResponseV2 {
         records,
         emitted_bytes: response.emitted_bytes,
-        next_cursor: response.next_cursor,
+        next_cursor: normalize_optional_string(response.next_cursor),
         has_more: response.has_more,
         revision: response.revision,
     })
@@ -831,13 +854,22 @@ fn from_proto_fetch_live_page_response(
             handle_id: page.handle_id,
             page_no: page.page_no,
             has_more: page.has_more,
-            mode: match proto_v2::LiveModeV2::try_from(page.mode)
-                .unwrap_or(proto_v2::LiveModeV2::Live)
-            {
-                proto_v2::LiveModeV2::Live | proto_v2::LiveModeV2::Unspecified => LiveModeV2::Live,
+            mode: match proto_v2::LiveModeV2::try_from(page.mode).map_err(|_| {
+                malformed_payload(
+                    "live.page.mode",
+                    format!("unknown enum value {}", page.mode),
+                )
+            })? {
+                proto_v2::LiveModeV2::Live => LiveModeV2::Live,
+                proto_v2::LiveModeV2::Unspecified => {
+                    return Err(malformed_payload(
+                        "live.page.mode",
+                        "UNSPECIFIED enum value is not allowed",
+                    ))
+                }
             },
             expires_at: page.expires_at,
-            next_cursor: page.next_cursor,
+            next_cursor: normalize_optional_string(page.next_cursor),
             retry_after_ms: page.retry_after_ms,
         },
     })
@@ -946,6 +978,30 @@ fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErr
         retryable: true,
         details: None,
     })
+}
+
+fn parse_json_object_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
+    let value = parse_json_text_v2(text, field)?;
+    if !value.is_object() {
+        return Err(malformed_payload(
+            field,
+            "expected JSON object, got non-object JSON",
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|s| if s.is_empty() { None } else { Some(s) })
+}
+
+fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV2 {
+    ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc malformed payload in {field}: {reason}"),
+        retryable: false,
+        details: None,
+    }
 }
 
 fn run_async<F, T>(fut: F) -> T
@@ -1344,6 +1400,18 @@ mod tests {
                 Some(r) => (r.cursor, r.handle_id.unwrap_or_else(|| "ph-1".to_string())),
                 None => (None, "ph-1".to_string()),
             };
+            if cursor.as_deref() == Some("invalid") {
+                return Ok(Response::new(super::proto_v2::FetchLivePageResponse {
+                    result: Some(super::proto_v2::fetch_live_page_response::Result::Error(
+                        super::proto_v2::ConnectorErrorV2 {
+                            code: "CURSOR_INVALID".to_string(),
+                            message: "cursor invalid".to_string(),
+                            retryable: false,
+                            details: None,
+                        },
+                    )),
+                }));
+            }
             let page_no = if cursor.as_deref().is_some() { 2 } else { 1 };
             Ok(Response::new(super::proto_v2::FetchLivePageResponse {
                 result: Some(super::proto_v2::fetch_live_page_response::Result::Response(
@@ -1384,6 +1452,18 @@ mod tests {
                     )),
                 }));
             };
+            if req.path.ends_with("/rate_limited.act") {
+                return Ok(Response::new(super::proto_v2::SubmitActionResponse {
+                    result: Some(super::proto_v2::submit_action_response::Result::Error(
+                        super::proto_v2::ConnectorErrorV2 {
+                            code: "RATE_LIMITED".to_string(),
+                            message: "upstream rate limited".to_string(),
+                            retryable: true,
+                            details: None,
+                        },
+                    )),
+                }));
+            }
             let result = if req.execution_mode
                 == super::proto_v2::ActionExecutionModeV2::Inline as i32
             {
@@ -1529,6 +1609,171 @@ mod tests {
             }
             _ => panic!("expected completed outcome"),
         }
+
+        let _ = shutdown.send(());
+    }
+
+    #[test]
+    fn rejects_unspecified_and_unknown_enums() {
+        let info_unspecified = super::from_proto_connector_info(super::proto_v2::ConnectorInfoV2 {
+            connector_id: "c".to_string(),
+            version: "v".to_string(),
+            app_id: "aiim".to_string(),
+            transport: super::proto_v2::ConnectorTransportV2::Unspecified as i32,
+            supports_snapshot: true,
+            supports_live: true,
+            supports_action: true,
+            optional_features: vec![],
+        })
+        .expect_err("unspecified transport should fail");
+        assert!(info_unspecified
+            .message
+            .contains("connector_info.transport"));
+
+        let info_unknown = super::from_proto_connector_info(super::proto_v2::ConnectorInfoV2 {
+            connector_id: "c".to_string(),
+            version: "v".to_string(),
+            app_id: "aiim".to_string(),
+            transport: 999,
+            supports_snapshot: true,
+            supports_live: true,
+            supports_action: true,
+            optional_features: vec![],
+        })
+        .expect_err("unknown transport should fail");
+        assert!(info_unknown.message.contains("unknown enum value"));
+
+        let health_unspecified = super::from_proto_health_status(super::proto_v2::HealthStatusV2 {
+            healthy: true,
+            auth_status: super::proto_v2::AuthStatusV2::Unspecified as i32,
+            message: Some("ok".to_string()),
+            checked_at: "2026-03-24T00:00:00Z".to_string(),
+        })
+        .expect_err("unspecified auth should fail");
+        assert!(health_unspecified.message.contains("health.auth_status"));
+
+        let live_unknown =
+            super::from_proto_fetch_live_page_response(super::proto_v2::FetchLivePageResponseV2 {
+                items_json: vec!["{\"id\":\"m-1\"}".to_string()],
+                page: Some(super::proto_v2::LivePageInfoV2 {
+                    handle_id: "ph-1".to_string(),
+                    page_no: 1,
+                    has_more: false,
+                    mode: 999,
+                    expires_at: None,
+                    next_cursor: None,
+                    retry_after_ms: None,
+                }),
+            })
+            .expect_err("unknown live mode should fail");
+        assert!(live_unknown.message.contains("live.page.mode"));
+    }
+
+    #[test]
+    fn rejects_malformed_json_and_normalizes_empty_cursor() {
+        let invalid_json = super::from_proto_fetch_snapshot_chunk_response(
+            super::proto_v2::FetchSnapshotChunkResponseV2 {
+                records: vec![super::proto_v2::SnapshotRecordV2 {
+                    record_key: "rk".to_string(),
+                    ordering_key: "ok".to_string(),
+                    line_json: "{".to_string(),
+                }],
+                emitted_bytes: 1,
+                next_cursor: Some("".to_string()),
+                has_more: false,
+                revision: None,
+            },
+        )
+        .expect_err("invalid line_json should fail");
+        assert!(invalid_json.message.contains("invalid json"));
+
+        let non_object = super::from_proto_fetch_snapshot_chunk_response(
+            super::proto_v2::FetchSnapshotChunkResponseV2 {
+                records: vec![super::proto_v2::SnapshotRecordV2 {
+                    record_key: "rk".to_string(),
+                    ordering_key: "ok".to_string(),
+                    line_json: "[1,2,3]".to_string(),
+                }],
+                emitted_bytes: 9,
+                next_cursor: Some("".to_string()),
+                has_more: false,
+                revision: None,
+            },
+        )
+        .expect_err("non-object line_json should fail");
+        assert!(non_object.message.contains("expected JSON object"));
+
+        let live =
+            super::from_proto_fetch_live_page_response(super::proto_v2::FetchLivePageResponseV2 {
+                items_json: vec!["{\"id\":\"m-1\"}".to_string()],
+                page: Some(super::proto_v2::LivePageInfoV2 {
+                    handle_id: "ph-1".to_string(),
+                    page_no: 1,
+                    has_more: true,
+                    mode: super::proto_v2::LiveModeV2::Live as i32,
+                    expires_at: None,
+                    next_cursor: Some("".to_string()),
+                    retry_after_ms: None,
+                }),
+            })
+            .expect("live payload should parse");
+        assert_eq!(live.page.next_cursor, None);
+
+        let snapshot = super::from_proto_fetch_snapshot_chunk_response(
+            super::proto_v2::FetchSnapshotChunkResponseV2 {
+                records: vec![super::proto_v2::SnapshotRecordV2 {
+                    record_key: "rk".to_string(),
+                    ordering_key: "ok".to_string(),
+                    line_json: "{\"id\":\"m-1\"}".to_string(),
+                }],
+                emitted_bytes: 12,
+                next_cursor: Some("".to_string()),
+                has_more: true,
+                revision: None,
+            },
+        )
+        .expect("snapshot payload should parse");
+        assert_eq!(snapshot.next_cursor, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn grpc_bridge_connector_v2_error_paths() {
+        let (addr, shutdown) = spawn_test_grpc_v2_server().await;
+        let mut connector = GrpcBridgeConnectorV2::new(
+            "aiim".to_string(),
+            format!("http://{}", addr),
+            Duration::from_millis(1000),
+            super::BridgeRuntimeOptions::from_cli(1, 10, 100, 3, 200),
+        )
+        .expect("create grpc bridge v2 connector");
+        let ctx = test_ctx_v2();
+
+        let cursor_err = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/messages".to_string(),
+                    handle_id: None,
+                    cursor: Some("invalid".to_string()),
+                    page_size: 10,
+                },
+                &ctx,
+            )
+            .expect_err("invalid cursor should fail");
+        assert_eq!(cursor_err.code, "CURSOR_INVALID");
+        assert!(!cursor_err.retryable);
+
+        let rate_limit_err = connector
+            .submit_action(
+                SubmitActionRequestV2 {
+                    path: "/messages/rate_limited.act".to_string(),
+                    payload: serde_json::json!({"text":"hi"}),
+                    execution_mode: ActionExecutionModeV2::Inline,
+                },
+                &ctx,
+            )
+            .expect_err("rate limited should fail");
+        assert_eq!(rate_limit_err.code, "RATE_LIMITED");
+        assert!(rate_limit_err.retryable);
 
         let _ = shutdown.send(());
     }
