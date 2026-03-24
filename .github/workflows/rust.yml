@@ -14,7 +14,8 @@ jobs:
   # Check-run name intentionally stays stable during APPFS_V2_* -> APPFS_V3_* migration
   # to avoid branch-protection expected-check pending drift.
   appfs-contract-gate:
-    name: AppFS Contract Gate (required, linux, inprocess v2)
+    # Keep check-run name stable for branch protection; semantic: required inprocess v2 gate.
+    name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -58,7 +59,8 @@ jobs:
 
   # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
-    name: AppFS Contract Gate (linux, http bridge, legacy v0.1 baseline)
+    # Keep check-run name stable for branch protection; semantic: http legacy baseline gate.
+    name: AppFS Contract Gate (linux, http bridge)
     runs-on: ubuntu-latest
     needs: appfs-contract-gate
     defaults:
@@ -343,7 +345,8 @@ jobs:
 
   # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
   appfs-contract-gate-grpc-bridge:
-    name: AppFS Contract Gate (linux, grpc bridge, legacy v0.1 baseline)
+    # Keep check-run name stable for branch protection; semantic: grpc legacy baseline gate.
+    name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
