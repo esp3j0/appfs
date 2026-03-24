@@ -3,8 +3,7 @@ use super::bridge_resilience::{
 };
 use agentfs_sdk::{
     connector_error_codes_v2, AppConnectorV2, ConnectorContextV2, ConnectorErrorV2,
-    ConnectorInfoV2,
-    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
+    ConnectorInfoV2, FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
     FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2, SubmitActionRequestV2,
     SubmitActionResponseV2,
 };
@@ -199,14 +198,16 @@ impl AppConnectorV2 for HttpBridgeConnectorV2 {
         let url = format!("{}/{}", self.endpoint, "v2/connector/info");
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
         match agent.post(&url).send_json(serde_json::json!({})) {
-            Ok(response) => response
-                .into_json::<ConnectorInfoV2>()
-                .map_err(|err| ConnectorErrorV2 {
-                    code: connector_error_codes_v2::INTERNAL.to_string(),
-                    message: format!("bridge decode error for {url}: {err}"),
-                    retryable: true,
-                    details: None,
-                }),
+            Ok(response) => {
+                response
+                    .into_json::<ConnectorInfoV2>()
+                    .map_err(|err| ConnectorErrorV2 {
+                        code: connector_error_codes_v2::INTERNAL.to_string(),
+                        message: format!("bridge decode error for {url}: {err}"),
+                        retryable: true,
+                        details: None,
+                    })
+            }
             Err(ureq::Error::Status(status, response)) => {
                 let body = response.into_string().unwrap_or_default();
                 Err(map_status_error_v2(status, &body))
@@ -236,10 +237,7 @@ impl AppConnectorV2 for HttpBridgeConnectorV2 {
         timeout: Duration,
         ctx: &ConnectorContextV2,
     ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
-        let timeout_ms = timeout
-            .as_millis()
-            .max(1)
-            .min(u128::from(u64::MAX)) as u64;
+        let timeout_ms = timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64;
         let request = WrappedV2Request {
             context: ctx.clone(),
             request: PrewarmRequestV2 {
@@ -327,7 +325,8 @@ where
                 let parsed = match response.into_json::<Resp>() {
                     Ok(value) => value,
                     Err(err) => {
-                        let opened = circuit_breaker.record_failure(Instant::now(), runtime_options);
+                        let opened =
+                            circuit_breaker.record_failure(Instant::now(), runtime_options);
                         metrics.record_request(attempt, false);
                         log_observation(metrics, route, attempt, started.elapsed(), "failed");
                         return Err(AdapterErrorV1::Internal {
@@ -428,7 +427,8 @@ where
                 let parsed = match response.into_json::<Resp>() {
                     Ok(value) => value,
                     Err(err) => {
-                        let opened = circuit_breaker.record_failure(Instant::now(), runtime_options);
+                        let opened =
+                            circuit_breaker.record_failure(Instant::now(), runtime_options);
                         metrics.record_request(attempt, false);
                         log_observation(metrics, route, attempt, started.elapsed(), "failed");
                         return Err(ConnectorErrorV2 {

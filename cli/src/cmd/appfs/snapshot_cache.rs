@@ -522,7 +522,8 @@ impl AppfsAdapter {
             );
         }
 
-        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel, request_id) {
+        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel, request_id)
+        {
             Ok(content) => content,
             Err(upstream_reason) => {
                 self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
@@ -677,7 +678,10 @@ impl AppfsAdapter {
         resource_rel: &str,
         request_id: &str,
     ) -> std::result::Result<String, String> {
-        eprintln!("[cache.expand] fetch_snapshot_chunk resource=/{}", resource_rel);
+        eprintln!(
+            "[cache.expand] fetch_snapshot_chunk resource=/{}",
+            resource_rel
+        );
         let mut out = String::new();
         let mut resume = SnapshotResumeV2::Start;
         let mut total_bytes = 0usize;
@@ -704,8 +708,9 @@ impl AppfsAdapter {
                 .map_err(snapshot_expand_error_summary)?;
 
             for record in response.records {
-                let line = serde_json::to_string(&record.line)
-                    .map_err(|err| format!("invalid_snapshot_record line_serialize_failed: {err}"))?;
+                let line = serde_json::to_string(&record.line).map_err(|err| {
+                    format!("invalid_snapshot_record line_serialize_failed: {err}")
+                })?;
                 out.push_str(&line);
                 out.push('\n');
                 total_bytes += line.len() + 1;
@@ -716,7 +721,9 @@ impl AppfsAdapter {
             }
 
             let Some(next_cursor) = response.next_cursor else {
-                return Err("connector_response_invalid missing_next_cursor_when_has_more".to_string());
+                return Err(
+                    "connector_response_invalid missing_next_cursor_when_has_more".to_string(),
+                );
             };
             resume = SnapshotResumeV2::Cursor(next_cursor);
         }
@@ -797,7 +804,8 @@ impl AppfsAdapter {
 }
 
 fn is_prewarm_timeout(err: &ConnectorErrorV2) -> bool {
-    err.code.eq_ignore_ascii_case(connector_error_codes_v2::TIMEOUT)
+    err.code
+        .eq_ignore_ascii_case(connector_error_codes_v2::TIMEOUT)
         || err
             .message
             .split_whitespace()
