@@ -165,6 +165,31 @@ impl DemoAppConnectorV2 {
             details: None,
         }
     }
+
+    fn is_snapshot_chat_001(resource_path: &str) -> bool {
+        resource_path.ends_with("/chats/chat-001/messages.res.jsonl")
+    }
+
+    fn is_snapshot_chat_long(resource_path: &str) -> bool {
+        resource_path.ends_with("/chats/chat-long/messages.res.jsonl")
+    }
+
+    fn is_snapshot_chat_oversize(resource_path: &str) -> bool {
+        resource_path.ends_with("/chats/chat-oversize/messages.res.jsonl")
+    }
+
+    fn emit_chat_records(start: usize, end: usize) -> Vec<SnapshotRecordV2> {
+        (start..=end)
+            .map(|idx| SnapshotRecordV2 {
+                record_key: format!("rk-{idx:03}"),
+                ordering_key: format!("ok-{idx:03}"),
+                line: json!({
+                    "id": format!("m-{idx:03}"),
+                    "text": format!("demo message {idx:03}"),
+                }),
+            })
+            .collect()
+    }
 }
 
 impl AppConnectorV2 for DemoAppConnectorV2 {
@@ -224,6 +249,7 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
         let delay_ms = std::env::var("APPFS_V3_PREWARM_DELAY_MS")
             .ok()
+            .or_else(|| std::env::var("APPFS_V2_PREWARM_DELAY_MS").ok())
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(0);
 
@@ -262,7 +288,9 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                 false,
             ));
         }
-        if request.resource_path.contains("too_large") {
+        if request.resource_path.contains("too_large")
+            && !Self::is_snapshot_chat_oversize(&request.resource_path)
+        {
             return Err(Self::err(
                 "SNAPSHOT_TOO_LARGE",
                 "snapshot exceeds configured limit",
@@ -270,68 +298,153 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
             ));
         }
 
-        let (records, next_cursor, has_more) = match request.resume {
-            SnapshotResumeV2::Start => (
-                vec![
-                    SnapshotRecordV2 {
-                        record_key: "rk-001".to_string(),
-                        ordering_key: "ok-001".to_string(),
-                        line: json!({"id":"m-1","text":"hello"}),
-                    },
-                    SnapshotRecordV2 {
-                        record_key: "rk-002".to_string(),
-                        ordering_key: "ok-002".to_string(),
-                        line: json!({"id":"m-2","text":"world"}),
-                    },
-                ],
-                Some("cursor-2".to_string()),
-                true,
-            ),
-            SnapshotResumeV2::Cursor(cursor) => {
-                if cursor == "cursor-invalid" {
-                    return Err(Self::err(
-                        "INVALID_ARGUMENT",
-                        "resume cursor is invalid",
-                        false,
-                    ));
-                }
-                if cursor == "cursor-2" {
-                    (
+        let (records, next_cursor, has_more) =
+            if Self::is_snapshot_chat_long(&request.resource_path) {
+                return Err(Self::err(
+                    "UPSTREAM_UNAVAILABLE",
+                    "snapshot source unavailable for /chats/chat-long/messages.res.jsonl",
+                    true,
+                ));
+            } else if Self::is_snapshot_chat_oversize(&request.resource_path) {
+                match request.resume {
+                    SnapshotResumeV2::Start => (
+                        Self::emit_chat_records(1, 12),
+                        Some("oversize-cursor-12".to_string()),
+                        true,
+                    ),
+                    SnapshotResumeV2::Cursor(cursor) => {
+                        if cursor == "cursor-invalid" {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is invalid",
+                                false,
+                            ));
+                        }
+                        if cursor == "oversize-cursor-12" {
+                            (Self::emit_chat_records(13, 24), None, false)
+                        } else {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is unknown",
+                                false,
+                            ));
+                        }
+                    }
+                    SnapshotResumeV2::Offset(offset) => (
                         vec![SnapshotRecordV2 {
-                            record_key: "rk-003".to_string(),
-                            ordering_key: "ok-003".to_string(),
-                            line: json!({"id":"m-3","text":"done"}),
+                            record_key: format!("rk-offset-{offset}"),
+                            ordering_key: format!("ok-offset-{offset}"),
+                            line: json!({"id":"m-offset","offset":offset}),
                         }],
                         None,
                         false,
-                    )
-                } else {
-                    return Err(Self::err(
-                        "INVALID_ARGUMENT",
-                        "resume cursor is unknown",
-                        false,
-                    ));
+                    ),
                 }
-            }
-            SnapshotResumeV2::Offset(offset) => {
-                if request.resource_path.contains("no-offset") {
-                    return Err(Self::err(
-                        "NOT_SUPPORTED",
-                        "offset resume is not supported for this resource",
+            } else if Self::is_snapshot_chat_001(&request.resource_path) {
+                match request.resume {
+                    SnapshotResumeV2::Start => (
+                        Self::emit_chat_records(1, 40),
+                        Some("chat-001-cursor-40".to_string()),
+                        true,
+                    ),
+                    SnapshotResumeV2::Cursor(cursor) => {
+                        if cursor == "cursor-invalid" {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is invalid",
+                                false,
+                            ));
+                        }
+                        if cursor == "chat-001-cursor-40" {
+                            (
+                                Self::emit_chat_records(41, 80),
+                                Some("chat-001-cursor-80".to_string()),
+                                true,
+                            )
+                        } else if cursor == "chat-001-cursor-80" {
+                            (Self::emit_chat_records(81, 100), None, false)
+                        } else {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is unknown",
+                                false,
+                            ));
+                        }
+                    }
+                    SnapshotResumeV2::Offset(offset) => (
+                        vec![SnapshotRecordV2 {
+                            record_key: format!("rk-offset-{offset}"),
+                            ordering_key: format!("ok-offset-{offset}"),
+                            line: json!({"id":"m-offset","offset":offset}),
+                        }],
+                        None,
                         false,
-                    ));
+                    ),
                 }
-                (
-                    vec![SnapshotRecordV2 {
-                        record_key: format!("rk-offset-{offset}"),
-                        ordering_key: format!("ok-offset-{offset}"),
-                        line: json!({"id":"m-offset","offset":offset}),
-                    }],
-                    None,
-                    false,
-                )
-            }
-        };
+            } else {
+                match request.resume {
+                    SnapshotResumeV2::Start => (
+                        vec![
+                            SnapshotRecordV2 {
+                                record_key: "rk-001".to_string(),
+                                ordering_key: "ok-001".to_string(),
+                                line: json!({"id":"m-1","text":"hello"}),
+                            },
+                            SnapshotRecordV2 {
+                                record_key: "rk-002".to_string(),
+                                ordering_key: "ok-002".to_string(),
+                                line: json!({"id":"m-2","text":"world"}),
+                            },
+                        ],
+                        Some("cursor-2".to_string()),
+                        true,
+                    ),
+                    SnapshotResumeV2::Cursor(cursor) => {
+                        if cursor == "cursor-invalid" {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is invalid",
+                                false,
+                            ));
+                        }
+                        if cursor == "cursor-2" {
+                            (
+                                vec![SnapshotRecordV2 {
+                                    record_key: "rk-003".to_string(),
+                                    ordering_key: "ok-003".to_string(),
+                                    line: json!({"id":"m-3","text":"done"}),
+                                }],
+                                None,
+                                false,
+                            )
+                        } else {
+                            return Err(Self::err(
+                                "INVALID_ARGUMENT",
+                                "resume cursor is unknown",
+                                false,
+                            ));
+                        }
+                    }
+                    SnapshotResumeV2::Offset(offset) => {
+                        if request.resource_path.contains("no-offset") {
+                            return Err(Self::err(
+                                "NOT_SUPPORTED",
+                                "offset resume is not supported for this resource",
+                                false,
+                            ));
+                        }
+                        (
+                            vec![SnapshotRecordV2 {
+                                record_key: format!("rk-offset-{offset}"),
+                                ordering_key: format!("ok-offset-{offset}"),
+                                line: json!({"id":"m-offset","offset":offset}),
+                            }],
+                            None,
+                            false,
+                        )
+                    }
+                }
+            };
 
         let emitted_bytes = records.iter().fold(0_u64, |acc, record| {
             let line_bytes = serde_json::to_vec(&record.line)
@@ -624,20 +737,41 @@ mod tests {
     }
 
     #[test]
+    fn demo_connector_v2_prewarm_accepts_v2_env_alias() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let _guard = env_lock().lock().expect("env lock should be acquirable");
+
+        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        std::env::set_var("APPFS_V2_PREWARM_DELAY_MS", "30");
+
+        let timeout = connector
+            .prewarm_snapshot_meta(
+                "/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(5),
+                &ctx_v2(None),
+            )
+            .expect_err("v2 env alias should still drive timeout path");
+
+        std::env::remove_var("APPFS_V2_PREWARM_DELAY_MS");
+        assert_eq!(timeout.code, "TIMEOUT");
+        assert!(timeout.retryable);
+    }
+
+    #[test]
     fn demo_connector_v2_snapshot_success_and_error() {
         let mut connector = DemoAppConnectorV2::new("aiim".to_string());
 
         let chunk = connector
             .fetch_snapshot_chunk(
                 FetchSnapshotChunkRequestV2 {
-                    resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
+                    resource_path: "/chats/chat-generic/messages.res.jsonl".to_string(),
                     resume: SnapshotResumeV2::Start,
                     budget_bytes: 1024,
                 },
                 &ctx_v2(None),
             )
             .expect("snapshot chunk should succeed");
-        assert_eq!(chunk.records.len(), 2);
+        assert!(!chunk.records.is_empty());
         assert!(chunk.emitted_bytes > 0);
 
         let err = connector
@@ -665,6 +799,87 @@ mod tests {
             .expect_err("unknown cursor must be rejected explicitly");
         assert_eq!(cursor_err.code, "INVALID_ARGUMENT");
         assert!(!cursor_err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v2_snapshot_chat_001_materializes_100_records() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let mut resume = SnapshotResumeV2::Start;
+        let mut total = 0usize;
+        let mut chunks = 0usize;
+        loop {
+            let chunk = connector
+                .fetch_snapshot_chunk(
+                    FetchSnapshotChunkRequestV2 {
+                        resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
+                        resume,
+                        budget_bytes: 1_048_576,
+                    },
+                    &ctx_v2(None),
+                )
+                .expect("chat-001 chunk fetch should succeed");
+            total += chunk.records.len();
+            chunks += 1;
+            if !chunk.has_more {
+                break;
+            }
+            let cursor = chunk
+                .next_cursor
+                .expect("has_more=true must include next_cursor");
+            resume = SnapshotResumeV2::Cursor(cursor);
+        }
+        assert_eq!(chunks, 3);
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn demo_connector_v2_snapshot_chat_long_returns_upstream_error() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let err = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/chat-long/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Start,
+                    budget_bytes: 1024,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("chat-long must fail through upstream error path");
+        assert_eq!(err.code, "UPSTREAM_UNAVAILABLE");
+        assert!(err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v2_snapshot_chat_oversize_yields_large_materializable_chunk() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let first = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/chat-oversize/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Start,
+                    budget_bytes: 1_048_576,
+                },
+                &ctx_v2(None),
+            )
+            .expect("oversize snapshot start chunk should succeed");
+        assert!(first.has_more);
+        let second = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/chat-oversize/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Cursor(
+                        first
+                            .next_cursor
+                            .expect("oversize start chunk must include cursor"),
+                    ),
+                    budget_bytes: 1_048_576,
+                },
+                &ctx_v2(None),
+            )
+            .expect("oversize snapshot second chunk should succeed");
+        assert!(!second.has_more);
+        let total_bytes = first.emitted_bytes.saturating_add(second.emitted_bytes);
+        assert!(total_bytes > 128);
     }
 
     #[test]

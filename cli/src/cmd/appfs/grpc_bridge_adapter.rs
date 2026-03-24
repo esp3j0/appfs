@@ -319,8 +319,17 @@ impl GrpcBridgeConnectorV2 {
                     }
 
                     if retryable {
-                        self.circuit_breaker
+                        let opened = self
+                            .circuit_breaker
                             .record_failure(Instant::now(), self.runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge grpc circuit opened after {} failure code={} {}",
+                                method,
+                                status.code(),
+                                self.metrics.snapshot()
+                            );
+                        }
                     } else {
                         self.circuit_breaker.record_success();
                     }
