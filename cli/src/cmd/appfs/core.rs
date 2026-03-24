@@ -16,7 +16,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use super::action_dispatcher;
-use super::errors::ERR_INVALID_PAYLOAD;
+use super::errors::{is_transient_connector_failure, ERR_INVALID_PAYLOAD};
 use super::grpc_bridge_adapter::GrpcBridgeAdapterV1;
 use super::http_bridge_adapter::HttpBridgeAdapterV1;
 use super::shared::{
@@ -37,6 +37,7 @@ struct LegacyAdapterConnectorV2 {
     app_id: String,
     transport: ConnectorTransportV2,
     adapter: Box<dyn AppAdapterV1>,
+    live_page_state: HashMap<String, u32>,
 }
 
 impl LegacyAdapterConnectorV2 {
@@ -49,6 +50,7 @@ impl LegacyAdapterConnectorV2 {
             app_id,
             transport,
             adapter,
+            live_page_state: HashMap::new(),
         }
     }
 }
@@ -150,14 +152,22 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
             client_token: ctx.client_token.clone(),
         };
 
+        let next_page_no = self
+            .live_page_state
+            .get(&handle_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let optimistic_has_more = next_page_no < 3;
+
         let outcome = self
             .adapter
             .submit_control_action(
                 "/_paging/fetch_next.act",
                 agentfs_sdk::AdapterControlActionV1::PagingFetchNext {
-                    handle_id,
-                    page_no: request.cursor.as_deref().unwrap_or("0").parse::<u64>().unwrap_or(1),
-                    has_more: true,
+                    handle_id: handle_id.clone(),
+                    page_no: next_page_no as u64,
+                    has_more: optimistic_has_more,
                 },
                 &request_ctx,
             )
@@ -178,11 +188,17 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
         let page_no = page
             .get("page_no")
             .and_then(|v| v.as_u64())
-            .unwrap_or(1) as u32;
+            .unwrap_or(next_page_no as u64) as u32;
         let has_more = page
             .get("has_more")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(optimistic_has_more);
+        self.live_page_state.insert(handle_id.clone(), page_no);
+        let next_cursor = if has_more {
+            Some(format!("legacy-page-{}", page_no.saturating_add(1)))
+        } else {
+            None
+        };
 
         Ok(FetchLivePageResponseV2 {
             items,
@@ -192,7 +208,7 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
                 has_more,
                 mode: agentfs_sdk::LiveModeV2::Live,
                 expires_at: None,
-                next_cursor: None,
+                next_cursor,
                 retry_after_ms: None,
             },
         })
@@ -773,6 +789,12 @@ impl AppfsAdapter {
                 retryable,
                 ..
             }) => {
+                if is_transient_connector_failure(&code, retryable) {
+                    eprintln!(
+                        "AppFS adapter transient connector failure for {normalized_path}: code={code} message={message}; will retry without advancing cursor"
+                    );
+                    return Ok(ProcessOutcome::RetryPending);
+                }
                 self.emit_failed_with_retryable(
                     &normalized_path,
                     &request_id,
@@ -1098,5 +1120,126 @@ impl AppfsAdapter {
     fn new_request_id() -> String {
         let uuid = Uuid::new_v4().simple().to_string();
         format!("req-{}", &uuid[..8])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_adapter_error_v1_to_connector_error_v2, LegacyAdapterConnectorV2};
+    use agentfs_sdk::{
+        AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
+        AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2,
+        ConnectorContextV2, ConnectorTransportV2, FetchLivePageRequestV2, RequestContextV1,
+    };
+    use serde_json::json;
+
+    struct PagingCompatAdapter {
+        seen_pages: Vec<u64>,
+    }
+
+    impl AppAdapterV1 for PagingCompatAdapter {
+        fn app_id(&self) -> &str {
+            "aiim"
+        }
+
+        fn submit_action(
+            &mut self,
+            _path: &str,
+            _payload: &str,
+            _input_mode: AdapterInputModeV1,
+            _execution_mode: AdapterExecutionModeV1,
+            _ctx: &RequestContextV1,
+        ) -> std::result::Result<AdapterSubmitOutcomeV1, AdapterErrorV1> {
+            Ok(AdapterSubmitOutcomeV1::Completed {
+                content: json!({"ok": true}),
+            })
+        }
+
+        fn submit_control_action(
+            &mut self,
+            _path: &str,
+            action: AdapterControlActionV1,
+            _ctx: &RequestContextV1,
+        ) -> std::result::Result<AdapterControlOutcomeV1, AdapterErrorV1> {
+            let AdapterControlActionV1::PagingFetchNext {
+                handle_id,
+                page_no,
+                has_more,
+            } = action
+            else {
+                unreachable!("test only exercises fetch_next");
+            };
+            self.seen_pages.push(page_no);
+            Ok(AdapterControlOutcomeV1::Completed {
+                content: json!({
+                    "items": [{"id": format!("item-{page_no}")}],
+                    "page": {
+                        "handle_id": handle_id,
+                        "page_no": page_no,
+                        "has_more": has_more,
+                        "mode": "live"
+                    }
+                }),
+            })
+        }
+    }
+
+    fn ctx() -> ConnectorContextV2 {
+        ConnectorContextV2 {
+            app_id: "aiim".to_string(),
+            session_id: "sess-1".to_string(),
+            request_id: "req-1".to_string(),
+            client_token: None,
+            trace_id: None,
+        }
+    }
+
+    #[test]
+    fn legacy_connector_live_paging_advances_without_cursor_parse() {
+        let adapter: Box<dyn AppAdapterV1> = Box::new(PagingCompatAdapter {
+            seen_pages: Vec::new(),
+        });
+        let mut connector = LegacyAdapterConnectorV2::new(
+            "aiim".to_string(),
+            ConnectorTransportV2::HttpBridge,
+            adapter,
+        );
+
+        let first = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.json".to_string(),
+                    handle_id: Some("ph_abc".to_string()),
+                    cursor: None,
+                    page_size: 50,
+                },
+                &ctx(),
+            )
+            .expect("first page should succeed");
+        assert_eq!(first.page.page_no, 1);
+        assert_eq!(first.page.next_cursor.as_deref(), Some("legacy-page-2"));
+
+        let second = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.json".to_string(),
+                    handle_id: Some("ph_abc".to_string()),
+                    cursor: None,
+                    page_size: 50,
+                },
+                &ctx(),
+            )
+            .expect("second page should succeed");
+        assert_eq!(second.page.page_no, 2);
+        assert_eq!(second.page.next_cursor.as_deref(), Some("legacy-page-3"));
+    }
+
+    #[test]
+    fn adapter_internal_maps_to_retryable_connector_internal() {
+        let err = map_adapter_error_v1_to_connector_error_v2(AdapterErrorV1::Internal {
+            message: "transport disconnected".to_string(),
+        });
+        assert_eq!(err.code, "INTERNAL");
+        assert!(err.retryable);
     }
 }

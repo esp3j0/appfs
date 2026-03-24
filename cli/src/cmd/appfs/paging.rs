@@ -5,7 +5,8 @@ use serde_json::Value as JsonValue;
 use std::fs;
 
 use super::errors::{
-    ERR_INVALID_ARGUMENT, ERR_PAGER_HANDLE_CLOSED, ERR_PAGER_HANDLE_EXPIRED,
+    is_transient_connector_failure, ERR_INVALID_ARGUMENT, ERR_PAGER_HANDLE_CLOSED,
+    ERR_PAGER_HANDLE_EXPIRED,
     ERR_PAGER_HANDLE_NOT_FOUND, ERR_PERMISSION_DENIED,
 };
 use super::shared::{
@@ -157,6 +158,12 @@ impl AppfsAdapter {
                 } else {
                     (err.code, err.message, err.retryable)
                 };
+                if is_transient_connector_failure(&code, retryable) {
+                    eprintln!(
+                        "AppFS adapter transient connector paging failure for {action_path}: code={code} message={message}; will retry without advancing cursor"
+                    );
+                    return Ok(ProcessOutcome::RetryPending);
+                }
                 self.emit_failed_with_retryable(
                     action_path,
                     request_id,
