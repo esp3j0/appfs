@@ -22,7 +22,10 @@ cd examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
-To run against a real upstream service (JSONPlaceholder) instead of the default mock backend:
+`v0.3` HTTP connector mainline currently supports only `mock_aiim` backend.
+`jsonplaceholder` backend is retained as a legacy v1 reference backend and is not allowed in v2 serve mode.
+
+Legacy v1-only reference command (not compatible with v0.3 runtime v2 path):
 
 ```bash
 cd examples/appfs/http-bridge/python

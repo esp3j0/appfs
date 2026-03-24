@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import sys
 import threading
 import unittest
@@ -9,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from appfs_http_bridge.server import create_http_server
+from appfs_http_bridge.jsonplaceholder_backend import JsonPlaceholderBackend
+from appfs_http_bridge.server import BridgeApplication, create_http_server
 
 
 class ServerTests(unittest.TestCase):
@@ -34,6 +36,13 @@ class ServerTests(unittest.TestCase):
         status, body = self._post("/v1/unknown", "{}")
         self.assertEqual(status, 404)
         self.assertEqual(body["kind"], "internal")
+
+    def test_unknown_v2_route_returns_connector_error(self) -> None:
+        status, body = self._post("/v2/connector/unknown", "{}")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["code"], "NOT_SUPPORTED")
+        self.assertFalse(body["retryable"])
+        self.assertNotIn("kind", body)
 
     def test_submit_action_route_success(self) -> None:
         status, body = self._post(
@@ -76,6 +85,32 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["outcome"]["kind"], "completed")
 
+    def test_v2_invalid_json_uses_connector_error_envelope(self) -> None:
+        status, body = self._post("/v2/connector/action/submit", "{")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+        self.assertFalse(body["retryable"])
+        self.assertNotIn("kind", body)
+
+    def test_v2_non_object_body_uses_connector_error_envelope(self) -> None:
+        status, body = self._post("/v2/connector/action/submit", "[]")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+        self.assertNotIn("kind", body)
+
+    def test_v2_invalid_content_length_uses_connector_error_envelope(self) -> None:
+        status, body = self._raw_post_with_invalid_content_length(
+            "/v2/connector/action/submit",
+            "{}",
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+        self.assertNotIn("kind", body)
+
+    def test_jsonplaceholder_backend_rejected_for_v2_server(self) -> None:
+        with self.assertRaises(ValueError):
+            BridgeApplication(backend=JsonPlaceholderBackend())
+
     def _post(self, path: str, payload: str) -> tuple[int, dict[str, object]]:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         conn.request(
@@ -88,6 +123,31 @@ class ServerTests(unittest.TestCase):
         raw = resp.read()
         conn.close()
         return resp.status, json.loads(raw.decode("utf-8"))
+
+    def _raw_post_with_invalid_content_length(
+        self, path: str, payload: str
+    ) -> tuple[int, dict[str, object]]:
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            request = (
+                f"POST {path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{self.port}\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: abc\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                f"{payload}"
+            )
+            sock.sendall(request.encode("utf-8"))
+            raw = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+        header, body = raw.split(b"\r\n\r\n", 1)
+        status_line = header.split(b"\r\n", 1)[0].decode("utf-8")
+        status = int(status_line.split()[1])
+        return status, json.loads(body.decode("utf-8"))
 
 
 if __name__ == "__main__":

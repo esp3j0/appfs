@@ -180,6 +180,52 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(body["records"]), 2)
         self.assertTrue(body["has_more"])
 
+    def test_v2_snapshot_fetch_chunk_rejects_invalid_resume_shapes(self) -> None:
+        base = {
+            "context": {
+                "app_id": "aiim",
+                "session_id": "sess-1",
+                "request_id": "req-1",
+            },
+            "request": {
+                "resource_path": "/chats/chat-001/messages.res.jsonl",
+                "budget_bytes": 1024,
+            },
+        }
+
+        payload = dict(base)
+        payload["request"] = dict(base["request"])
+        payload["request"]["resume"] = {"kind": "start", "value": "x"}
+        status, body = dispatch_v2_snapshot_fetch_chunk(
+            payload,
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
+        payload = dict(base)
+        payload["request"] = dict(base["request"])
+        payload["request"]["resume"] = {"kind": "cursor"}
+        status, body = dispatch_v2_snapshot_fetch_chunk(
+            payload,
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
+        payload = dict(base)
+        payload["request"] = dict(base["request"])
+        payload["request"]["resume"] = {"kind": "offset", "value": -1}
+        status, body = dispatch_v2_snapshot_fetch_chunk(
+            payload,
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
     def test_v2_live_fetch_page(self) -> None:
         payload = {
             "context": {
@@ -217,6 +263,45 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "CURSOR_INVALID")
+
+    def test_v2_live_fetch_page_rejects_invalid_optional_types(self) -> None:
+        status, body = dispatch_v2_live_fetch_page(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "resource_path": "/chats/chat-001/messages.res.json",
+                    "handle_id": 123,
+                    "cursor": None,
+                    "page_size": 20,
+                },
+            },
+            self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
+        status, body = dispatch_v2_live_fetch_page(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "resource_path": "/chats/chat-001/messages.res.json",
+                    "handle_id": "ph-1",
+                    "cursor": 1,
+                    "page_size": 20,
+                },
+            },
+            self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
     def test_v2_submit_action(self) -> None:
         status, body = dispatch_v2_submit_action(

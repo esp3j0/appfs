@@ -231,6 +231,19 @@ def dispatch_v2_snapshot_fetch_chunk(
     resume = request.get("resume")
     if not isinstance(resume, dict) or not isinstance(resume.get("kind"), str):
         return (400, connector_error("INVALID_ARGUMENT", "resume.kind is required", False))
+    resume_kind = resume.get("kind")
+    resume_value = resume.get("value")
+    if resume_kind == "start":
+        if "value" in resume and resume_value is not None:
+            return (400, connector_error("INVALID_ARGUMENT", "resume start must not include value", False))
+    elif resume_kind == "cursor":
+        if not isinstance(resume_value, str) or resume_value.strip() == "":
+            return (400, connector_error("INVALID_ARGUMENT", "resume cursor requires non-empty string value", False))
+    elif resume_kind == "offset":
+        if isinstance(resume_value, bool) or not isinstance(resume_value, int) or resume_value < 0:
+            return (400, connector_error("INVALID_ARGUMENT", "resume offset requires non-negative integer value", False))
+    else:
+        return (400, connector_error("INVALID_ARGUMENT", f"unsupported resume kind: {resume_kind}", False))
     try:
         return (200, backend.fetch_snapshot_chunk(request, context))
     except NotImplementedError as err:
@@ -265,6 +278,14 @@ def dispatch_v2_live_fetch_page(
     page_size = request.get("page_size")
     if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size <= 0:
         return (400, connector_error("INVALID_ARGUMENT", "page_size must be > 0", False))
+    handle_id = request.get("handle_id")
+    if handle_id is not None:
+        if not isinstance(handle_id, str) or handle_id.strip() == "":
+            return (400, connector_error("INVALID_ARGUMENT", "handle_id must be a non-empty string when provided", False))
+    cursor = request.get("cursor")
+    if cursor is not None:
+        if not isinstance(cursor, str) or cursor.strip() == "":
+            return (400, connector_error("INVALID_ARGUMENT", "cursor must be a non-empty string when provided", False))
     try:
         return (200, backend.fetch_live_page(request, context))
     except ValueError as err:
