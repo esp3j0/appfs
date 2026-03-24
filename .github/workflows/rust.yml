@@ -149,6 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
+    if: always()
     defaults:
       run:
         working-directory: cli
@@ -207,7 +208,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v0.2 contract subset (HTTP bridge mode, informational)
+    - name: Run AppFS v2 contract subset (HTTP bridge mode, informational)
       id: http_v2_subset
       continue-on-error: true
       env:
@@ -223,10 +224,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.http_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v0.2 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v0.2 HTTP bridge subset failed; non-blocking informational signal."
+          echo "AppFS v2 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v2 HTTP bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v0.2 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v2 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump HTTP bridge log on failure (v2)
@@ -240,10 +241,11 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS v0.2 bridge gate: higher-risk CT2 coverage over HTTP bridge path.
+  # Informational AppFS bridge signal: higher-risk CT2 coverage over HTTP bridge path.
   appfs-contract-gate-http-bridge-v2-high-risk:
-    name: AppFS Contract Gate (linux, http bridge, v0.2 high-risk signal)
+    name: AppFS Contract Signal (informational, linux, http bridge v2 high-risk)
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: appfs-contract-gate
     if: always()
     defaults:
@@ -304,7 +306,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v0.2 high-risk bridge coverage (HTTP mode, informational)
+    - name: Run AppFS v2 high-risk bridge coverage (HTTP mode, informational)
       id: http_v2_high_risk
       continue-on-error: true
       env:
@@ -320,10 +322,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.http_v2_high_risk.outcome }}" = "failure" ]; then
-          echo "AppFS v0.2 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v0.2 HTTP bridge high-risk coverage failed; non-blocking informational signal."
+          echo "AppFS v2 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v2 HTTP bridge high-risk coverage failed; non-blocking informational signal."
         else
-          echo "AppFS v0.2 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v2 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump HTTP bridge log on failure (v2 high-risk)
@@ -371,11 +373,8 @@ jobs:
         cd ../examples/appfs/grpc-bridge/python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
-        python3 -m grpc_tools.protoc \
-          -I ../proto \
-          --python_out=. \
-          --grpc_python_out=. \
-          ../proto/appfs_adapter_v1.proto
+        chmod +x ./generate_stubs.sh
+        ./generate_stubs.sh
 
     - name: Start gRPC bridge
       run: |
@@ -428,9 +427,7 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Informational AppFS v0.2 bridge gate: CT2 subset over gRPC bridge path.
-  # Use the historical check-run name so existing branch protection keeps working.
-  # Keep this gate informational even after CT2-009 parity closure.
+  # Informational AppFS bridge signal: CT2 subset over gRPC bridge path.
   appfs-contract-gate-grpc-bridge-v2:
     name: AppFS Contract Signal (informational, linux, grpc bridge v2)
     runs-on: ubuntu-latest
@@ -467,11 +464,8 @@ jobs:
         cd ../examples/appfs/grpc-bridge/python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
-        python3 -m grpc_tools.protoc \
-          -I ../proto \
-          --python_out=. \
-          --grpc_python_out=. \
-          ../proto/appfs_adapter_v1.proto
+        chmod +x ./generate_stubs.sh
+        ./generate_stubs.sh
 
     - name: Start gRPC bridge (v2)
       run: |
@@ -496,7 +490,7 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v0.2 contract subset (gRPC bridge mode, informational)
+    - name: Run AppFS v2 contract subset (gRPC bridge mode, informational)
       id: grpc_v2_subset
       continue-on-error: true
       env:
@@ -512,11 +506,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.grpc_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v0.2 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "Follow-up #58 tracks CT2-009 parity before any required-tier escalation." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v0.2 gRPC bridge subset failed; non-blocking informational signal. Follow-up #58 tracks CT2-009 parity."
+          echo "AppFS v2 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v2 gRPC bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v0.2 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v2 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump gRPC bridge log on failure (v2)

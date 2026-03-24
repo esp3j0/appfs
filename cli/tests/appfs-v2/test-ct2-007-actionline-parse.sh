@@ -15,6 +15,9 @@ ADAPTER_PID=""
 ADAPTER_LOG=""
 
 cleanup() {
+    if [ -n "${EVENTS:-}" ]; then
+        persist_case_evidence "ct2-007" "events.evt.jsonl" "$EVENTS"
+    fi
     stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
@@ -113,7 +116,6 @@ wait_token_event "$token_3" "$EVENTS" 15 || fail "case 3 token event timeout"
 wait_token_event "$token_4" "$EVENTS" 15 || fail "case 4 token event timeout"
 assert_token_completed "$token_3"
 assert_token_completed "$token_4"
-record_v2_evidence "connector.submit_action" "path=/contacts/zhangsan/send_message.act"
 pass "multi-line JSONL action submissions parsed independently"
 
 say "CT2-007 done"

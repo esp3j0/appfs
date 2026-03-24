@@ -15,6 +15,9 @@ ADAPTER_PID=""
 ADAPTER_LOG=""
 
 cleanup() {
+    if [ -n "${EVENTS:-}" ]; then
+        persist_case_evidence "ct2-009" "events.evt.jsonl" "$EVENTS"
+    fi
     stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
@@ -126,10 +129,10 @@ event_line="$(grep "$token" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
 assert_json_expr "$event_line" 'obj.get("type") == "action.completed"' "fetch_next should emit action.completed"
 assert_json_expr "$event_line" 'isinstance(obj.get("content", {}).get("items"), list)' "fetch_next response missing content.items array"
 assert_json_expr "$event_line" 'obj.get("content", {}).get("page", {}).get("mode") == "live"' "fetch_next page.mode must remain live"
+assert_json_expr "$event_line" 'obj.get("content", {}).get("page", {}).get("handle_id") == "'$handle_id'"' "fetch_next should preserve live paging handle_id"
 next_page_no="$(printf '%s\n' "$event_line" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("content", {}).get("page", {}).get("page_no", -1))')"
 expected_page_no=$((initial_page_no + 1))
 [ "$next_page_no" -eq "$expected_page_no" ] || fail "expected page_no=$expected_page_no after fetch_next, got $next_page_no"
-record_v2_evidence "connector.fetch_live_page" "resource=/feed/recommendations.res.json"
 pass "fetch_next minimal flow works with page_no increment"
 
 say "CT2-009 done"

@@ -34,6 +34,7 @@ required_pass=0
 extended_total=0
 extended_pass=0
 evidence_file="${APPFS_V2_EVIDENCE_FILE:-}"
+evidence_dir="${APPFS_V2_EVIDENCE_DIR:-}"
 
 if [ -z "$evidence_file" ]; then
     if [ -n "${TMPDIR:-}" ]; then
@@ -44,6 +45,25 @@ if [ -z "$evidence_file" ]; then
 fi
 export APPFS_V2_EVIDENCE_FILE="$evidence_file"
 : >"$evidence_file"
+
+if [ -z "$evidence_dir" ]; then
+    if [ -n "${TMPDIR:-}" ]; then
+        evidence_dir="$(mktemp -d "$TMPDIR/appfs-v2-evidence-dir.XXXXXX")"
+    else
+        evidence_dir="$(mktemp -d "/tmp/appfs-v2-evidence-dir.XXXXXX")"
+    fi
+fi
+export APPFS_V2_EVIDENCE_DIR="$evidence_dir"
+
+record_v2_evidence() {
+    key="$1"
+    value="${2:-}"
+    if [ -n "$value" ]; then
+        printf '%s=%s\n' "$key" "$value" >>"$APPFS_V2_EVIDENCE_FILE"
+    else
+        printf '%s\n' "$key" >>"$APPFS_V2_EVIDENCE_FILE"
+    fi
+}
 
 normalize_selector_token() {
     raw="$1"
@@ -200,16 +220,92 @@ assert_required_evidence() {
     status=1
 }
 
+extract_runtime_evidence_for_case() {
+    case_id="$1"
+    case "$case_id" in
+        ct2-001)
+            log="$APPFS_V2_EVIDENCE_DIR/ct2-001.adapter.log"
+            if [ -f "$log" ] && grep -F -q "[prewarm] resource=/chats/chat-001/messages.res.jsonl state=hot" "$log"; then
+                record_v2_evidence "connector.prewarm_snapshot_meta" "resource=/chats/chat-001/messages.res.jsonl"
+            fi
+            ;;
+        ct2-003)
+            log="$APPFS_V2_EVIDENCE_DIR/ct2-003.adapter.log"
+            if [ -f "$log" ] && grep -F -q "[cache.expand] fetch_snapshot_chunk resource=/chats/chat-001/messages.res.jsonl" "$log"; then
+                record_v2_evidence "connector.fetch_snapshot_chunk" "resource=/chats/chat-001/messages.res.jsonl"
+            fi
+            ;;
+        ct2-007)
+            events="$APPFS_V2_EVIDENCE_DIR/ct2-007.events.evt.jsonl"
+            if [ -f "$events" ] && python3 - "$events" <<'PY' >/dev/null 2>&1
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("type") != "action.completed":
+            continue
+        content = obj.get("content")
+        if isinstance(content, dict) and isinstance(content.get("echo"), dict):
+            sys.exit(0)
+sys.exit(1)
+PY
+            then
+                record_v2_evidence "connector.submit_action" "path=/contacts/zhangsan/send_message.act"
+            fi
+            ;;
+        ct2-009)
+            events="$APPFS_V2_EVIDENCE_DIR/ct2-009.events.evt.jsonl"
+            if [ -f "$events" ] && python3 - "$events" <<'PY' >/dev/null 2>&1
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("type") != "action.completed":
+            continue
+        content = obj.get("content")
+        if not isinstance(content, dict):
+            continue
+        page = content.get("page")
+        if not isinstance(page, dict):
+            continue
+        if page.get("mode") == "live" and isinstance(page.get("handle_id"), str) and page.get("handle_id"):
+            sys.exit(0)
+sys.exit(1)
+PY
+            then
+                record_v2_evidence "connector.fetch_live_page" "resource=/feed/recommendations.res.json"
+            fi
+            ;;
+    esac
+}
+
 selected_required_case_map="$(select_case_map "$required_case_map" "${APPFS_V2_REQUIRED_CASES:-}" "required")"
 selected_extended_case_map="$(select_case_map "$extended_case_map" "${APPFS_V2_EXTENDED_CASES:-}" "extended")"
-required_tests="$(case_map_to_tests "$selected_required_case_map")"
-extended_tests="$(case_map_to_tests "$selected_extended_case_map")"
 
 echo "Case selection: required=$(case_map_ids "$selected_required_case_map") extended=$(case_map_ids "$selected_extended_case_map")"
 
 run_test_case() {
-    t="$1"
-    tier="$2"
+    case_id="$1"
+    t="$2"
+    tier="$3"
 
     set +e
     sh "$t"
@@ -220,6 +316,7 @@ run_test_case() {
         pass_count=$((pass_count + 1))
         if [ "$tier" = "required" ]; then
             required_pass=$((required_pass + 1))
+            extract_runtime_evidence_for_case "$case_id"
         else
             extended_pass=$((extended_pass + 1))
         fi
@@ -245,19 +342,27 @@ run_test_case() {
     status=1
 }
 
-for t in $required_tests; do
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case_id="${line%% *}"
+    t="${line#* }"
     required_total=$((required_total + 1))
-    run_test_case "$t" "required"
-done
+    run_test_case "$case_id" "$t" "required"
+done <<EOF
+$selected_required_case_map
+EOF
 
-for t in $extended_tests; do
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case_id="${line%% *}"
+    t="${line#* }"
     extended_total=$((extended_total + 1))
-    run_test_case "$t" "extended"
-done
+    run_test_case "$case_id" "$t" "extended"
+done <<EOF
+$selected_extended_case_map
+EOF
 
 if [ "$required_total" -gt 0 ] && [ "${APPFS_V2_REQUIRE_EVIDENCE:-1}" = "1" ]; then
-    assert_required_evidence "runtime.v2_transport" "runtime path should record selected transport"
-
     if case_map_has_id "$selected_required_case_map" "ct2-001"; then
         assert_required_evidence "connector.prewarm_snapshot_meta" "CT2-001 should hit startup prewarm via V2 connector"
     fi

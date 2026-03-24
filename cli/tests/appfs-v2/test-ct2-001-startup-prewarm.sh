@@ -19,6 +19,9 @@ MANIFEST=""
 SNAPSHOT_FILE=""
 
 cleanup() {
+    if [ -n "${ADAPTER_LOG:-}" ]; then
+        persist_case_evidence "ct2-001" "adapter.timeout.log" "$ADAPTER_LOG"
+    fi
     stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
@@ -137,7 +140,7 @@ start_adapter_with_prewarm_delay 0
 pass "adapter started for prewarm-success scenario"
 
 wait_log_contains "[prewarm] resource=/chats/chat-001/messages.res.jsonl state=hot" "$ADAPTER_LOG" 10 || fail "missing prewarm success log evidence"
-record_v2_evidence "connector.prewarm_snapshot_meta" "resource=/chats/chat-001/messages.res.jsonl"
+persist_case_evidence "ct2-001" "adapter.log" "$ADAPTER_LOG"
 pass "startup prewarm success marks snapshot hot with explicit log evidence"
 
 stop_adapter

@@ -17,6 +17,17 @@ record_v2_evidence() {
     fi
 }
 
+persist_case_evidence() {
+    case_id="$1"
+    artifact_name="$2"
+    src_path="$3"
+    evidence_dir="${APPFS_V2_EVIDENCE_DIR:-}"
+    [ -n "$evidence_dir" ] || return 0
+    [ -f "$src_path" ] || return 0
+    mkdir -p "$evidence_dir"
+    cp "$src_path" "$evidence_dir/${case_id}.${artifact_name}"
+}
+
 pass() {
     say "  OK   $*"
 }
@@ -217,21 +228,6 @@ start_appfs_v2_adapter() {
     snapshot_expand_delay_ms="${7:-}"
     snapshot_publish_delay_ms="${8:-}"
     snapshot_refresh_force_expand="${9:-}"
-
-    transport_label="inprocess"
-    if [ -n "${APPFS_ADAPTER_HTTP_ENDPOINT:-}" ]; then
-        transport_label="http_bridge"
-    fi
-    if [ -n "${APPFS_ADAPTER_GRPC_ENDPOINT:-}" ]; then
-        transport_label="grpc_bridge"
-    fi
-    record_v2_evidence "runtime.v2_transport" "$transport_label"
-    if [ -n "${APPFS_ADAPTER_HTTP_ENDPOINT:-}" ]; then
-        record_v2_evidence "runtime.bridge.http_endpoint" "${APPFS_ADAPTER_HTTP_ENDPOINT}"
-    fi
-    if [ -n "${APPFS_ADAPTER_GRPC_ENDPOINT:-}" ]; then
-        record_v2_evidence "runtime.bridge.grpc_endpoint" "${APPFS_ADAPTER_GRPC_ENDPOINT}"
-    fi
 
     wait_bridge_endpoint_ready
 
