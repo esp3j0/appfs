@@ -33,6 +33,18 @@ sh ./run-conformance.sh grpc-python
 2. 启动适配器 runtime（或 runtime + bridge endpoint）。
 3. 通过 `cli/tests/appfs/run-live-with-adapter.sh` 执行 `CT-001` 到 `CT-022`（开启 bridge 韧性探针时会执行 `CT-017`）。
 
+## 2.1 V0.3 Demo Parity 基线
+
+在 v0.3 bridge 开发中，请以 Rust 进程内 `DemoAppConnectorV2` 作为 canonical 行为面。  
+HTTP/gRPC demo 只允许在 `connector_id` 与 `transport` 上有差异。
+
+对齐清单：
+
+1. snapshot 记录内容 / cursor 推进 / `emitted_bytes` 口径（紧凑 JSON 行字节 + `\n`）
+2. live page 的 handle/page/next_cursor 语义（`demo-live-handle-1`、`cursor-1`）
+3. submit action inline/streaming 结果形状与错误码口径
+4. health/prewarm 响应与错误语义（`UPSTREAM_UNAVAILABLE`、`PERMISSION_DENIED`、`TIMEOUT`）
+
 ## 3. 写代码前先定义结构
 
 先完成三件事：

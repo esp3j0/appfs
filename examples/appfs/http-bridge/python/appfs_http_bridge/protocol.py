@@ -246,6 +246,8 @@ def dispatch_v2_snapshot_fetch_chunk(
         return (400, connector_error("INVALID_ARGUMENT", f"unsupported resume kind: {resume_kind}", False))
     try:
         return (200, backend.fetch_snapshot_chunk(request, context))
+    except OverflowError as err:
+        return (413, connector_error("SNAPSHOT_TOO_LARGE", str(err), False))
     except NotImplementedError as err:
         return (400, connector_error("NOT_SUPPORTED", str(err), False))
     except ValueError as err:

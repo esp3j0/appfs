@@ -33,6 +33,18 @@ What it runs:
 2. Start adapter runtime (or runtime + bridge endpoint).
 3. Execute `CT-001` to `CT-022` via `cli/tests/appfs/run-live-with-adapter.sh` (`CT-017` runs when bridge resilience probe is enabled).
 
+## 2.1 V0.3 Demo Parity Baseline
+
+For v0.3 bridge work, treat Rust in-process `DemoAppConnectorV2` as canonical behavior.
+HTTP/gRPC demos should only differ on `connector_id` and `transport`.
+
+Parity checklist:
+
+1. snapshot record set / cursor progression / `emitted_bytes` computation (compact JSON line bytes + `\n`)
+2. live page handle/page/next-cursor semantics (`demo-live-handle-1`, `cursor-1`)
+3. submit action inline/streaming payload shape and error code mapping
+4. health/prewarm response payload and error semantics (`UPSTREAM_UNAVAILABLE`, `PERMISSION_DENIED`, `TIMEOUT`)
+
 ## 3. Define Structure Before Writing Handlers
 
 Before coding bridge handlers, define:
