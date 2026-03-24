@@ -6,8 +6,7 @@ use std::fs;
 
 use super::errors::{
     is_transient_connector_failure, ERR_INVALID_ARGUMENT, ERR_PAGER_HANDLE_CLOSED,
-    ERR_PAGER_HANDLE_EXPIRED,
-    ERR_PAGER_HANDLE_NOT_FOUND, ERR_PERMISSION_DENIED,
+    ERR_PAGER_HANDLE_EXPIRED, ERR_PAGER_HANDLE_NOT_FOUND, ERR_PERMISSION_DENIED,
 };
 use super::shared::{
     collect_files_with_suffix, is_handle_format_valid, normalize_runtime_handle_id,
@@ -74,11 +73,6 @@ impl AppfsAdapter {
         }
 
         if expires_at_ts.is_some_and(|expiry| Utc::now().timestamp() >= expiry) {
-            if let Some(handle) = self.handles.get_mut(&handle_key) {
-                // Tombstone expired handles on explicit close requests so any
-                // subsequent fetch observes deterministic CLOSED semantics.
-                handle.closed = true;
-            }
             self.emit_failed(
                 action_path,
                 request_id,
@@ -120,7 +114,8 @@ impl AppfsAdapter {
                         .page
                         .expires_at
                         .as_deref()
-                        .and_then(parse_rfc3339_timestamp);
+                        .and_then(parse_rfc3339_timestamp)
+                        .filter(|expiry| *expiry > Utc::now().timestamp());
                 }
                 let content = serde_json::json!({
                     "items": response.items,
@@ -235,6 +230,11 @@ impl AppfsAdapter {
         }
 
         if expires_at_ts.is_some_and(|expiry| Utc::now().timestamp() >= expiry) {
+            if let Some(handle) = self.handles.get_mut(&handle_key) {
+                // Keep explicit close semantics deterministic for legacy callers:
+                // after close is requested, subsequent fetches should observe CLOSED.
+                handle.closed = true;
+            }
             self.emit_failed(
                 action_path,
                 request_id,

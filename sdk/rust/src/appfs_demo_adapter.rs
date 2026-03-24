@@ -1,7 +1,7 @@
 use crate::{
-    AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
-    AdapterInputModeV1, AdapterSnapshotMetaV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1,
-    ActionExecutionModeV2, ActionStreamingPlanV2, AppAdapterV1, AppConnectorV2, AuthStatusV2,
+    ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AuthStatusV2,
     ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
     FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
     FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, RequestContextV1,
@@ -256,7 +256,11 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         _ctx: &ConnectorContextV2,
     ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
         if request.budget_bytes == 0 {
-            return Err(Self::err("INVALID_ARGUMENT", "budget_bytes must be > 0", false));
+            return Err(Self::err(
+                "INVALID_ARGUMENT",
+                "budget_bytes must be > 0",
+                false,
+            ));
         }
         if request.resource_path.contains("too_large") {
             return Err(Self::err(
@@ -351,7 +355,11 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         _ctx: &ConnectorContextV2,
     ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
         if request.page_size == 0 {
-            return Err(Self::err("INVALID_ARGUMENT", "page_size must be > 0", false));
+            return Err(Self::err(
+                "INVALID_ARGUMENT",
+                "page_size must be > 0",
+                false,
+            ));
         }
         if request.cursor.as_deref() == Some("invalid") {
             return Err(Self::err("CURSOR_INVALID", "cursor is invalid", false));
@@ -397,7 +405,11 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         ctx: &ConnectorContextV2,
     ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
         if request.path.contains("invalid_payload") {
-            return Err(Self::err("INVALID_PAYLOAD", "payload does not match schema", false));
+            return Err(Self::err(
+                "INVALID_PAYLOAD",
+                "payload does not match schema",
+                false,
+            ));
         }
         if request.path.contains("rate_limited") {
             return Err(Self::err("RATE_LIMITED", "upstream rate limited", true));
@@ -543,7 +555,9 @@ mod tests {
     fn demo_connector_v2_info_health_and_prewarm() {
         let mut connector = DemoAppConnectorV2::new("aiim".to_string());
 
-        let info = connector.connector_id().expect("connector info should succeed");
+        let info = connector
+            .connector_id()
+            .expect("connector info should succeed");
         assert_eq!(info.app_id, "aiim");
         assert!(info.supports_snapshot);
         assert!(info.supports_live);
