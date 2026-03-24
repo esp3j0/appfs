@@ -1,7 +1,12 @@
 use crate::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
     AdapterInputModeV1, AdapterSnapshotMetaV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1,
-    AppAdapterV1, RequestContextV1,
+    ActionExecutionModeV2, ActionStreamingPlanV2, AppAdapterV1, AppConnectorV2, AuthStatusV2,
+    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
+    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
+    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, RequestContextV1,
+    SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
+    SubmitActionRequestV2, SubmitActionResponseV2,
 };
 use serde_json::{json, Value as JsonValue};
 use std::time::Duration;
@@ -140,13 +145,299 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
     }
 }
 
+/// Reference demo connector implementation for AppFS v0.3 canonical connector trait.
+///
+/// This demo connector is intentionally deterministic and transport-neutral.
+pub struct DemoAppConnectorV2 {
+    app_id: String,
+}
+
+impl DemoAppConnectorV2 {
+    pub fn new(app_id: String) -> Self {
+        Self { app_id }
+    }
+
+    fn err(code: &str, message: impl Into<String>, retryable: bool) -> ConnectorErrorV2 {
+        ConnectorErrorV2 {
+            code: code.to_string(),
+            message: message.into(),
+            retryable,
+            details: None,
+        }
+    }
+}
+
+impl AppConnectorV2 for DemoAppConnectorV2 {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfoV2, ConnectorErrorV2> {
+        Ok(ConnectorInfoV2 {
+            connector_id: format!("demo-connector-v2-{}", self.app_id),
+            version: "0.3.0-demo".to_string(),
+            app_id: self.app_id.clone(),
+            transport: ConnectorTransportV2::InProcess,
+            supports_snapshot: true,
+            supports_live: true,
+            supports_action: true,
+            optional_features: vec!["demo_mode".to_string()],
+        })
+    }
+
+    fn health(
+        &mut self,
+        ctx: &ConnectorContextV2,
+    ) -> std::result::Result<HealthStatusV2, ConnectorErrorV2> {
+        if ctx.trace_id.as_deref() == Some("force-upstream-unavailable") {
+            return Err(Self::err(
+                "UPSTREAM_UNAVAILABLE",
+                "upstream endpoint is unavailable",
+                true,
+            ));
+        }
+
+        let auth_status = if ctx.trace_id.as_deref() == Some("force-auth-expired") {
+            AuthStatusV2::Expired
+        } else {
+            AuthStatusV2::Valid
+        };
+
+        Ok(HealthStatusV2 {
+            healthy: auth_status == AuthStatusV2::Valid,
+            auth_status,
+            message: Some("demo connector healthy".to_string()),
+            checked_at: "2026-03-24T00:00:00Z".to_string(),
+        })
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
+        if resource_path.contains("/forbidden/") {
+            return Err(Self::err(
+                "PERMISSION_DENIED",
+                "resource is forbidden",
+                false,
+            ));
+        }
+
+        let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
+        let delay_ms = std::env::var("APPFS_V3_PREWARM_DELAY_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        if delay_ms > timeout_ms {
+            std::thread::sleep(Duration::from_millis(timeout_ms));
+            return Err(Self::err(
+                "TIMEOUT",
+                format!(
+                    "prewarm timeout resource={resource_path} delay_ms={delay_ms} timeout_ms={timeout_ms}"
+                ),
+                true,
+            ));
+        }
+
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+
+        Ok(SnapshotMetaV2 {
+            size_bytes: Some(5000),
+            revision: Some("demo-v2".to_string()),
+            last_modified: Some("2026-03-24T00:00:00Z".to_string()),
+            item_count: Some(2),
+        })
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        request: FetchSnapshotChunkRequestV2,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+        if request.budget_bytes == 0 {
+            return Err(Self::err("INVALID_ARGUMENT", "budget_bytes must be > 0", false));
+        }
+        if request.resource_path.contains("too_large") {
+            return Err(Self::err(
+                "SNAPSHOT_TOO_LARGE",
+                "snapshot exceeds configured limit",
+                false,
+            ));
+        }
+
+        let (records, next_cursor, has_more) = match request.resume {
+            SnapshotResumeV2::Start => (
+                vec![
+                    SnapshotRecordV2 {
+                        record_key: "rk-001".to_string(),
+                        ordering_key: "ok-001".to_string(),
+                        line: json!({"id":"m-1","text":"hello"}),
+                    },
+                    SnapshotRecordV2 {
+                        record_key: "rk-002".to_string(),
+                        ordering_key: "ok-002".to_string(),
+                        line: json!({"id":"m-2","text":"world"}),
+                    },
+                ],
+                Some("cursor-2".to_string()),
+                true,
+            ),
+            SnapshotResumeV2::Cursor(cursor) => {
+                if cursor == "cursor-invalid" {
+                    return Err(Self::err(
+                        "INVALID_ARGUMENT",
+                        "resume cursor is invalid",
+                        false,
+                    ));
+                }
+                if cursor == "cursor-2" {
+                    (
+                        vec![SnapshotRecordV2 {
+                            record_key: "rk-003".to_string(),
+                            ordering_key: "ok-003".to_string(),
+                            line: json!({"id":"m-3","text":"done"}),
+                        }],
+                        None,
+                        false,
+                    )
+                } else {
+                    return Err(Self::err(
+                        "INVALID_ARGUMENT",
+                        "resume cursor is unknown",
+                        false,
+                    ));
+                }
+            }
+            SnapshotResumeV2::Offset(offset) => {
+                if request.resource_path.contains("no-offset") {
+                    return Err(Self::err(
+                        "NOT_SUPPORTED",
+                        "offset resume is not supported for this resource",
+                        false,
+                    ));
+                }
+                (
+                    vec![SnapshotRecordV2 {
+                        record_key: format!("rk-offset-{offset}"),
+                        ordering_key: format!("ok-offset-{offset}"),
+                        line: json!({"id":"m-offset","offset":offset}),
+                    }],
+                    None,
+                    false,
+                )
+            }
+        };
+
+        let emitted_bytes = records.iter().fold(0_u64, |acc, record| {
+            let line_bytes = serde_json::to_vec(&record.line)
+                .map(|v| v.len() as u64 + 1)
+                .unwrap_or(0);
+            acc.saturating_add(line_bytes)
+        });
+
+        Ok(FetchSnapshotChunkResponseV2 {
+            records,
+            emitted_bytes,
+            next_cursor,
+            has_more,
+            revision: Some("demo-v2".to_string()),
+        })
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequestV2,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+        if request.page_size == 0 {
+            return Err(Self::err("INVALID_ARGUMENT", "page_size must be > 0", false));
+        }
+        if request.cursor.as_deref() == Some("invalid") {
+            return Err(Self::err("CURSOR_INVALID", "cursor is invalid", false));
+        }
+        if request.cursor.as_deref() == Some("expired") {
+            return Err(Self::err("CURSOR_EXPIRED", "cursor has expired", false));
+        }
+
+        let page_no = if request.cursor.as_deref() == Some("cursor-1") {
+            2
+        } else {
+            1
+        };
+        let has_more = page_no == 1;
+        let next_cursor = if has_more {
+            Some("cursor-1".to_string())
+        } else {
+            None
+        };
+
+        Ok(FetchLivePageResponseV2 {
+            items: vec![json!({
+                "id": format!("item-{page_no}"),
+                "resource": request.resource_path,
+            })],
+            page: LivePageInfoV2 {
+                handle_id: request
+                    .handle_id
+                    .unwrap_or_else(|| "demo-live-handle-1".to_string()),
+                page_no,
+                has_more,
+                mode: LiveModeV2::Live,
+                expires_at: Some("2026-03-24T01:00:00Z".to_string()),
+                next_cursor,
+                retry_after_ms: None,
+            },
+        })
+    }
+
+    fn submit_action(
+        &mut self,
+        request: SubmitActionRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
+        if request.path.contains("invalid_payload") {
+            return Err(Self::err("INVALID_PAYLOAD", "payload does not match schema", false));
+        }
+        if request.path.contains("rate_limited") {
+            return Err(Self::err("RATE_LIMITED", "upstream rate limited", true));
+        }
+
+        let outcome = match request.execution_mode {
+            ActionExecutionModeV2::Inline => SubmitActionOutcomeV2::Completed {
+                content: json!({
+                    "ok": true,
+                    "path": request.path,
+                    "echo": request.payload,
+                }),
+            },
+            ActionExecutionModeV2::Streaming => SubmitActionOutcomeV2::Streaming {
+                plan: ActionStreamingPlanV2 {
+                    accepted_content: Some(json!({"state":"accepted"})),
+                    progress_content: Some(json!({"percent":50})),
+                    terminal_content: json!({"ok": true}),
+                },
+            },
+        };
+
+        Ok(SubmitActionResponseV2 {
+            request_id: ctx.request_id.clone(),
+            estimated_duration_ms: Some(120),
+            outcome,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DemoAppAdapterV1;
+    use super::{DemoAppAdapterV1, DemoAppConnectorV2};
     use crate::{
-        AdapterControlActionV1, AdapterControlOutcomeV1, AdapterExecutionModeV1,
-        AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+        ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+        AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
+        AppConnectorV2, ConnectorContextV2, FetchLivePageRequestV2, FetchSnapshotChunkRequestV2,
+        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
     };
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     fn ctx() -> RequestContextV1 {
@@ -156,6 +447,21 @@ mod tests {
             request_id: "req-1".to_string(),
             client_token: Some("tok-1".to_string()),
         }
+    }
+
+    fn ctx_v2(trace_id: Option<&str>) -> ConnectorContextV2 {
+        ConnectorContextV2 {
+            app_id: "aiim".to_string(),
+            session_id: "sess-test".to_string(),
+            request_id: "req-v2-1".to_string(),
+            client_token: Some("tok-v2-1".to_string()),
+            trace_id: trace_id.map(|v| v.to_string()),
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     #[test]
@@ -231,5 +537,217 @@ mod tests {
             .expect("prewarm should succeed");
         assert_eq!(meta.size_bytes, Some(5000));
         assert_eq!(meta.revision.as_deref(), Some("demo-v1"));
+    }
+
+    #[test]
+    fn demo_connector_v2_info_health_and_prewarm() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let info = connector.connector_id().expect("connector info should succeed");
+        assert_eq!(info.app_id, "aiim");
+        assert!(info.supports_snapshot);
+        assert!(info.supports_live);
+        assert!(info.supports_action);
+
+        let health = connector
+            .health(&ctx_v2(None))
+            .expect("health should succeed");
+        assert!(health.healthy);
+
+        let expired = connector
+            .health(&ctx_v2(Some("force-auth-expired")))
+            .expect("auth expired health status should still return payload");
+        assert!(!expired.healthy);
+
+        let _guard = env_lock().lock().expect("env lock should be acquirable");
+        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        let meta = connector
+            .prewarm_snapshot_meta(
+                "/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(20),
+                &ctx_v2(None),
+            )
+            .expect("prewarm should succeed");
+        assert_eq!(meta.revision.as_deref(), Some("demo-v2"));
+    }
+
+    #[test]
+    fn demo_connector_v2_health_error_path() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let err = connector
+            .health(&ctx_v2(Some("force-upstream-unavailable")))
+            .expect_err("health error path should be mapped");
+        assert_eq!(err.code, "UPSTREAM_UNAVAILABLE");
+        assert!(err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v2_prewarm_error_paths() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let forbidden = connector
+            .prewarm_snapshot_meta(
+                "/forbidden/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(20),
+                &ctx_v2(None),
+            )
+            .expect_err("forbidden resource must return explicit permission error");
+        assert_eq!(forbidden.code, "PERMISSION_DENIED");
+
+        let _guard = env_lock().lock().expect("env lock should be acquirable");
+        std::env::set_var("APPFS_V3_PREWARM_DELAY_MS", "30");
+        let timeout = connector
+            .prewarm_snapshot_meta(
+                "/chats/chat-001/messages.res.jsonl",
+                Duration::from_millis(5),
+                &ctx_v2(None),
+            )
+            .expect_err("timeout path should be mapped");
+        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+
+        assert_eq!(timeout.code, "TIMEOUT");
+        assert!(timeout.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v2_snapshot_success_and_error() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let chunk = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Start,
+                    budget_bytes: 1024,
+                },
+                &ctx_v2(None),
+            )
+            .expect("snapshot chunk should succeed");
+        assert_eq!(chunk.records.len(), 2);
+        assert!(chunk.emitted_bytes > 0);
+
+        let err = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/no-offset/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Offset(10),
+                    budget_bytes: 1024,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("offset resume should be rejected for unsupported resource");
+        assert_eq!(err.code, "NOT_SUPPORTED");
+        assert!(!err.retryable);
+
+        let cursor_err = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
+                    resume: SnapshotResumeV2::Cursor("cursor-unknown".to_string()),
+                    budget_bytes: 1024,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("unknown cursor must be rejected explicitly");
+        assert_eq!(cursor_err.code, "INVALID_ARGUMENT");
+        assert!(!cursor_err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v2_live_success_and_cursor_errors() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let page = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.json".to_string(),
+                    handle_id: None,
+                    cursor: None,
+                    page_size: 20,
+                },
+                &ctx_v2(None),
+            )
+            .expect("live page should succeed");
+        assert_eq!(page.page.page_no, 1);
+        assert!(page.page.has_more);
+
+        let invalid = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.json".to_string(),
+                    handle_id: None,
+                    cursor: Some("invalid".to_string()),
+                    page_size: 20,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("invalid cursor must return explicit error");
+        assert_eq!(invalid.code, "CURSOR_INVALID");
+
+        let expired = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/chats/chat-001/messages.res.json".to_string(),
+                    handle_id: None,
+                    cursor: Some("expired".to_string()),
+                    page_size: 20,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("expired cursor must return explicit error");
+        assert_eq!(expired.code, "CURSOR_EXPIRED");
+    }
+
+    #[test]
+    fn demo_connector_v2_submit_success_and_error() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let inline = connector
+            .submit_action(
+                SubmitActionRequestV2 {
+                    path: "/contacts/zhangsan/send_message.act".to_string(),
+                    payload: serde_json::json!({"text":"hello"}),
+                    execution_mode: ActionExecutionModeV2::Inline,
+                },
+                &ctx_v2(None),
+            )
+            .expect("inline submit should succeed");
+        match inline.outcome {
+            SubmitActionOutcomeV2::Completed { content } => {
+                assert_eq!(content["ok"], true);
+            }
+            _ => panic!("expected completed outcome"),
+        }
+
+        let streaming = connector
+            .submit_action(
+                SubmitActionRequestV2 {
+                    path: "/contacts/zhangsan/upload.act".to_string(),
+                    payload: serde_json::json!({"target":"x"}),
+                    execution_mode: ActionExecutionModeV2::Streaming,
+                },
+                &ctx_v2(None),
+            )
+            .expect("streaming submit should succeed");
+        match streaming.outcome {
+            SubmitActionOutcomeV2::Streaming { plan } => {
+                assert!(plan.accepted_content.is_some());
+                assert!(plan.progress_content.is_some());
+            }
+            _ => panic!("expected streaming outcome"),
+        }
+
+        let err = connector
+            .submit_action(
+                SubmitActionRequestV2 {
+                    path: "/contacts/zhangsan/invalid_payload.act".to_string(),
+                    payload: serde_json::json!({"x":"y"}),
+                    execution_mode: ActionExecutionModeV2::Inline,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("invalid payload should return mapped error");
+        assert_eq!(err.code, "INVALID_PAYLOAD");
+        assert!(!err.retryable);
     }
 }
