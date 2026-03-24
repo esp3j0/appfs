@@ -25,13 +25,6 @@ uv run python bridge_server.py
 `v0.3` HTTP connector mainline currently supports only `mock_aiim` backend.
 `jsonplaceholder` backend is retained as a legacy v1 reference backend and is not allowed in v2 serve mode.
 
-Legacy v1-only reference command (not compatible with v0.3 runtime v2 path):
-
-```bash
-cd examples/appfs/http-bridge/python
-APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder uv run python bridge_server.py
-```
-
 ## Run full live conformance (HTTP bridge)
 
 ```bash
@@ -67,13 +60,21 @@ cargo run -- serve appfs \
 
 ## Bridge contract
 
-Runtime sends requests to:
+v0.3 mainline runtime sends requests to:
+
+1. `POST /v2/connector/info`
+2. `POST /v2/connector/health`
+3. `POST /v2/connector/snapshot/prewarm`
+4. `POST /v2/connector/snapshot/fetch-chunk`
+5. `POST /v2/connector/live/fetch-page`
+6. `POST /v2/connector/action/submit`
+
+Response payloads follow AppFS connector v2 shapes:
+
+1. Success: corresponding connector response payload
+2. Error: `ConnectorErrorV2` (`{code,message,retryable,details?}`)
+
+Legacy compatibility surface (non-mainline):
 
 1. `POST /v1/submit-action`
 2. `POST /v1/submit-control-action`
-
-Response payloads should match AppFS adapter SDK result shapes:
-
-1. `AdapterSubmitOutcomeV1`
-2. `AdapterControlOutcomeV1`
-3. `AdapterErrorV1` (or `{code,message,retryable}` fallback)

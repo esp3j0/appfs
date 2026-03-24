@@ -7,7 +7,6 @@ from typing import Any
 
 from .errors import internal_error, rejected_error
 from .fault_injector import FaultInjector
-from .jsonplaceholder_backend import JsonPlaceholderBackend
 from .mock_aiim import MockAiimBackend
 from .protocol import (
     connector_error,
@@ -172,7 +171,7 @@ def run_server() -> None:
         )
     else:
         raise ValueError(
-            "unsupported APPFS_HTTP_BRIDGE_BACKEND=%r (expected: mock_aiim|jsonplaceholder)"
+            "unsupported APPFS_HTTP_BRIDGE_BACKEND=%r (supported: mock_aiim)"
             % backend_mode
         )
 
