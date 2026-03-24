@@ -27,6 +27,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _json_compact(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
 def _parse_fail_status_code(raw: str) -> grpc.StatusCode:
     normalized = (raw or "").strip().upper()
     if normalized == "":
@@ -227,12 +231,12 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
                 pb2.SnapshotRecordV2(
                     record_key="rk-001",
                     ordering_key="ok-001",
-                    line_json=json.dumps({"id": "m-1", "text": "hello"}),
+                    line_json=_json_compact({"id": "m-1", "text": "hello"}),
                 ),
                 pb2.SnapshotRecordV2(
                     record_key="rk-002",
                     ordering_key="ok-002",
-                    line_json=json.dumps({"id": "m-2", "text": "world"}),
+                    line_json=_json_compact({"id": "m-2", "text": "world"}),
                 ),
             ]
             emitted_bytes = sum((len(r.line_json.encode("utf-8")) + 1) for r in records)
@@ -258,7 +262,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
                 pb2.SnapshotRecordV2(
                     record_key="rk-003",
                     ordering_key="ok-003",
-                    line_json=json.dumps({"id": "m-3", "text": "done"}),
+                    line_json=_json_compact({"id": "m-3", "text": "done"}),
                 )
             ]
             return pb2.FetchSnapshotChunkResponse(
