@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::action_dispatcher;
 use super::errors::{is_transient_connector_failure, ERR_INVALID_PAYLOAD};
-use super::grpc_bridge_adapter::GrpcBridgeAdapterV1;
+use super::grpc_bridge_adapter::GrpcBridgeConnectorV2;
 use super::http_bridge_adapter::HttpBridgeConnectorV2;
 use super::shared::{
     action_template_matches, boundary_probe_from_bytes, collect_files_with_suffix,
@@ -55,7 +55,9 @@ impl LegacyAdapterConnectorV2 {
     }
 }
 
-fn map_adapter_error_v1_to_connector_error_v2(err: agentfs_sdk::AdapterErrorV1) -> ConnectorErrorV2 {
+fn map_adapter_error_v1_to_connector_error_v2(
+    err: agentfs_sdk::AdapterErrorV1,
+) -> ConnectorErrorV2 {
     match err {
         agentfs_sdk::AdapterErrorV1::Rejected {
             code,
@@ -353,22 +355,21 @@ impl AppfsAdapter {
         let business_connector: Box<dyn AppConnectorV2> =
             if let Some(endpoint) = normalized_grpc_endpoint {
                 eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
-                let adapter = Box::new(
-                    GrpcBridgeAdapterV1::new(
+                Box::new(
+                    GrpcBridgeConnectorV2::new(
                         app_id.clone(),
                         endpoint,
                         Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
                         bridge_config.runtime_options,
                     )
                     .map_err(|err| {
-                        anyhow::anyhow!("failed to initialize gRPC bridge adapter: {err}")
+                        anyhow::anyhow!(
+                            "failed to initialize gRPC bridge connector: {}: {}",
+                            err.code,
+                            err.message
+                        )
                     })?,
-                ) as Box<dyn AppAdapterV1>;
-                Box::new(LegacyAdapterConnectorV2::new(
-                    app_id.clone(),
-                    ConnectorTransportV2::GrpcBridge,
-                    adapter,
-                ))
+                )
             } else if let Some(endpoint) = normalized_http_endpoint {
                 eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
                 Box::new(HttpBridgeConnectorV2::new(

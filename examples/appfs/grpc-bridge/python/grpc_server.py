@@ -3,11 +3,14 @@ import json
 import os
 import threading
 from concurrent import futures
+from datetime import datetime, timezone
 
 import grpc
 
-import appfs_adapter_v1_pb2 as pb2
-import appfs_adapter_v1_pb2_grpc as pb2_grpc
+import appfs_adapter_v1_pb2 as pb1
+import appfs_adapter_v1_pb2_grpc as pb1_grpc
+import appfs_connector_v2_pb2 as pb2
+import appfs_connector_v2_pb2_grpc as pb2_grpc
 
 
 def _env_int(name: str, default: int) -> int:
@@ -18,6 +21,10 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _parse_fail_status_code(raw: str) -> grpc.StatusCode:
@@ -80,8 +87,8 @@ class FaultInjector:
 FAULT_INJECTOR = FaultInjector()
 
 
-class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
-    def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
+class BridgeServiceV1(pb1_grpc.AppfsAdapterBridgeServicer):
+    def SubmitAction(self, request: pb1.SubmitActionRequest, context: grpc.ServicerContext):
         path = request.path
         execution_mode = request.execution_mode
         should_fail, remaining = FAULT_INJECTOR.maybe_fail_submit_action(path)
@@ -91,13 +98,13 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
                 f"fault injected for path={path}, remaining={remaining}",
             )
 
-        if execution_mode == pb2.EXECUTION_MODE_INLINE:
+        if execution_mode == pb1.EXECUTION_MODE_INLINE:
             if path.endswith("/send_message.act"):
-                return pb2.SubmitActionResponse(
-                    completed=pb2.CompletedOutcome(content_json=json.dumps("send success"))
+                return pb1.SubmitActionResponse(
+                    completed=pb1.CompletedOutcome(content_json=json.dumps("send success"))
                 )
-            return pb2.SubmitActionResponse(
-                completed=pb2.CompletedOutcome(content_json=json.dumps("action completed"))
+            return pb1.SubmitActionResponse(
+                completed=pb1.CompletedOutcome(content_json=json.dumps("action completed"))
             )
 
         terminal = {"ok": True}
@@ -108,8 +115,8 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
             except Exception:
                 terminal = {"saved_to": "unknown"}
 
-        return pb2.SubmitActionResponse(
-            streaming=pb2.StreamingOutcome(
+        return pb1.SubmitActionResponse(
+            streaming=pb1.StreamingOutcome(
                 accepted_content_json=json.dumps("accepted"),
                 progress_content_json=json.dumps({"percent": 50}),
                 terminal_content_json=json.dumps(terminal),
@@ -119,7 +126,7 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
         )
 
     def SubmitControlAction(
-        self, request: pb2.SubmitControlActionRequest, context: grpc.ServicerContext
+        self, request: pb1.SubmitControlActionRequest, context: grpc.ServicerContext
     ):
         which = request.WhichOneof("action")
 
@@ -134,19 +141,19 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
                     "mode": "live",
                 },
             }
-            return pb2.SubmitControlActionResponse(
-                completed=pb2.ControlCompletedOutcome(content_json=json.dumps(content))
+            return pb1.SubmitControlActionResponse(
+                completed=pb1.ControlCompletedOutcome(content_json=json.dumps(content))
             )
 
         if which == "paging_close":
             action = request.paging_close
             content = {"closed": True, "handle_id": action.handle_id}
-            return pb2.SubmitControlActionResponse(
-                completed=pb2.ControlCompletedOutcome(content_json=json.dumps(content))
+            return pb1.SubmitControlActionResponse(
+                completed=pb1.ControlCompletedOutcome(content_json=json.dumps(content))
             )
 
-        return pb2.SubmitControlActionResponse(
-            error=pb2.BridgeError(
+        return pb1.SubmitControlActionResponse(
+            error=pb1.BridgeError(
                 code="NOT_SUPPORTED",
                 message=f"unsupported control action: {which}",
                 retryable=False,
@@ -154,9 +161,231 @@ class BridgeService(pb2_grpc.AppfsAdapterBridgeServicer):
         )
 
 
+class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
+    def GetConnectorInfo(self, request: pb2.GetConnectorInfoRequest, context: grpc.ServicerContext):
+        _ = request
+        return pb2.GetConnectorInfoResponse(
+            info=pb2.ConnectorInfoV2(
+                connector_id="mock-grpc-v2",
+                version="0.3.0-mock",
+                app_id="aiim",
+                transport=pb2.CONNECTOR_TRANSPORT_V2_GRPC_BRIDGE,
+                supports_snapshot=True,
+                supports_live=True,
+                supports_action=True,
+                optional_features=["demo_mode"],
+            )
+        )
+
+    def Health(self, request: pb2.HealthRequest, context: grpc.ServicerContext):
+        _ = context
+        trace_id = request.context.trace_id if request.context else ""
+        auth_status = pb2.AUTH_STATUS_V2_EXPIRED if trace_id == "force-auth-expired" else pb2.AUTH_STATUS_V2_VALID
+        healthy = auth_status == pb2.AUTH_STATUS_V2_VALID
+        return pb2.HealthResponse(
+            status=pb2.HealthStatusV2(
+                healthy=healthy,
+                auth_status=auth_status,
+                message="grpc bridge v2 healthy",
+                checked_at=_now_iso(),
+            )
+        )
+
+    def PrewarmSnapshotMeta(self, request: pb2.PrewarmSnapshotMetaRequest, context: grpc.ServicerContext):
+        _ = context
+        if "/forbidden/" in request.resource_path:
+            return pb2.PrewarmSnapshotMetaResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="PERMISSION_DENIED",
+                    message="resource is forbidden",
+                    retryable=False,
+                )
+            )
+        return pb2.PrewarmSnapshotMetaResponse(
+            meta=pb2.SnapshotMetaV2(
+                size_bytes=5000,
+                revision="grpc-v2-rev-1",
+                last_modified=_now_iso(),
+                item_count=3,
+            )
+        )
+
+    def FetchSnapshotChunk(self, request: pb2.FetchSnapshotChunkRequest, context: grpc.ServicerContext):
+        _ = context
+        req = request.request
+        if req is None:
+            return pb2.FetchSnapshotChunkResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="missing request payload",
+                    retryable=False,
+                )
+            )
+        resume_kind = req.resume.WhichOneof("kind") if req.resume else None
+        if resume_kind == "start":
+            records = [
+                pb2.SnapshotRecordV2(
+                    record_key="rk-001",
+                    ordering_key="ok-001",
+                    line_json=json.dumps({"id": "m-1", "text": "hello"}),
+                ),
+                pb2.SnapshotRecordV2(
+                    record_key="rk-002",
+                    ordering_key="ok-002",
+                    line_json=json.dumps({"id": "m-2", "text": "world"}),
+                ),
+            ]
+            return pb2.FetchSnapshotChunkResponse(
+                response=pb2.FetchSnapshotChunkResponseV2(
+                    records=records,
+                    emitted_bytes=64,
+                    next_cursor="cursor-2",
+                    has_more=True,
+                    revision="grpc-v2-rev-1",
+                )
+            )
+        if resume_kind == "cursor":
+            if req.resume.cursor != "cursor-2":
+                return pb2.FetchSnapshotChunkResponse(
+                    error=pb2.ConnectorErrorV2(
+                        code="INVALID_ARGUMENT",
+                        message="unknown cursor",
+                        retryable=False,
+                    )
+                )
+            return pb2.FetchSnapshotChunkResponse(
+                response=pb2.FetchSnapshotChunkResponseV2(
+                    records=[
+                        pb2.SnapshotRecordV2(
+                            record_key="rk-003",
+                            ordering_key="ok-003",
+                            line_json=json.dumps({"id": "m-3", "text": "done"}),
+                        )
+                    ],
+                    emitted_bytes=32,
+                    has_more=False,
+                    revision="grpc-v2-rev-1",
+                )
+            )
+        return pb2.FetchSnapshotChunkResponse(
+            error=pb2.ConnectorErrorV2(
+                code="NOT_SUPPORTED",
+                message="only start/cursor resumes are supported in mock grpc v2",
+                retryable=False,
+            )
+        )
+
+    def FetchLivePage(self, request: pb2.FetchLivePageRequest, context: grpc.ServicerContext):
+        _ = context
+        req = request.request
+        if req is None:
+            return pb2.FetchLivePageResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="missing request payload",
+                    retryable=False,
+                )
+            )
+        if req.cursor == "invalid":
+            return pb2.FetchLivePageResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="CURSOR_INVALID",
+                    message="cursor invalid",
+                    retryable=False,
+                )
+            )
+        if req.cursor == "expired":
+            return pb2.FetchLivePageResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="CURSOR_EXPIRED",
+                    message="cursor expired",
+                    retryable=False,
+                )
+            )
+        page_no = 1 if req.cursor == "" else 2
+        has_more = page_no == 1
+        handle = req.handle_id if req.handle_id else "ph_grpc_v2_1"
+        return pb2.FetchLivePageResponse(
+            response=pb2.FetchLivePageResponseV2(
+                items_json=[json.dumps({"id": f"m-{page_no}", "text": "generated by grpc bridge"})],
+                page=pb2.LivePageInfoV2(
+                    handle_id=handle,
+                    page_no=page_no,
+                    has_more=has_more,
+                    mode=pb2.LIVE_MODE_V2_LIVE,
+                    expires_at=_now_iso(),
+                    next_cursor=("cursor-1" if has_more else ""),
+                ),
+            )
+        )
+
+    def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
+        req = request.request
+        if req is None:
+            return pb2.SubmitActionResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="missing request payload",
+                    retryable=False,
+                )
+            )
+        path = req.path
+        should_fail, remaining = FAULT_INJECTOR.maybe_fail_submit_action(path)
+        if should_fail:
+            context.abort(
+                FAULT_INJECTOR.fail_status_code,
+                f"fault injected for path={path}, remaining={remaining}",
+            )
+
+        if path.endswith("/invalid_payload.act"):
+            return pb2.SubmitActionResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_PAYLOAD",
+                    message="payload does not match schema",
+                    retryable=False,
+                )
+            )
+        if path.endswith("/rate_limited.act"):
+            return pb2.SubmitActionResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="RATE_LIMITED",
+                    message="upstream rate limited",
+                    retryable=True,
+                )
+            )
+
+        if req.execution_mode == pb2.ACTION_EXECUTION_MODE_V2_INLINE:
+            return pb2.SubmitActionResponse(
+                response=pb2.SubmitActionResponseV2(
+                    request_id=request.context.request_id if request.context else "req-v2",
+                    estimated_duration_ms=80,
+                    outcome=pb2.SubmitActionOutcomeV2(
+                        completed_content_json=json.dumps({"ok": True, "path": path})
+                    ),
+                )
+            )
+
+        return pb2.SubmitActionResponse(
+            response=pb2.SubmitActionResponseV2(
+                request_id=request.context.request_id if request.context else "req-v2",
+                estimated_duration_ms=120,
+                outcome=pb2.SubmitActionOutcomeV2(
+                    streaming_plan=pb2.ActionStreamingPlanV2(
+                        accepted_content_json=json.dumps({"state": "accepted"}),
+                        progress_content_json=json.dumps({"percent": 50}),
+                        terminal_content_json=json.dumps({"ok": True}),
+                        has_accepted_content=True,
+                        has_progress_content=True,
+                    )
+                ),
+            )
+        )
+
+
 def main() -> None:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
-    pb2_grpc.add_AppfsAdapterBridgeServicer_to_server(BridgeService(), server)
+    pb1_grpc.add_AppfsAdapterBridgeServicer_to_server(BridgeServiceV1(), server)
+    pb2_grpc.add_AppfsConnectorV2Servicer_to_server(BridgeServiceV2(), server)
     server.add_insecure_port("127.0.0.1:50051")
     server.start()
     print("AppFS gRPC bridge listening on 127.0.0.1:50051")

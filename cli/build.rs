@@ -42,11 +42,16 @@ fn main() {
 }
 
 fn compile_appfs_grpc_bridge_proto() {
-    let proto = "../examples/appfs/grpc-bridge/proto/appfs_adapter_v1.proto";
+    let proto_v1 = "../examples/appfs/grpc-bridge/proto/appfs_adapter_v1.proto";
+    let proto_v2 = "../examples/appfs/grpc-bridge/proto/appfs_connector_v2.proto";
     let include_dir = "../examples/appfs/grpc-bridge/proto";
 
-    println!("cargo:rerun-if-changed={proto}");
-    if !std::path::Path::new(proto).exists() {
+    println!("cargo:rerun-if-changed={proto_v1}");
+    println!("cargo:rerun-if-changed={proto_v2}");
+    if !std::path::Path::new(proto_v1).exists() {
+        return;
+    }
+    if !std::path::Path::new(proto_v2).exists() {
         return;
     }
 
@@ -57,6 +62,6 @@ fn compile_appfs_grpc_bridge_proto() {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&[proto], &[include_dir])
+        .compile_protos(&[proto_v1, proto_v2], &[include_dir])
         .expect("failed to compile AppFS gRPC bridge proto");
 }

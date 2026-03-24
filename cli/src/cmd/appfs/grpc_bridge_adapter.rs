@@ -2,9 +2,14 @@ use super::bridge_resilience::{
     is_retryable_grpc_code, BridgeCircuitBreaker, BridgeMetrics, BridgeRuntimeOptions,
 };
 use agentfs_sdk::{
-    AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
-    AdapterInputModeV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-    RequestContextV1,
+    connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1,
+    AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AuthStatusV2,
+    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
+    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
+    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, RequestContextV1,
+    SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
+    SubmitActionRequestV2, SubmitActionResponseV2,
 };
 use serde_json::Value as JsonValue;
 use std::future::Future;
@@ -13,6 +18,9 @@ use tonic::transport::{Channel, Endpoint};
 
 pub(super) mod proto {
     tonic::include_proto!("appfs.adapter.v1");
+}
+pub(super) mod proto_v2 {
+    tonic::include_proto!("appfs.connector.v2");
 }
 
 use proto::appfs_adapter_bridge_client::AppfsAdapterBridgeClient;
@@ -23,10 +31,19 @@ use proto::{
     ControlCompletedOutcome, ExecutionMode, InputMode, PagingCloseAction, PagingFetchNextAction,
     RequestContext, SubmitActionRequest, SubmitControlActionRequest,
 };
+use proto_v2::appfs_connector_v2_client::AppfsConnectorV2Client;
 
 pub(super) struct GrpcBridgeAdapterV1 {
     app_id: String,
     client: AppfsAdapterBridgeClient<Channel>,
+    runtime_options: BridgeRuntimeOptions,
+    metrics: BridgeMetrics,
+    circuit_breaker: BridgeCircuitBreaker,
+}
+
+pub(super) struct GrpcBridgeConnectorV2 {
+    app_id: String,
+    client: AppfsConnectorV2Client<Channel>,
     runtime_options: BridgeRuntimeOptions,
     metrics: BridgeMetrics,
     circuit_breaker: BridgeCircuitBreaker,
@@ -229,6 +246,124 @@ impl GrpcBridgeAdapterV1 {
     }
 }
 
+impl GrpcBridgeConnectorV2 {
+    pub(super) fn new(
+        app_id: String,
+        endpoint: String,
+        timeout: Duration,
+        runtime_options: BridgeRuntimeOptions,
+    ) -> Result<Self, ConnectorErrorV2> {
+        let endpoint = endpoint.trim().trim_end_matches('/').to_string();
+        let endpoint = Endpoint::from_shared(endpoint.clone()).map_err(|err| ConnectorErrorV2 {
+            code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+            message: format!("invalid grpc endpoint {endpoint}: {err}"),
+            retryable: false,
+            details: None,
+        })?;
+
+        let channel = endpoint
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .tcp_nodelay(true)
+            .connect_lazy();
+
+        Ok(Self {
+            app_id,
+            client: AppfsConnectorV2Client::new(channel),
+            runtime_options,
+            metrics: BridgeMetrics::default(),
+            circuit_breaker: BridgeCircuitBreaker::default(),
+        })
+    }
+
+    fn run_v2_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorErrorV2>
+    where
+        F: FnMut(AppfsConnectorV2Client<Channel>) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
+            self.metrics.record_short_circuit();
+            return Err(ConnectorErrorV2 {
+                code: connector_error_codes_v2::INTERNAL.to_string(),
+                message: format!(
+                    "bridge grpc circuit open for {method}; retry_in_ms={} metrics={}",
+                    remaining.as_millis(),
+                    self.metrics.snapshot()
+                ),
+                retryable: true,
+                details: None,
+            });
+        }
+
+        let max_attempts = self.runtime_options.max_retries.saturating_add(1).max(1);
+        let started = Instant::now();
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let client = self.client.clone();
+            match f(client) {
+                Ok(response) => {
+                    self.circuit_breaker.record_success();
+                    self.metrics.record_request(attempt, true);
+                    self.log_observation(method, attempt, started.elapsed(), "ok");
+                    return Ok(response.into_inner());
+                }
+                Err(status) => {
+                    let retryable = is_retryable_grpc_code(status.code());
+                    if retryable && attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    if retryable {
+                        self.circuit_breaker
+                            .record_failure(Instant::now(), self.runtime_options);
+                    } else {
+                        self.circuit_breaker.record_success();
+                    }
+
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation(method, attempt, started.elapsed(), "failed");
+                    return Err(map_grpc_status_v2(
+                        method,
+                        status,
+                        attempt,
+                        &self.metrics.snapshot(),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn log_observation(&self, method: &str, attempts: u32, elapsed: Duration, outcome: &str) {
+        if attempts > 1 || outcome != "ok" || self.metrics.requests_total.is_multiple_of(50) {
+            eprintln!(
+                "AppFS bridge grpc metrics method={} outcome={} attempts={} latency_ms={} {}",
+                method,
+                outcome,
+                attempts,
+                elapsed.as_millis(),
+                self.metrics.snapshot()
+            );
+        }
+    }
+
+    fn ensure_app_match(&self, app_id: &str) -> Result<(), ConnectorErrorV2> {
+        if app_id != self.app_id {
+            return Err(ConnectorErrorV2 {
+                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+                message: format!(
+                    "grpc connector app_id mismatch expected={} got={}",
+                    self.app_id, app_id
+                ),
+                retryable: false,
+                details: None,
+            });
+        }
+        Ok(())
+    }
+}
+
 impl AppAdapterV1 for GrpcBridgeAdapterV1 {
     fn app_id(&self) -> &str {
         &self.app_id
@@ -341,6 +476,143 @@ impl AppAdapterV1 for GrpcBridgeAdapterV1 {
     }
 }
 
+impl AppConnectorV2 for GrpcBridgeConnectorV2 {
+    fn connector_id(&self) -> Result<ConnectorInfoV2, ConnectorErrorV2> {
+        let mut client = self.client.clone();
+        let response = run_async(client.get_connector_info(proto_v2::GetConnectorInfoRequest {}))
+            .map_err(|status| map_grpc_status_v2("GetConnectorInfo", status, 1, "n/a"))?
+            .into_inner();
+        match response.result {
+            Some(proto_v2::get_connector_info_response::Result::Info(info)) => {
+                let app_id = info.app_id.clone();
+                self.ensure_app_match(&app_id)?;
+                Ok(from_proto_connector_info(info))
+            }
+            Some(proto_v2::get_connector_info_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(ConnectorErrorV2 {
+                code: connector_error_codes_v2::INTERNAL.to_string(),
+                message: "bridge grpc GetConnectorInfo returned empty result".to_string(),
+                retryable: true,
+                details: None,
+            }),
+        }
+    }
+
+    fn health(&mut self, ctx: &ConnectorContextV2) -> Result<HealthStatusV2, ConnectorErrorV2> {
+        let req = proto_v2::HealthRequest {
+            context: Some(to_proto_context_v2(ctx)),
+        };
+        let response =
+            self.run_v2_rpc("Health", |mut client| run_async(client.health(req.clone())))?;
+        match response.result {
+            Some(proto_v2::health_response::Result::Status(status)) => {
+                Ok(from_proto_health_status(status))
+            }
+            Some(proto_v2::health_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(empty_result_error("Health")),
+        }
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        ctx: &ConnectorContextV2,
+    ) -> Result<SnapshotMetaV2, ConnectorErrorV2> {
+        let timeout_ms = timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64;
+        let req = proto_v2::PrewarmSnapshotMetaRequest {
+            context: Some(to_proto_context_v2(ctx)),
+            resource_path: resource_path.to_string(),
+            timeout_ms,
+        };
+        let response = self.run_v2_rpc("PrewarmSnapshotMeta", |mut client| {
+            run_async(client.prewarm_snapshot_meta(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v2::prewarm_snapshot_meta_response::Result::Meta(meta)) => {
+                Ok(from_proto_snapshot_meta(meta))
+            }
+            Some(proto_v2::prewarm_snapshot_meta_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(empty_result_error("PrewarmSnapshotMeta")),
+        }
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        request: FetchSnapshotChunkRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+        let req = proto_v2::FetchSnapshotChunkRequest {
+            context: Some(to_proto_context_v2(ctx)),
+            request: Some(to_proto_fetch_snapshot_chunk_request(request)),
+        };
+        let response = self.run_v2_rpc("FetchSnapshotChunk", |mut client| {
+            run_async(client.fetch_snapshot_chunk(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v2::fetch_snapshot_chunk_response::Result::Response(resp)) => {
+                from_proto_fetch_snapshot_chunk_response(resp)
+            }
+            Some(proto_v2::fetch_snapshot_chunk_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(empty_result_error("FetchSnapshotChunk")),
+        }
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+        let req = proto_v2::FetchLivePageRequest {
+            context: Some(to_proto_context_v2(ctx)),
+            request: Some(to_proto_fetch_live_page_request(request)),
+        };
+        let response = self.run_v2_rpc("FetchLivePage", |mut client| {
+            run_async(client.fetch_live_page(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v2::fetch_live_page_response::Result::Response(resp)) => {
+                from_proto_fetch_live_page_response(resp)
+            }
+            Some(proto_v2::fetch_live_page_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(empty_result_error("FetchLivePage")),
+        }
+    }
+
+    fn submit_action(
+        &mut self,
+        request: SubmitActionRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> Result<SubmitActionResponseV2, ConnectorErrorV2> {
+        let req = proto_v2::SubmitActionRequest {
+            context: Some(to_proto_context_v2(ctx)),
+            request: Some(to_proto_submit_action_request(request)?),
+        };
+        let response = self.run_v2_rpc("SubmitAction", |mut client| {
+            run_async(client.submit_action(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v2::submit_action_response::Result::Response(resp)) => {
+                from_proto_submit_action_response(resp)
+            }
+            Some(proto_v2::submit_action_response::Result::Error(err)) => {
+                Err(from_proto_connector_error(err))
+            }
+            None => Err(empty_result_error("SubmitAction")),
+        }
+    }
+}
+
 fn to_proto_input_mode(mode: AdapterInputModeV1) -> InputMode {
     match mode {
         AdapterInputModeV1::Text => InputMode::Text,
@@ -389,6 +661,293 @@ fn map_grpc_status(
     }
 }
 
+fn map_grpc_status_v2(
+    method: &str,
+    status: tonic::Status,
+    attempts: u32,
+    metrics: &str,
+) -> ConnectorErrorV2 {
+    ConnectorErrorV2 {
+        code: if is_retryable_grpc_code(status.code()) {
+            connector_error_codes_v2::UPSTREAM_UNAVAILABLE.to_string()
+        } else {
+            connector_error_codes_v2::INTERNAL.to_string()
+        },
+        message: format!(
+            "bridge grpc {} error: code={} message={} attempts={} metrics={}",
+            method,
+            status.code(),
+            status.message(),
+            attempts,
+            metrics
+        ),
+        retryable: is_retryable_grpc_code(status.code()),
+        details: None,
+    }
+}
+
+fn empty_result_error(method: &str) -> ConnectorErrorV2 {
+    ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc {} returned empty result", method),
+        retryable: true,
+        details: None,
+    }
+}
+
+fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2 {
+    proto_v2::ConnectorContextV2 {
+        app_id: ctx.app_id.clone(),
+        session_id: ctx.session_id.clone(),
+        request_id: ctx.request_id.clone(),
+        client_token: ctx.client_token.clone(),
+        trace_id: ctx.trace_id.clone(),
+    }
+}
+
+fn from_proto_connector_info(info: proto_v2::ConnectorInfoV2) -> ConnectorInfoV2 {
+    ConnectorInfoV2 {
+        connector_id: info.connector_id,
+        version: info.version,
+        app_id: info.app_id,
+        transport: match proto_v2::ConnectorTransportV2::try_from(info.transport)
+            .unwrap_or(proto_v2::ConnectorTransportV2::Unspecified)
+        {
+            proto_v2::ConnectorTransportV2::InProcess => ConnectorTransportV2::InProcess,
+            proto_v2::ConnectorTransportV2::HttpBridge => ConnectorTransportV2::HttpBridge,
+            proto_v2::ConnectorTransportV2::GrpcBridge
+            | proto_v2::ConnectorTransportV2::Unspecified => ConnectorTransportV2::GrpcBridge,
+        },
+        supports_snapshot: info.supports_snapshot,
+        supports_live: info.supports_live,
+        supports_action: info.supports_action,
+        optional_features: info.optional_features,
+    }
+}
+
+fn from_proto_health_status(status: proto_v2::HealthStatusV2) -> HealthStatusV2 {
+    HealthStatusV2 {
+        healthy: status.healthy,
+        auth_status: match proto_v2::AuthStatusV2::try_from(status.auth_status)
+            .unwrap_or(proto_v2::AuthStatusV2::Unspecified)
+        {
+            proto_v2::AuthStatusV2::Valid => AuthStatusV2::Valid,
+            proto_v2::AuthStatusV2::Expired => AuthStatusV2::Expired,
+            proto_v2::AuthStatusV2::Refreshing => AuthStatusV2::Refreshing,
+            proto_v2::AuthStatusV2::Invalid | proto_v2::AuthStatusV2::Unspecified => {
+                AuthStatusV2::Invalid
+            }
+        },
+        message: status.message,
+        checked_at: status.checked_at,
+    }
+}
+
+fn from_proto_snapshot_meta(meta: proto_v2::SnapshotMetaV2) -> SnapshotMetaV2 {
+    SnapshotMetaV2 {
+        size_bytes: meta.size_bytes,
+        revision: meta.revision,
+        last_modified: meta.last_modified,
+        item_count: meta.item_count,
+    }
+}
+
+fn to_proto_fetch_snapshot_chunk_request(
+    request: FetchSnapshotChunkRequestV2,
+) -> proto_v2::FetchSnapshotChunkRequestV2 {
+    let resume = match request.resume {
+        SnapshotResumeV2::Start => proto_v2::SnapshotResumeV2 {
+            kind: Some(proto_v2::snapshot_resume_v2::Kind::Start(true)),
+        },
+        SnapshotResumeV2::Cursor(cursor) => proto_v2::SnapshotResumeV2 {
+            kind: Some(proto_v2::snapshot_resume_v2::Kind::Cursor(cursor)),
+        },
+        SnapshotResumeV2::Offset(offset) => proto_v2::SnapshotResumeV2 {
+            kind: Some(proto_v2::snapshot_resume_v2::Kind::Offset(offset)),
+        },
+    };
+    proto_v2::FetchSnapshotChunkRequestV2 {
+        resource_path: request.resource_path,
+        resume: Some(resume),
+        budget_bytes: request.budget_bytes,
+    }
+}
+
+fn from_proto_fetch_snapshot_chunk_response(
+    response: proto_v2::FetchSnapshotChunkResponseV2,
+) -> Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+    let mut records = Vec::with_capacity(response.records.len());
+    for record in response.records {
+        if record.line_json.trim().is_empty() {
+            return Err(ConnectorErrorV2 {
+                code: connector_error_codes_v2::INTERNAL.to_string(),
+                message: "snapshot record missing line".to_string(),
+                retryable: true,
+                details: None,
+            });
+        }
+        records.push(SnapshotRecordV2 {
+            record_key: record.record_key,
+            ordering_key: record.ordering_key,
+            line: parse_json_text_v2(&record.line_json, "snapshot.records[].line_json")?,
+        });
+    }
+    Ok(FetchSnapshotChunkResponseV2 {
+        records,
+        emitted_bytes: response.emitted_bytes,
+        next_cursor: response.next_cursor,
+        has_more: response.has_more,
+        revision: response.revision,
+    })
+}
+
+fn to_proto_fetch_live_page_request(
+    request: FetchLivePageRequestV2,
+) -> proto_v2::FetchLivePageRequestV2 {
+    proto_v2::FetchLivePageRequestV2 {
+        resource_path: request.resource_path,
+        handle_id: request.handle_id,
+        cursor: request.cursor,
+        page_size: request.page_size,
+    }
+}
+
+fn from_proto_fetch_live_page_response(
+    response: proto_v2::FetchLivePageResponseV2,
+) -> Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+    let page = response.page.ok_or_else(|| ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: "live page response missing page".to_string(),
+        retryable: true,
+        details: None,
+    })?;
+    let mut items = Vec::with_capacity(response.items_json.len());
+    for item in response.items_json {
+        items.push(parse_json_text_v2(&item, "live.items_json[]")?);
+    }
+    Ok(FetchLivePageResponseV2 {
+        items,
+        page: LivePageInfoV2 {
+            handle_id: page.handle_id,
+            page_no: page.page_no,
+            has_more: page.has_more,
+            mode: match proto_v2::LiveModeV2::try_from(page.mode)
+                .unwrap_or(proto_v2::LiveModeV2::Live)
+            {
+                proto_v2::LiveModeV2::Live | proto_v2::LiveModeV2::Unspecified => LiveModeV2::Live,
+            },
+            expires_at: page.expires_at,
+            next_cursor: page.next_cursor,
+            retry_after_ms: page.retry_after_ms,
+        },
+    })
+}
+
+fn to_proto_submit_action_request(
+    request: SubmitActionRequestV2,
+) -> Result<proto_v2::SubmitActionRequestV2, ConnectorErrorV2> {
+    Ok(proto_v2::SubmitActionRequestV2 {
+        path: request.path,
+        payload_json: serde_json::to_string(&request.payload).map_err(|err| ConnectorErrorV2 {
+            code: connector_error_codes_v2::INVALID_PAYLOAD.to_string(),
+            message: format!("invalid submit_action payload: {err}"),
+            retryable: false,
+            details: None,
+        })?,
+        execution_mode: match request.execution_mode {
+            ActionExecutionModeV2::Inline => proto_v2::ActionExecutionModeV2::Inline as i32,
+            ActionExecutionModeV2::Streaming => proto_v2::ActionExecutionModeV2::Streaming as i32,
+        },
+    })
+}
+
+fn from_proto_submit_action_response(
+    response: proto_v2::SubmitActionResponseV2,
+) -> Result<SubmitActionResponseV2, ConnectorErrorV2> {
+    let outcome = response.outcome.ok_or_else(|| ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: "submit action response missing outcome".to_string(),
+        retryable: true,
+        details: None,
+    })?;
+    let mapped = match outcome.kind {
+        Some(proto_v2::submit_action_outcome_v2::Kind::CompletedContentJson(content)) => {
+            SubmitActionOutcomeV2::Completed {
+                content: parse_json_text_v2(&content, "submit_action.completed_content_json")?,
+            }
+        }
+        Some(proto_v2::submit_action_outcome_v2::Kind::StreamingPlan(plan)) => {
+            if plan.terminal_content_json.trim().is_empty() {
+                return Err(ConnectorErrorV2 {
+                    code: connector_error_codes_v2::INTERNAL.to_string(),
+                    message: "streaming plan missing terminal_content_json".to_string(),
+                    retryable: true,
+                    details: None,
+                });
+            }
+            let terminal = parse_json_text_v2(
+                &plan.terminal_content_json,
+                "submit_action.streaming.terminal_content_json",
+            )?;
+            let accepted = if plan.has_accepted_content {
+                Some(parse_json_text_v2(
+                    &plan.accepted_content_json,
+                    "submit_action.streaming.accepted_content_json",
+                )?)
+            } else {
+                None
+            };
+            let progress = if plan.has_progress_content {
+                Some(parse_json_text_v2(
+                    &plan.progress_content_json,
+                    "submit_action.streaming.progress_content_json",
+                )?)
+            } else {
+                None
+            };
+            SubmitActionOutcomeV2::Streaming {
+                plan: ActionStreamingPlanV2 {
+                    accepted_content: accepted,
+                    progress_content: progress,
+                    terminal_content: terminal,
+                },
+            }
+        }
+        None => {
+            return Err(ConnectorErrorV2 {
+                code: connector_error_codes_v2::INTERNAL.to_string(),
+                message: "submit action outcome kind is empty".to_string(),
+                retryable: true,
+                details: None,
+            });
+        }
+    };
+
+    Ok(SubmitActionResponseV2 {
+        request_id: response.request_id,
+        estimated_duration_ms: response.estimated_duration_ms,
+        outcome: mapped,
+    })
+}
+
+fn from_proto_connector_error(err: proto_v2::ConnectorErrorV2) -> ConnectorErrorV2 {
+    ConnectorErrorV2 {
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        details: err.details,
+    }
+}
+
+fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
+    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc invalid json in {field}: {err}"),
+        retryable: true,
+        details: None,
+    })
+}
+
 fn run_async<F, T>(fut: F) -> T
 where
     F: Future<Output = T>,
@@ -405,10 +964,13 @@ where
 mod tests {
     use super::{
         parse_json_text, to_proto_execution_mode, to_proto_input_mode, GrpcBridgeAdapterV1,
+        GrpcBridgeConnectorV2,
     };
     use agentfs_sdk::{
-        AdapterControlActionV1, AdapterControlOutcomeV1, AdapterExecutionModeV1,
-        AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
+        ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+        AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
+        AppConnectorV2, ConnectorContextV2, FetchLivePageRequestV2, FetchSnapshotChunkRequestV2,
+        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
     };
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -616,6 +1178,356 @@ mod tests {
                 assert_eq!(content["closed"], true);
                 assert_eq!(content["handle_id"], "ph_abc");
             }
+        }
+
+        let _ = shutdown.send(());
+    }
+
+    #[derive(Default)]
+    struct TestConnectorV2Service;
+
+    #[tonic::async_trait]
+    impl super::proto_v2::appfs_connector_v2_server::AppfsConnectorV2 for TestConnectorV2Service {
+        async fn get_connector_info(
+            &self,
+            _request: Request<super::proto_v2::GetConnectorInfoRequest>,
+        ) -> Result<Response<super::proto_v2::GetConnectorInfoResponse>, Status> {
+            Ok(Response::new(super::proto_v2::GetConnectorInfoResponse {
+                result: Some(super::proto_v2::get_connector_info_response::Result::Info(
+                    super::proto_v2::ConnectorInfoV2 {
+                        connector_id: "mock-grpc-v2".to_string(),
+                        version: "0.3.0-test".to_string(),
+                        app_id: "aiim".to_string(),
+                        transport: super::proto_v2::ConnectorTransportV2::GrpcBridge as i32,
+                        supports_snapshot: true,
+                        supports_live: true,
+                        supports_action: true,
+                        optional_features: vec!["demo_mode".to_string()],
+                    },
+                )),
+            }))
+        }
+
+        async fn health(
+            &self,
+            _request: Request<super::proto_v2::HealthRequest>,
+        ) -> Result<Response<super::proto_v2::HealthResponse>, Status> {
+            Ok(Response::new(super::proto_v2::HealthResponse {
+                result: Some(super::proto_v2::health_response::Result::Status(
+                    super::proto_v2::HealthStatusV2 {
+                        healthy: true,
+                        auth_status: super::proto_v2::AuthStatusV2::Valid as i32,
+                        message: Some("ok".to_string()),
+                        checked_at: "2026-03-24T00:00:00Z".to_string(),
+                    },
+                )),
+            }))
+        }
+
+        async fn prewarm_snapshot_meta(
+            &self,
+            _request: Request<super::proto_v2::PrewarmSnapshotMetaRequest>,
+        ) -> Result<Response<super::proto_v2::PrewarmSnapshotMetaResponse>, Status> {
+            Ok(Response::new(
+                super::proto_v2::PrewarmSnapshotMetaResponse {
+                    result: Some(
+                        super::proto_v2::prewarm_snapshot_meta_response::Result::Meta(
+                            super::proto_v2::SnapshotMetaV2 {
+                                size_bytes: Some(1024),
+                                revision: Some("rev-1".to_string()),
+                                last_modified: Some("2026-03-24T00:00:00Z".to_string()),
+                                item_count: Some(1),
+                            },
+                        ),
+                    ),
+                },
+            ))
+        }
+
+        async fn fetch_snapshot_chunk(
+            &self,
+            request: Request<super::proto_v2::FetchSnapshotChunkRequest>,
+        ) -> Result<Response<super::proto_v2::FetchSnapshotChunkResponse>, Status> {
+            let inner = request.into_inner();
+            let response = match inner.request {
+                Some(req) => match req
+                    .resume
+                    .and_then(|resume| resume.kind)
+                    .unwrap_or(super::proto_v2::snapshot_resume_v2::Kind::Start(true))
+                {
+                    super::proto_v2::snapshot_resume_v2::Kind::Start(_) => {
+                        super::proto_v2::FetchSnapshotChunkResponse {
+                            result: Some(
+                                super::proto_v2::fetch_snapshot_chunk_response::Result::Response(
+                                    super::proto_v2::FetchSnapshotChunkResponseV2 {
+                                        records: vec![super::proto_v2::SnapshotRecordV2 {
+                                            record_key: "rk-1".to_string(),
+                                            ordering_key: "ok-1".to_string(),
+                                            line_json: "{\"id\":\"m-1\"}".to_string(),
+                                        }],
+                                        emitted_bytes: 16,
+                                        next_cursor: Some("cursor-1".to_string()),
+                                        has_more: true,
+                                        revision: Some("rev-1".to_string()),
+                                    },
+                                ),
+                            ),
+                        }
+                    }
+                    super::proto_v2::snapshot_resume_v2::Kind::Cursor(cursor) => {
+                        if cursor != "cursor-1" {
+                            super::proto_v2::FetchSnapshotChunkResponse {
+                                result: Some(
+                                    super::proto_v2::fetch_snapshot_chunk_response::Result::Error(
+                                        super::proto_v2::ConnectorErrorV2 {
+                                            code: "INVALID_ARGUMENT".to_string(),
+                                            message: "unknown cursor".to_string(),
+                                            retryable: false,
+                                            details: None,
+                                        },
+                                    ),
+                                ),
+                            }
+                        } else {
+                            super::proto_v2::FetchSnapshotChunkResponse {
+                                result: Some(super::proto_v2::fetch_snapshot_chunk_response::Result::Response(
+                                    super::proto_v2::FetchSnapshotChunkResponseV2 {
+                                        records: vec![super::proto_v2::SnapshotRecordV2 {
+                                            record_key: "rk-2".to_string(),
+                                            ordering_key: "ok-2".to_string(),
+                                            line_json: "{\"id\":\"m-2\"}".to_string(),
+                                        }],
+                                        emitted_bytes: 16,
+                                        next_cursor: None,
+                                        has_more: false,
+                                        revision: Some("rev-1".to_string()),
+                                    },
+                                )),
+                            }
+                        }
+                    }
+                    _ => super::proto_v2::FetchSnapshotChunkResponse {
+                        result: Some(
+                            super::proto_v2::fetch_snapshot_chunk_response::Result::Error(
+                                super::proto_v2::ConnectorErrorV2 {
+                                    code: "NOT_SUPPORTED".to_string(),
+                                    message: "offset unsupported".to_string(),
+                                    retryable: false,
+                                    details: None,
+                                },
+                            ),
+                        ),
+                    },
+                },
+                None => super::proto_v2::FetchSnapshotChunkResponse {
+                    result: Some(
+                        super::proto_v2::fetch_snapshot_chunk_response::Result::Error(
+                            super::proto_v2::ConnectorErrorV2 {
+                                code: "INVALID_ARGUMENT".to_string(),
+                                message: "missing request".to_string(),
+                                retryable: false,
+                                details: None,
+                            },
+                        ),
+                    ),
+                },
+            };
+            Ok(Response::new(response))
+        }
+
+        async fn fetch_live_page(
+            &self,
+            request: Request<super::proto_v2::FetchLivePageRequest>,
+        ) -> Result<Response<super::proto_v2::FetchLivePageResponse>, Status> {
+            let req = request.into_inner().request;
+            let (cursor, handle) = match req {
+                Some(r) => (r.cursor, r.handle_id.unwrap_or_else(|| "ph-1".to_string())),
+                None => (None, "ph-1".to_string()),
+            };
+            let page_no = if cursor.as_deref().is_some() { 2 } else { 1 };
+            Ok(Response::new(super::proto_v2::FetchLivePageResponse {
+                result: Some(super::proto_v2::fetch_live_page_response::Result::Response(
+                    super::proto_v2::FetchLivePageResponseV2 {
+                        items_json: vec![format!("{{\"id\":\"m-{page_no}\"}}")],
+                        page: Some(super::proto_v2::LivePageInfoV2 {
+                            handle_id: handle,
+                            page_no,
+                            has_more: page_no == 1,
+                            mode: super::proto_v2::LiveModeV2::Live as i32,
+                            expires_at: Some("2026-03-24T00:00:00Z".to_string()),
+                            next_cursor: if page_no == 1 {
+                                Some("cursor-live-1".to_string())
+                            } else {
+                                None
+                            },
+                            retry_after_ms: None,
+                        }),
+                    },
+                )),
+            }))
+        }
+
+        async fn submit_action(
+            &self,
+            request: Request<super::proto_v2::SubmitActionRequest>,
+        ) -> Result<Response<super::proto_v2::SubmitActionResponse>, Status> {
+            let req = request.into_inner().request;
+            let Some(req) = req else {
+                return Ok(Response::new(super::proto_v2::SubmitActionResponse {
+                    result: Some(super::proto_v2::submit_action_response::Result::Error(
+                        super::proto_v2::ConnectorErrorV2 {
+                            code: "INVALID_ARGUMENT".to_string(),
+                            message: "missing request".to_string(),
+                            retryable: false,
+                            details: None,
+                        },
+                    )),
+                }));
+            };
+            let result = if req.execution_mode
+                == super::proto_v2::ActionExecutionModeV2::Inline as i32
+            {
+                super::proto_v2::submit_action_response::Result::Response(
+                    super::proto_v2::SubmitActionResponseV2 {
+                        request_id: "req-1".to_string(),
+                        estimated_duration_ms: Some(12),
+                        outcome: Some(super::proto_v2::SubmitActionOutcomeV2 {
+                            kind: Some(super::proto_v2::submit_action_outcome_v2::Kind::CompletedContentJson(
+                                "{\"ok\":true}".to_string(),
+                            )),
+                        }),
+                    },
+                )
+            } else {
+                super::proto_v2::submit_action_response::Result::Response(
+                    super::proto_v2::SubmitActionResponseV2 {
+                        request_id: "req-2".to_string(),
+                        estimated_duration_ms: Some(34),
+                        outcome: Some(super::proto_v2::SubmitActionOutcomeV2 {
+                            kind: Some(
+                                super::proto_v2::submit_action_outcome_v2::Kind::StreamingPlan(
+                                    super::proto_v2::ActionStreamingPlanV2 {
+                                        accepted_content_json: "{\"state\":\"accepted\"}"
+                                            .to_string(),
+                                        progress_content_json: "{\"percent\":50}".to_string(),
+                                        terminal_content_json: "{\"ok\":true}".to_string(),
+                                        has_accepted_content: true,
+                                        has_progress_content: true,
+                                    },
+                                ),
+                            ),
+                        }),
+                    },
+                )
+            };
+            Ok(Response::new(super::proto_v2::SubmitActionResponse {
+                result: Some(result),
+            }))
+        }
+    }
+
+    fn test_ctx_v2() -> ConnectorContextV2 {
+        ConnectorContextV2 {
+            app_id: "aiim".to_string(),
+            session_id: "sess-v2".to_string(),
+            request_id: "req-v2".to_string(),
+            client_token: Some("tok-v2".to_string()),
+            trace_id: Some("trace-v2".to_string()),
+        }
+    }
+
+    async fn spawn_test_grpc_v2_server() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test grpc v2 listener");
+        let addr = listener.local_addr().expect("read local addr");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    super::proto_v2::appfs_connector_v2_server::AppfsConnectorV2Server::new(
+                        TestConnectorV2Service,
+                    ),
+                )
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async move {
+                        let _ = shutdown_rx.await;
+                    },
+                )
+                .await
+                .expect("run test grpc v2 server");
+        });
+
+        (addr, shutdown_tx)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn grpc_bridge_connector_v2_roundtrip() {
+        let (addr, shutdown) = spawn_test_grpc_v2_server().await;
+        let mut connector = GrpcBridgeConnectorV2::new(
+            "aiim".to_string(),
+            format!("http://{}", addr),
+            Duration::from_millis(1000),
+            super::BridgeRuntimeOptions::from_cli(1, 10, 100, 3, 200),
+        )
+        .expect("create grpc bridge v2 connector");
+
+        let info = connector.connector_id().expect("connector info");
+        assert_eq!(info.connector_id, "mock-grpc-v2");
+
+        let ctx = test_ctx_v2();
+        let health = connector.health(&ctx).expect("health");
+        assert!(health.healthy);
+
+        let meta = connector
+            .prewarm_snapshot_meta("/messages", Duration::from_millis(200), &ctx)
+            .expect("prewarm");
+        assert_eq!(meta.revision, Some("rev-1".to_string()));
+
+        let first = connector
+            .fetch_snapshot_chunk(
+                FetchSnapshotChunkRequestV2 {
+                    resource_path: "/messages".to_string(),
+                    resume: SnapshotResumeV2::Start,
+                    budget_bytes: 1024,
+                },
+                &ctx,
+            )
+            .expect("snapshot first");
+        assert!(first.has_more);
+        assert_eq!(first.records.len(), 1);
+
+        let live = connector
+            .fetch_live_page(
+                FetchLivePageRequestV2 {
+                    resource_path: "/messages".to_string(),
+                    handle_id: None,
+                    cursor: None,
+                    page_size: 10,
+                },
+                &ctx,
+            )
+            .expect("live first");
+        assert_eq!(live.page.page_no, 1);
+        assert_eq!(live.items.len(), 1);
+
+        let inline = connector
+            .submit_action(
+                SubmitActionRequestV2 {
+                    path: "/send_message.act".to_string(),
+                    payload: serde_json::json!({"text":"hi"}),
+                    execution_mode: ActionExecutionModeV2::Inline,
+                },
+                &ctx,
+            )
+            .expect("submit inline");
+        match inline.outcome {
+            SubmitActionOutcomeV2::Completed { content } => {
+                assert_eq!(content["ok"], true);
+            }
+            _ => panic!("expected completed outcome"),
         }
 
         let _ = shutdown.send(());
