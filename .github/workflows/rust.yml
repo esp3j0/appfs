@@ -11,6 +11,8 @@ env:
 
 jobs:
   # Required AppFS gate: in-process runtime path + CT2 required set (linux).
+  # Check-run name intentionally stays stable during APPFS_V2_* -> APPFS_V3_* migration
+  # to avoid branch-protection expected-check pending drift.
   appfs-contract-gate:
     name: AppFS Contract Gate (required, linux, inprocess v2)
     runs-on: ubuntu-latest
@@ -47,11 +49,11 @@ jobs:
         APPFS_TIMEOUT_SEC: "30"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
-    - name: Run AppFS v2 contract suite (CT2 required set)
+    - name: Run AppFS v3 contract suite (CT2 required set)
       env:
-        APPFS_V2_CONTRACT_TESTS: "1"
-        APPFS_V2_STRICT: "1"
-        APPFS_V2_BUILD_BEFORE_RUN: "0"
+        APPFS_V3_CONTRACT_TESTS: "1"
+        APPFS_V3_STRICT: "1"
+        APPFS_V3_BUILD_BEFORE_RUN: "0"
       run: sh ./tests/test-appfs-v2-contract.sh
 
   # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
@@ -145,7 +147,7 @@ jobs:
   # Informational AppFS bridge signal: CT2 subset over HTTP bridge path.
   # Required gate is the in-process job above; bridge jobs are non-blocking diagnostics.
   appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, http bridge v2)
+    name: AppFS Contract Signal (informational, linux, http bridge v3)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -208,15 +210,15 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v2 contract subset (HTTP bridge mode, informational)
+    - name: Run AppFS v3 contract subset (HTTP bridge mode, informational)
       id: http_v2_subset
       continue-on-error: true
       env:
-        APPFS_V2_CONTRACT_TESTS: "1"
-        APPFS_V2_STRICT: "1"
-        APPFS_V2_BUILD_BEFORE_RUN: "0"
-        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-003,ct2-004,ct2-005,ct2-007,ct2-008,ct2-009"
-        APPFS_V2_EXTENDED_CASES: "none"
+        APPFS_V3_CONTRACT_TESTS: "1"
+        APPFS_V3_STRICT: "1"
+        APPFS_V3_BUILD_BEFORE_RUN: "0"
+        APPFS_V3_REQUIRED_CASES: "ct2-002,ct2-003,ct2-004,ct2-005,ct2-007,ct2-008,ct2-009"
+        APPFS_V3_EXTENDED_CASES: "none"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
       run: sh ./tests/test-appfs-v2-contract.sh
 
@@ -224,10 +226,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.http_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v2 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v2 HTTP bridge subset failed; non-blocking informational signal."
+          echo "AppFS v3 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v3 HTTP bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v2 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v3 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump HTTP bridge log on failure (v2)
@@ -243,7 +245,7 @@ jobs:
 
   # Informational AppFS bridge signal: higher-risk CT2 coverage over HTTP bridge path.
   appfs-contract-gate-http-bridge-v2-high-risk:
-    name: AppFS Contract Signal (informational, linux, http bridge v2 high-risk)
+    name: AppFS Contract Signal (informational, linux, http bridge v3 high-risk)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -306,15 +308,15 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v2 high-risk bridge coverage (HTTP mode, informational)
+    - name: Run AppFS v3 high-risk bridge coverage (HTTP mode, informational)
       id: http_v2_high_risk
       continue-on-error: true
       env:
-        APPFS_V2_CONTRACT_TESTS: "1"
-        APPFS_V2_STRICT: "1"
-        APPFS_V2_BUILD_BEFORE_RUN: "0"
-        APPFS_V2_REQUIRED_CASES: "ct2-006"
-        APPFS_V2_EXTENDED_CASES: "ct2-028"
+        APPFS_V3_CONTRACT_TESTS: "1"
+        APPFS_V3_STRICT: "1"
+        APPFS_V3_BUILD_BEFORE_RUN: "0"
+        APPFS_V3_REQUIRED_CASES: "ct2-006"
+        APPFS_V3_EXTENDED_CASES: "ct2-028"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
       run: sh ./tests/test-appfs-v2-contract.sh
 
@@ -322,10 +324,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.http_v2_high_risk.outcome }}" = "failure" ]; then
-          echo "AppFS v2 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v2 HTTP bridge high-risk coverage failed; non-blocking informational signal."
+          echo "AppFS v3 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v3 HTTP bridge high-risk coverage failed; non-blocking informational signal."
         else
-          echo "AppFS v2 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v3 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump HTTP bridge log on failure (v2 high-risk)
@@ -429,7 +431,7 @@ jobs:
 
   # Informational AppFS bridge signal: CT2 subset over gRPC bridge path.
   appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, grpc bridge v2)
+    name: AppFS Contract Signal (informational, linux, grpc bridge v3)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -490,15 +492,15 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v2 contract subset (gRPC bridge mode, informational)
+    - name: Run AppFS v3 contract subset (gRPC bridge mode, informational)
       id: grpc_v2_subset
       continue-on-error: true
       env:
-        APPFS_V2_CONTRACT_TESTS: "1"
-        APPFS_V2_STRICT: "1"
-        APPFS_V2_BUILD_BEFORE_RUN: "0"
-        APPFS_V2_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
-        APPFS_V2_EXTENDED_CASES: "none"
+        APPFS_V3_CONTRACT_TESTS: "1"
+        APPFS_V3_STRICT: "1"
+        APPFS_V3_BUILD_BEFORE_RUN: "0"
+        APPFS_V3_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_V3_EXTENDED_CASES: "none"
         APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
       run: sh ./tests/test-appfs-v2-contract.sh
 
@@ -506,10 +508,10 @@ jobs:
       if: always()
       run: |
         if [ "${{ steps.grpc_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v2 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v2 gRPC bridge subset failed; non-blocking informational signal."
+          echo "AppFS v3 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v3 gRPC bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v2 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS v3 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: Dump gRPC bridge log on failure (v2)

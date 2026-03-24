@@ -3,12 +3,51 @@ set -eu
 
 DIR="$(dirname "$0")"
 
-if [ "${APPFS_V2_CONTRACT_TESTS:-0}" != "1" ]; then
-    echo "SKIP appfs-v2-contract (set APPFS_V2_CONTRACT_TESTS=1 to enable)"
+env_pick() {
+    var_v3="$1"
+    var_v2="$2"
+    default_value="$3"
+    eval "value_v3=\${$var_v3:-}"
+    if [ -n "$value_v3" ]; then
+        printf '%s\n' "$value_v3"
+        return 0
+    fi
+    eval "value_v2=\${$var_v2:-}"
+    if [ -n "$value_v2" ]; then
+        printf '%s\n' "$value_v2"
+        return 0
+    fi
+    printf '%s\n' "$default_value"
+}
+
+contract_tests="$(env_pick APPFS_V3_CONTRACT_TESTS APPFS_V2_CONTRACT_TESTS 0)"
+strict_mode="$(env_pick APPFS_V3_STRICT APPFS_V2_STRICT 0)"
+build_before_run="$(env_pick APPFS_V3_BUILD_BEFORE_RUN APPFS_V2_BUILD_BEFORE_RUN 1)"
+required_selector="$(env_pick APPFS_V3_REQUIRED_CASES APPFS_V2_REQUIRED_CASES "")"
+extended_selector="$(env_pick APPFS_V3_EXTENDED_CASES APPFS_V2_EXTENDED_CASES "")"
+require_evidence="$(env_pick APPFS_V3_REQUIRE_EVIDENCE APPFS_V2_REQUIRE_EVIDENCE 1)"
+evidence_file="$(env_pick APPFS_V3_EVIDENCE_FILE APPFS_V2_EVIDENCE_FILE "")"
+evidence_dir="$(env_pick APPFS_V3_EVIDENCE_DIR APPFS_V2_EVIDENCE_DIR "")"
+
+export APPFS_V3_CONTRACT_TESTS="$contract_tests"
+export APPFS_V2_CONTRACT_TESTS="$contract_tests"
+export APPFS_V3_STRICT="$strict_mode"
+export APPFS_V2_STRICT="$strict_mode"
+export APPFS_V3_BUILD_BEFORE_RUN="$build_before_run"
+export APPFS_V2_BUILD_BEFORE_RUN="$build_before_run"
+export APPFS_V3_REQUIRED_CASES="$required_selector"
+export APPFS_V2_REQUIRED_CASES="$required_selector"
+export APPFS_V3_EXTENDED_CASES="$extended_selector"
+export APPFS_V2_EXTENDED_CASES="$extended_selector"
+export APPFS_V3_REQUIRE_EVIDENCE="$require_evidence"
+export APPFS_V2_REQUIRE_EVIDENCE="$require_evidence"
+
+if [ "$contract_tests" != "1" ]; then
+    echo "SKIP appfs-v3-contract (set APPFS_V3_CONTRACT_TESTS=1 to enable; APPFS_V2_CONTRACT_TESTS is alias)"
     exit 0
 fi
 
-echo "Running AppFS v2 contract tests (Phase D)..."
+echo "Running AppFS v3 contract tests (v2-compatible runner surface)..."
 
 required_case_map="
 ct2-001 $DIR/appfs-v2/test-ct2-001-startup-prewarm.sh
@@ -33,8 +72,6 @@ required_total=0
 required_pass=0
 extended_total=0
 extended_pass=0
-evidence_file="${APPFS_V2_EVIDENCE_FILE:-}"
-evidence_dir="${APPFS_V2_EVIDENCE_DIR:-}"
 
 if [ -z "$evidence_file" ]; then
     if [ -n "${TMPDIR:-}" ]; then
@@ -43,6 +80,7 @@ if [ -z "$evidence_file" ]; then
         evidence_file="$(mktemp "/tmp/appfs-v2-evidence.XXXXXX")"
     fi
 fi
+export APPFS_V3_EVIDENCE_FILE="$evidence_file"
 export APPFS_V2_EVIDENCE_FILE="$evidence_file"
 : >"$evidence_file"
 
@@ -53,6 +91,7 @@ if [ -z "$evidence_dir" ]; then
         evidence_dir="$(mktemp -d "/tmp/appfs-v2-evidence-dir.XXXXXX")"
     fi
 fi
+export APPFS_V3_EVIDENCE_DIR="$evidence_dir"
 export APPFS_V2_EVIDENCE_DIR="$evidence_dir"
 
 record_v2_evidence() {
@@ -297,8 +336,8 @@ PY
     esac
 }
 
-selected_required_case_map="$(select_case_map "$required_case_map" "${APPFS_V2_REQUIRED_CASES:-}" "required")"
-selected_extended_case_map="$(select_case_map "$extended_case_map" "${APPFS_V2_EXTENDED_CASES:-}" "extended")"
+selected_required_case_map="$(select_case_map "$required_case_map" "$required_selector" "required")"
+selected_extended_case_map="$(select_case_map "$extended_case_map" "$extended_selector" "extended")"
 
 echo "Case selection: required=$(case_map_ids "$selected_required_case_map") extended=$(case_map_ids "$selected_extended_case_map")"
 
@@ -332,7 +371,7 @@ run_test_case() {
         fi
 
         echo "  PENDING (extended coverage): $t"
-        if [ "${APPFS_V2_STRICT:-0}" = "1" ]; then
+        if [ "$strict_mode" = "1" ]; then
             status=1
         fi
         return 0
@@ -362,7 +401,7 @@ done <<EOF
 $selected_extended_case_map
 EOF
 
-if [ "$required_total" -gt 0 ] && [ "${APPFS_V2_REQUIRE_EVIDENCE:-1}" = "1" ]; then
+if [ "$required_total" -gt 0 ] && [ "$require_evidence" = "1" ]; then
     if case_map_has_id "$selected_required_case_map" "ct2-001"; then
         assert_required_evidence "connector.prewarm_snapshot_meta" "CT2-001 should hit startup prewarm via V2 connector"
     fi
@@ -377,11 +416,11 @@ if [ "$required_total" -gt 0 ] && [ "${APPFS_V2_REQUIRE_EVIDENCE:-1}" = "1" ]; t
     fi
 fi
 
-echo "AppFS v2 contract summary: pass=$pass_count pending=$pending_count strict=${APPFS_V2_STRICT:-0} required_pass=$required_pass/$required_total extended_pass=$extended_pass/$extended_total"
+echo "AppFS v3 contract summary: pass=$pass_count pending=$pending_count strict=$strict_mode required_pass=$required_pass/$required_total extended_pass=$extended_pass/$extended_total"
 
 if [ "$status" -ne 0 ]; then
-    echo "AppFS v2 contract suite: FAILED"
+    echo "AppFS v3 contract suite: FAILED"
     exit "$status"
 fi
 
-echo "AppFS v2 contract suite: OK"
+echo "AppFS v3 contract suite: OK"
