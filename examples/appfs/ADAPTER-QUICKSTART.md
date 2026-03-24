@@ -1,22 +1,20 @@
-﻿# AppFS Adapter Quickstart (MVP)
+# AppFS Connector Quickstart (v0.3)
 
-This guide targets adapter authors who want to pass AppFS v0.1 conformance with minimum setup.
+This is the default quickstart for AppFS v0.3 connector shipping path.
+Treat Rust in-process `DemoAppConnectorV2` as canonical behavior; HTTP/gRPC demos must match it.
 
-For full implementation and troubleshooting details, use:
+Primary v0.3 references:
 
-1. `docs/v1/APPFS-adapter-developer-guide-v0.1.md`
-2. `docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
+1. `docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md`
+2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`
 
-## 1. Choose Adapter Path
+## 1. Choose Connector Path
 
-1. In-process (Rust runtime demo path):
-   - Fastest way to run the full live suite.
-2. Out-of-process HTTP bridge:
-   - Easy polyglot integration.
-3. Out-of-process gRPC bridge:
-   - Better typed transport contract for multi-language implementations.
+1. In-process connector (Rust runtime demo path)
+2. Out-of-process HTTP connector bridge
+3. Out-of-process gRPC connector bridge
 
-## 2. One-Command Conformance
+## 2. Run V0.3 Conformance
 
 From this directory:
 
@@ -30,119 +28,41 @@ sh ./run-conformance.sh grpc-python
 What it runs:
 
 1. Mount AgentFS live filesystem.
-2. Start adapter runtime (or runtime + bridge endpoint).
-3. Execute `CT-001` to `CT-022` via `cli/tests/appfs/run-live-with-adapter.sh` (`CT-017` runs when bridge resilience probe is enabled).
+2. Start runtime + selected connector transport path.
+3. Execute contract tests via `cli/tests/appfs/run-live-with-adapter.sh`.
 
-## 2.1 V0.3 Demo Parity Baseline
+## 3. Canonical Demo Parity Checklist
 
-For v0.3 bridge work, treat Rust in-process `DemoAppConnectorV2` as canonical behavior.
-HTTP/gRPC demos should only differ on `connector_id` and `transport`.
+Keep HTTP/gRPC behavior aligned with in-process canonical for:
 
-Parity checklist:
+1. `connector_info` / `health`
+2. `prewarm_snapshot_meta`
+3. `fetch_snapshot_chunk`
+4. `fetch_live_page`
+5. `submit_action`
 
-1. snapshot record set / cursor progression / `emitted_bytes` computation (compact JSON line bytes + `\n`)
-2. live page handle/page/next-cursor semantics (`demo-live-handle-1`, `cursor-1`)
-3. submit action inline/streaming payload shape and error code mapping
-4. health/prewarm response payload and error semantics (`UPSTREAM_UNAVAILABLE`, `PERMISSION_DENIED`, `TIMEOUT`)
+Only transport-specific differences are allowed:
 
-## 3. Define Structure Before Writing Handlers
+1. `connector_id`
+2. `transport`
+3. transport envelope details
 
-Before coding bridge handlers, define:
+Key parity fixtures:
 
-1. Node templates in `manifest.res.json` (`*.res.json`, `*.res.jsonl`, `*.act`).
-2. Real sink/resource files under `/app/<app_id>/...`.
-3. A node-to-handler mapping table.
+1. snapshot start: `rk-001/rk-002`; cursor follow-up (`cursor-2`): `rk-003`
+2. snapshot `emitted_bytes`: compact JSON line bytes + newline (`+1`) per record
+3. live paging: `handle_id=demo-live-handle-1`, `cursor-1` progression
+4. inline submit: `{"ok":true,"path":"...","echo":<payload>}`
+5. streaming submit: accepted `{"state":"accepted"}`, progress `{"percent":50}`, terminal `{"ok":true}`
 
-Reference:
+## 4. HTTP / gRPC Starters
 
-1. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
+1. HTTP: `examples/appfs/http-bridge/python/`
+2. gRPC: `examples/appfs/grpc-bridge/python/` (run `./generate_stubs.sh` before server start)
 
-## 4. Minimal Rust Adapter Template
+## 5. Legacy Reference (v0.1)
 
-Template location:
+The v0.1 `AppAdapterV1` guides/templates are retained only as legacy reference:
 
-1. `examples/appfs/adapter-template/rust-minimal`
-
-Template commands:
-
-```bash
-cd examples/appfs/adapter-template/rust-minimal
-cargo test
-```
-
-Template tests use frozen SDK matrix runners:
-
-1. `run_required_case_matrix_v1`
-2. `run_error_case_matrix_v1`
-
-## 5. HTTP Bridge Starter
-
-Starter location:
-
-1. `examples/appfs/http-bridge/python/bridge_server.py`
-2. `examples/appfs/http-bridge/python/run-conformance.sh`
-
-Manual run:
-
-```bash
-cd examples/appfs/http-bridge/python
-uv run python bridge_server.py
-```
-
-## 6. gRPC Bridge Starter
-
-Starter location:
-
-1. `examples/appfs/grpc-bridge/python/grpc_server.py`
-2. `examples/appfs/grpc-bridge/python/run-conformance.sh`
-
-Before running gRPC quickstart:
-
-1. Install dependencies in `examples/appfs/grpc-bridge/python/requirements.txt`.
-2. Generate stubs via `./generate_stubs.sh`.
-
-## 7. Compatibility Checklist (Minimum)
-
-Before claiming compatibility, verify:
-
-1. `.act` append+JSONL submit semantics.
-2. Stream lifecycle and replay surfaces.
-3. Paging handle error mapping (`fetch_next`, `close`).
-4. Snapshot full-file semantics (`*.res.jsonl`) and over-limit mapping (`SNAPSHOT_TOO_LARGE`).
-5. `AppAdapterV1` contract compliance.
-6. CI/static/live conformance evidence.
-7. Declared node templates and bridge handlers are fully mapped 1:1.
-
-Reference docs:
-
-1. `../../docs/v1/APPFS-v0.1.md`
-2. `../../docs/v1/APPFS-adapter-requirements-v0.1.md`
-3. `../../docs/v1/APPFS-compatibility-matrix-v0.1.md`
-4. `../../docs/v1/APPFS-conformance-v0.1.md`
-5. `../../docs/v1/APPFS-contract-tests-v0.1.md`
-6. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`
-7. `../../docs/v1/APPFS-adapter-structure-mapping-v0.1.md`
-
-## 8. Troubleshooting Entry
-
-If you hit runtime/bridge test failures (port conflicts, `uv` issues, gRPC deps, CT-017 failures), start from:
-
-1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md#8-troubleshooting-handbook`
-
-## 9. Scaffold New Adapter
-
-Generate a new Python HTTP bridge scaffold:
-
-```bash
-sh ./new-adapter.sh myapp
-```
-
-Generated path:
-
-1. `./adapters/myapp/python`
-
-For custom app fixtures during live conformance, override:
-
-1. `APPFS_FIXTURE_DIR`
-2. `APPFS_APP_ID`
-
+1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`
+2. `examples/appfs/adapter-template/rust-minimal`

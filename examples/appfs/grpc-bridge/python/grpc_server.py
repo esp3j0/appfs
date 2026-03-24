@@ -202,7 +202,15 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def Health(self, request: pb2.HealthRequest, context: grpc.ServicerContext):
         _ = context
-        trace_id = request.context.trace_id if request.context else ""
+        if not request.HasField("context"):
+            return pb2.HealthResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="context object is required",
+                    retryable=False,
+                )
+            )
+        trace_id = request.context.trace_id
         if trace_id == "force-upstream-unavailable":
             return pb2.HealthResponse(
                 error=pb2.ConnectorErrorV2(
@@ -224,6 +232,14 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def PrewarmSnapshotMeta(self, request: pb2.PrewarmSnapshotMetaRequest, context: grpc.ServicerContext):
         _ = context
+        if not request.HasField("context"):
+            return pb2.PrewarmSnapshotMetaResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="context object is required",
+                    retryable=False,
+                )
+            )
         if "/forbidden/" in request.resource_path:
             return pb2.PrewarmSnapshotMetaResponse(
                 error=pb2.ConnectorErrorV2(
@@ -256,6 +272,14 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def FetchSnapshotChunk(self, request: pb2.FetchSnapshotChunkRequest, context: grpc.ServicerContext):
         _ = context
+        if not request.HasField("context"):
+            return pb2.FetchSnapshotChunkResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="context object is required",
+                    retryable=False,
+                )
+            )
         if not request.HasField("request"):
             return pb2.FetchSnapshotChunkResponse(
                 error=pb2.ConnectorErrorV2(
@@ -372,6 +396,14 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def FetchLivePage(self, request: pb2.FetchLivePageRequest, context: grpc.ServicerContext):
         _ = context
+        if not request.HasField("context"):
+            return pb2.FetchLivePageResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="context object is required",
+                    retryable=False,
+                )
+            )
         if not request.HasField("request"):
             return pb2.FetchLivePageResponse(
                 error=pb2.ConnectorErrorV2(
@@ -393,7 +425,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             return pb2.FetchLivePageResponse(
                 error=pb2.ConnectorErrorV2(
                     code="CURSOR_INVALID",
-                    message="cursor invalid",
+                    message="cursor is invalid",
                     retryable=False,
                 )
             )
@@ -401,7 +433,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             return pb2.FetchLivePageResponse(
                 error=pb2.ConnectorErrorV2(
                     code="CURSOR_EXPIRED",
-                    message="cursor expired",
+                    message="cursor has expired",
                     retryable=False,
                 )
             )
@@ -425,6 +457,14 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         )
 
     def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
+        if not request.HasField("context"):
+            return pb2.SubmitActionResponse(
+                error=pb2.ConnectorErrorV2(
+                    code="INVALID_ARGUMENT",
+                    message="context object is required",
+                    retryable=False,
+                )
+            )
         if not request.HasField("request"):
             return pb2.SubmitActionResponse(
                 error=pb2.ConnectorErrorV2(
@@ -472,7 +512,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         if req.execution_mode == pb2.ACTION_EXECUTION_MODE_V2_INLINE:
             return pb2.SubmitActionResponse(
                 response=pb2.SubmitActionResponseV2(
-                    request_id=request.context.request_id if request.context else "req-v2",
+                    request_id=request.context.request_id,
                     estimated_duration_ms=120,
                     outcome=pb2.SubmitActionOutcomeV2(
                         completed_content_json=_json_compact(
@@ -484,7 +524,7 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
         return pb2.SubmitActionResponse(
             response=pb2.SubmitActionResponseV2(
-                request_id=request.context.request_id if request.context else "req-v2",
+                request_id=request.context.request_id,
                 estimated_duration_ms=120,
                 outcome=pb2.SubmitActionOutcomeV2(
                     streaming_plan=pb2.ActionStreamingPlanV2(

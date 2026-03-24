@@ -1,6 +1,6 @@
 ﻿# AppFS Example Tree
 
-This directory contains AppFS fixtures and bridge examples used by v0.1 baseline and v0.3 connectorization flows.
+This directory contains AppFS v0.3 connectorization examples and reference fixtures.
 
 ## Layout
 
@@ -11,10 +11,10 @@ This directory contains AppFS fixtures and bridge examples used by v0.1 baseline
 5. `aiim/_snapshot/refresh.act` for explicit snapshot materialization checks.
 6. Resource/action sample paths under `contacts/`, `files/`, `chats/`, `feed/`.
 7. `http-bridge/python/` and `grpc-bridge/python/` out-of-process bridge examples.
-8. `adapter-template/rust-minimal/` minimal Rust adapter template using frozen `AppAdapterV1`.
+8. `adapter-template/rust-minimal/` legacy v0.1 (`AppAdapterV1`) template kept for reference.
 9. `new-adapter.sh` one-command scaffold for new Python HTTP bridge adapters.
 
-## Contract Checks
+## V0.3 Contract Checks
 
 Static fixture check:
 
@@ -23,7 +23,7 @@ cd cli
 APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs" sh ./tests/test-appfs-contract.sh
 ```
 
-Live conformance (one command):
+Live conformance (v0.3 connector main path):
 
 ```bash
 cd examples/appfs
@@ -59,6 +59,6 @@ Parity fixture highlights:
 6. inline submit outcome: `{"ok":true,"path":"...","echo":<payload>}`
 7. streaming submit plan: accepted `{"state":"accepted"}`, progress `{"percent":50}`, terminal `{"ok":true}`
 
-See `ADAPTER-QUICKSTART.md` for adapter author workflow.
-For full workflow + troubleshooting, see `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`.
+See `ADAPTER-QUICKSTART.md` for v0.3 adapter workflow.
+Legacy v0.1 guidance is reference-only: `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`.
 
