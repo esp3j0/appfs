@@ -44,6 +44,29 @@ def _env_delay_ms(name: str) -> int:
     raw = os.getenv(name, "").strip()
     if raw == "":
         return 0
+
+
+def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
+    if not hasattr(message, "HasField") or not message.HasField("context"):
+        return pb2.ConnectorErrorV2(
+            code="INVALID_ARGUMENT",
+            message="context object is required",
+            retryable=False,
+        )
+    ctx = message.context
+    required = (
+        ("app_id", ctx.app_id),
+        ("session_id", ctx.session_id),
+        ("request_id", ctx.request_id),
+    )
+    for field, value in required:
+        if not isinstance(value, str) or value.strip() == "":
+            return pb2.ConnectorErrorV2(
+                code="INVALID_ARGUMENT",
+                message=f"context.{field} must be non-empty string",
+                retryable=False,
+            )
+    return None
     try:
         return max(0, int(raw))
     except ValueError:
@@ -202,14 +225,9 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def Health(self, request: pb2.HealthRequest, context: grpc.ServicerContext):
         _ = context
-        if not request.HasField("context"):
-            return pb2.HealthResponse(
-                error=pb2.ConnectorErrorV2(
-                    code="INVALID_ARGUMENT",
-                    message="context object is required",
-                    retryable=False,
-                )
-            )
+        context_error = _validate_context_v2(request)
+        if context_error is not None:
+            return pb2.HealthResponse(error=context_error)
         trace_id = request.context.trace_id
         if trace_id == "force-upstream-unavailable":
             return pb2.HealthResponse(
@@ -232,14 +250,9 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def PrewarmSnapshotMeta(self, request: pb2.PrewarmSnapshotMetaRequest, context: grpc.ServicerContext):
         _ = context
-        if not request.HasField("context"):
-            return pb2.PrewarmSnapshotMetaResponse(
-                error=pb2.ConnectorErrorV2(
-                    code="INVALID_ARGUMENT",
-                    message="context object is required",
-                    retryable=False,
-                )
-            )
+        context_error = _validate_context_v2(request)
+        if context_error is not None:
+            return pb2.PrewarmSnapshotMetaResponse(error=context_error)
         if "/forbidden/" in request.resource_path:
             return pb2.PrewarmSnapshotMetaResponse(
                 error=pb2.ConnectorErrorV2(
@@ -272,14 +285,9 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def FetchSnapshotChunk(self, request: pb2.FetchSnapshotChunkRequest, context: grpc.ServicerContext):
         _ = context
-        if not request.HasField("context"):
-            return pb2.FetchSnapshotChunkResponse(
-                error=pb2.ConnectorErrorV2(
-                    code="INVALID_ARGUMENT",
-                    message="context object is required",
-                    retryable=False,
-                )
-            )
+        context_error = _validate_context_v2(request)
+        if context_error is not None:
+            return pb2.FetchSnapshotChunkResponse(error=context_error)
         if not request.HasField("request"):
             return pb2.FetchSnapshotChunkResponse(
                 error=pb2.ConnectorErrorV2(
@@ -396,14 +404,9 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
 
     def FetchLivePage(self, request: pb2.FetchLivePageRequest, context: grpc.ServicerContext):
         _ = context
-        if not request.HasField("context"):
-            return pb2.FetchLivePageResponse(
-                error=pb2.ConnectorErrorV2(
-                    code="INVALID_ARGUMENT",
-                    message="context object is required",
-                    retryable=False,
-                )
-            )
+        context_error = _validate_context_v2(request)
+        if context_error is not None:
+            return pb2.FetchLivePageResponse(error=context_error)
         if not request.HasField("request"):
             return pb2.FetchLivePageResponse(
                 error=pb2.ConnectorErrorV2(
@@ -457,14 +460,9 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         )
 
     def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
-        if not request.HasField("context"):
-            return pb2.SubmitActionResponse(
-                error=pb2.ConnectorErrorV2(
-                    code="INVALID_ARGUMENT",
-                    message="context object is required",
-                    retryable=False,
-                )
-            )
+        context_error = _validate_context_v2(request)
+        if context_error is not None:
+            return pb2.SubmitActionResponse(error=context_error)
         if not request.HasField("request"):
             return pb2.SubmitActionResponse(
                 error=pb2.ConnectorErrorV2(
