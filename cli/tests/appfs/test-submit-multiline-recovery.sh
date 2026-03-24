@@ -74,12 +74,12 @@ pass "event stream grew ($before_lines -> $after_lines)"
 line1="$(grep "$token1" "$events" | tail -n 1)"
 line2="$(grep "$token2" "$events" | tail -n 1)"
 
-echo "$line1" | jq -e '.type == "action.completed"' >/dev/null 2>&1 || fail "token1 terminal type mismatch"
-echo "$line2" | jq -e '.type == "action.completed"' >/dev/null 2>&1 || fail "token2 terminal type mismatch"
+printf '%s\n' "$line1" | jq -e '.type == "action.completed"' >/dev/null 2>&1 || fail "token1 terminal type mismatch"
+printf '%s\n' "$line2" | jq -e '.type == "action.completed"' >/dev/null 2>&1 || fail "token2 terminal type mismatch"
 pass "multiline submits produced completed terminal events"
 
-seq1="$(echo "$line1" | jq -r '.seq')"
-seq2="$(echo "$line2" | jq -r '.seq')"
+seq1="$(printf '%s\n' "$line1" | jq -r '.seq')"
+seq2="$(printf '%s\n' "$line2" | jq -r '.seq')"
 [ "$seq1" -lt "$seq2" ] || fail "multiline submit order mismatch: seq1=$seq1 seq2=$seq2"
 pass "multiline submit order preserved by stream sequence"
 
