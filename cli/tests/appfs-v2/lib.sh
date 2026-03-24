@@ -5,6 +5,18 @@ say() {
     printf '%s\n' "$*"
 }
 
+record_v2_evidence() {
+    key="$1"
+    value="${2:-}"
+    evidence_file="${APPFS_V2_EVIDENCE_FILE:-}"
+    [ -n "$evidence_file" ] || return 0
+    if [ -n "$value" ]; then
+        printf '%s=%s\n' "$key" "$value" >>"$evidence_file"
+    else
+        printf '%s\n' "$key" >>"$evidence_file"
+    fi
+}
+
 pass() {
     say "  OK   $*"
 }
@@ -205,6 +217,21 @@ start_appfs_v2_adapter() {
     snapshot_expand_delay_ms="${7:-}"
     snapshot_publish_delay_ms="${8:-}"
     snapshot_refresh_force_expand="${9:-}"
+
+    transport_label="inprocess"
+    if [ -n "${APPFS_ADAPTER_HTTP_ENDPOINT:-}" ]; then
+        transport_label="http_bridge"
+    fi
+    if [ -n "${APPFS_ADAPTER_GRPC_ENDPOINT:-}" ]; then
+        transport_label="grpc_bridge"
+    fi
+    record_v2_evidence "runtime.v2_transport" "$transport_label"
+    if [ -n "${APPFS_ADAPTER_HTTP_ENDPOINT:-}" ]; then
+        record_v2_evidence "runtime.bridge.http_endpoint" "${APPFS_ADAPTER_HTTP_ENDPOINT}"
+    fi
+    if [ -n "${APPFS_ADAPTER_GRPC_ENDPOINT:-}" ]; then
+        record_v2_evidence "runtime.bridge.grpc_endpoint" "${APPFS_ADAPTER_GRPC_ENDPOINT}"
+    fi
 
     wait_bridge_endpoint_ready
 

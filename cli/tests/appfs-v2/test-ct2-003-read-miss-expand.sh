@@ -206,6 +206,7 @@ assert_json_expr "$expand_done_line" 'obj.get("content", {}).get("path") == "/ch
 grep -F -q "[cache] state resource=/chats/chat-001/messages.res.jsonl from=cold to=warming" "$ADAPTER_LOG" || fail "missing cold->warming state transition log"
 grep -F -q "[cache] state resource=/chats/chat-001/messages.res.jsonl from=warming to=hot" "$ADAPTER_LOG" || fail "missing warming->hot state transition log"
 grep -F -q "[cache] expanded resource=/chats/chat-001/messages.res.jsonl bytes=" "$ADAPTER_LOG" || fail "missing expansion completion log"
+record_v2_evidence "connector.fetch_snapshot_chunk" "resource=/chats/chat-001/messages.res.jsonl"
 pass "cold -> warming -> hot with cache.expand evidence is materialized"
 
 stop_adapter

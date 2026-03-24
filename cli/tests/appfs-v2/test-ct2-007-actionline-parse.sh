@@ -68,6 +68,7 @@ assert_token_completed() {
     line="$(grep "$token" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
     [ -n "$line" ] || fail "missing event line for token=$token"
     assert_json_expr "$line" 'obj.get("type") == "action.completed"' "token $token did not emit action.completed"
+    assert_json_expr "$line" 'isinstance(obj.get("content"), dict) and isinstance(obj.get("content", {}).get("echo"), dict)' "token $token should carry v2 connector content.echo object"
     actual_token="$(printf '%s\n' "$line" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("client_token", ""))')"
     [ "$actual_token" = "$token" ] || fail "expected client_token=$token, got $actual_token"
 }
@@ -112,6 +113,7 @@ wait_token_event "$token_3" "$EVENTS" 15 || fail "case 3 token event timeout"
 wait_token_event "$token_4" "$EVENTS" 15 || fail "case 4 token event timeout"
 assert_token_completed "$token_3"
 assert_token_completed "$token_4"
+record_v2_evidence "connector.submit_action" "path=/contacts/zhangsan/send_message.act"
 pass "multi-line JSONL action submissions parsed independently"
 
 say "CT2-007 done"

@@ -129,6 +129,7 @@ assert_json_expr "$event_line" 'obj.get("content", {}).get("page", {}).get("mode
 next_page_no="$(printf '%s\n' "$event_line" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("content", {}).get("page", {}).get("page_no", -1))')"
 expected_page_no=$((initial_page_no + 1))
 [ "$next_page_no" -eq "$expected_page_no" ] || fail "expected page_no=$expected_page_no after fetch_next, got $next_page_no"
+record_v2_evidence "connector.fetch_live_page" "resource=/feed/recommendations.res.json"
 pass "fetch_next minimal flow works with page_no increment"
 
 say "CT2-009 done"

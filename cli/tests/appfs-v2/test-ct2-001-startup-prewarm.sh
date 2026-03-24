@@ -137,6 +137,7 @@ start_adapter_with_prewarm_delay 0
 pass "adapter started for prewarm-success scenario"
 
 wait_log_contains "[prewarm] resource=/chats/chat-001/messages.res.jsonl state=hot" "$ADAPTER_LOG" 10 || fail "missing prewarm success log evidence"
+record_v2_evidence "connector.prewarm_snapshot_meta" "resource=/chats/chat-001/messages.res.jsonl"
 pass "startup prewarm success marks snapshot hot with explicit log evidence"
 
 stop_adapter

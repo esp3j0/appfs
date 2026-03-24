@@ -33,6 +33,17 @@ required_total=0
 required_pass=0
 extended_total=0
 extended_pass=0
+evidence_file="${APPFS_V2_EVIDENCE_FILE:-}"
+
+if [ -z "$evidence_file" ]; then
+    if [ -n "${TMPDIR:-}" ]; then
+        evidence_file="$(mktemp "$TMPDIR/appfs-v2-evidence.XXXXXX")"
+    else
+        evidence_file="$(mktemp "/tmp/appfs-v2-evidence.XXXXXX")"
+    fi
+fi
+export APPFS_V2_EVIDENCE_FILE="$evidence_file"
+: >"$evidence_file"
 
 normalize_selector_token() {
     raw="$1"
@@ -139,6 +150,56 @@ EOF
     fi
 }
 
+case_map_has_id() {
+    case_map="$1"
+    wanted_id="$2"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case_id="${line%% *}"
+        if [ "$case_id" = "$wanted_id" ]; then
+            return 0
+        fi
+    done <<EOF
+$case_map
+EOF
+    return 1
+}
+
+evidence_has_key() {
+    key="$1"
+    if [ ! -f "$APPFS_V2_EVIDENCE_FILE" ]; then
+        return 1
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            "$key"|"$key"=*)
+                return 0
+                ;;
+        esac
+    done <"$APPFS_V2_EVIDENCE_FILE"
+    return 1
+}
+
+assert_required_evidence() {
+    expected_key="$1"
+    reason="$2"
+    if evidence_has_key "$expected_key"; then
+        return 0
+    fi
+
+    echo "  FAIL (required v2 evidence missing): $expected_key ($reason)"
+    echo "  Evidence file: $APPFS_V2_EVIDENCE_FILE"
+    echo "  Runtime transport env: http=${APPFS_ADAPTER_HTTP_ENDPOINT:-none} grpc=${APPFS_ADAPTER_GRPC_ENDPOINT:-none}"
+    if [ -f "$APPFS_V2_EVIDENCE_FILE" ]; then
+        echo "  Collected evidence:"
+        sed 's/^/    /' "$APPFS_V2_EVIDENCE_FILE"
+    else
+        echo "  Collected evidence: <missing file>"
+    fi
+    status=1
+}
+
 selected_required_case_map="$(select_case_map "$required_case_map" "${APPFS_V2_REQUIRED_CASES:-}" "required")"
 selected_extended_case_map="$(select_case_map "$extended_case_map" "${APPFS_V2_EXTENDED_CASES:-}" "extended")"
 required_tests="$(case_map_to_tests "$selected_required_case_map")"
@@ -193,6 +254,23 @@ for t in $extended_tests; do
     extended_total=$((extended_total + 1))
     run_test_case "$t" "extended"
 done
+
+if [ "$required_total" -gt 0 ] && [ "${APPFS_V2_REQUIRE_EVIDENCE:-1}" = "1" ]; then
+    assert_required_evidence "runtime.v2_transport" "runtime path should record selected transport"
+
+    if case_map_has_id "$selected_required_case_map" "ct2-001"; then
+        assert_required_evidence "connector.prewarm_snapshot_meta" "CT2-001 should hit startup prewarm via V2 connector"
+    fi
+    if case_map_has_id "$selected_required_case_map" "ct2-003"; then
+        assert_required_evidence "connector.fetch_snapshot_chunk" "CT2-003 should expand snapshot through V2 connector"
+    fi
+    if case_map_has_id "$selected_required_case_map" "ct2-007"; then
+        assert_required_evidence "connector.submit_action" "CT2-007 should submit actions through V2 connector"
+    fi
+    if case_map_has_id "$selected_required_case_map" "ct2-009"; then
+        assert_required_evidence "connector.fetch_live_page" "CT2-009 should page live resource through V2 connector"
+    fi
+fi
 
 echo "AppFS v2 contract summary: pass=$pass_count pending=$pending_count strict=${APPFS_V2_STRICT:-0} required_pass=$required_pass/$required_total extended_pass=$extended_pass/$extended_total"
 

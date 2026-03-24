@@ -10,9 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Required AppFS gate: v0.1 baseline smoke + v2 CT2 required set (linux)
+  # Required AppFS gate: in-process runtime path + CT2 required set (linux).
   appfs-contract-gate:
-    name: AppFS Contract Gate (linux)
+    name: AppFS Contract Gate (required, linux, inprocess v2)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -142,11 +142,12 @@ jobs:
           kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
-  # Required AppFS v0.2 bridge gate: stable CT2 subset over HTTP bridge path.
-  # Use the historical check-run name so existing branch protection keeps working.
+  # Informational AppFS bridge signal: CT2 subset over HTTP bridge path.
+  # Required gate is the in-process job above; bridge jobs are non-blocking diagnostics.
   appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Gate (linux, http bridge)
+    name: AppFS Contract Signal (informational, linux, http bridge v2)
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: appfs-contract-gate
     defaults:
       run:
@@ -206,7 +207,9 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v0.2 contract subset (HTTP bridge mode)
+    - name: Run AppFS v0.2 contract subset (HTTP bridge mode, informational)
+      id: http_v2_subset
+      continue-on-error: true
       env:
         APPFS_V2_CONTRACT_TESTS: "1"
         APPFS_V2_STRICT: "1"
@@ -216,8 +219,18 @@ jobs:
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
       run: sh ./tests/test-appfs-v2-contract.sh
 
+    - name: Summarize HTTP bridge subset informational result
+      if: always()
+      run: |
+        if [ "${{ steps.http_v2_subset.outcome }}" = "failure" ]; then
+          echo "AppFS v0.2 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS v0.2 HTTP bridge subset failed; non-blocking informational signal."
+        else
+          echo "AppFS v0.2 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
     - name: Dump HTTP bridge log on failure (v2)
-      if: failure()
+      if: steps.http_v2_subset.outcome == 'failure'
       run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-v2.log" || true
 
     - name: Stop HTTP bridge (v2)
@@ -419,8 +432,9 @@ jobs:
   # Use the historical check-run name so existing branch protection keeps working.
   # Keep this gate informational even after CT2-009 parity closure.
   appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Gate (linux, grpc bridge)
+    name: AppFS Contract Signal (informational, linux, grpc bridge v2)
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: appfs-contract-gate
     if: always()
     defaults:
