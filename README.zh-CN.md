@@ -67,7 +67,7 @@ echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>
 
 ## 运行时快速开始（HTTP Bridge）
 
-这套 quick start 运行的是 `v0.2` backend runtime，加上通过 Python HTTP bridge 暴露的 reference/demo connector。它展示的是 backend 协议链路和 runtime 行为，不等于生产 connector 已接入完成。
+这套 quick start 对应当前 `v0.3` shipping 主路径：`agentfs serve appfs` 默认走 `AppConnectorV2`（发布语义记作 V3），并通过 Python HTTP bridge 暴露 reference/demo connector。
 
 环境前置条件：
 
@@ -223,13 +223,13 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 
 ## 架构
 
-### v0.2 Backend + Connector 调用链
+### v0.3 Backend + Connector 调用链
 
 ```mermaid
 flowchart TD
     A["Agent shell / PowerShell / bash"] --> B["AgentFS 挂载（Windows: WinFsp，Linux: FUSE）"]
     B --> C["AppFS 树（_meta、_stream、_paging、_snapshot、业务路径）"]
-    C --> D["agentfs serve appfs（v0.2 backend runtime）"]
+    C --> D["agentfs serve appfs（v0.3 runtime）"]
 
     D --> E["Action Dispatcher（ActionLineV2 解析与校验）"]
     D --> F["Snapshot Cache Manager（prewarm、read-through、stale）"]
@@ -252,11 +252,11 @@ flowchart TD
     G --> C
 ```
 
-### v0.2 中 `serve appfs` 的职责
+### v0.3 中 `serve appfs` 的职责
 
 `cargo run -- serve appfs --root ... --app-id ...` 启动的是 AppFS backend runtime。当前实现里它仍然是一个长驻进程，内部有 poll/event loop，但它已经不再是 v0.1 那种薄 sidecar。
 
-在 v0.2 里它负责：
+在 v0.3 里它负责：
 
 1. 装载 manifest、action spec、snapshot spec、paging 控制与运行策略；
 2. 选择并初始化 connector transport（进程内 / HTTP bridge / gRPC bridge）；
@@ -267,15 +267,39 @@ flowchart TD
 换句话说：
 
 1. **v0.1** 的 `serve appfs`：更接近 sidecar/reference runtime，主要围绕 action sink 和 bridge 转发。
-2. **v0.2** 的 `serve appfs`：是承接 AppFS 协议语义的 backend runtime，connector 只负责 app-specific 的上游调用。
+2. **v0.3** 的 `serve appfs`：承接 AppFS 协议语义，connector 聚焦上游 app I/O 与映射。
 
-## v0.2 Connector 状态说明
+## v0.3 发布状态说明
 
-`v0.2.0` 的定位是 backend/runtime 基线与合同门禁收口，不再作为“真实 app connector 可直接对接”的完成能力声明。真实 app 的 connector 化已转入 `v0.3` 主线。
+`v0.3` 是当前仓库的 connectorization shipping 基线。
 
-当前规划与执行基线请看：
+本次已完成并可对外声明：
 
-1. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
+1. runtime 默认主路径切到 `AppConnectorV2`（in-process / HTTP bridge / gRPC bridge）。
+2. prewarm、snapshot chunk、live paging、submit action 全部走 connector V2 能力面。
+3. HTTP/gRPC reference bridge 已提供 V2 connector 协议面。
+4. CT2/CI 门禁已加入 runtime-derived connector evidence 断言。
+
+本次不宣称完成：
+
+1. 多真实 app 的生产级 rollout。
+2. 仓库级发布说明内的“大规模真实 app 接入完成”。
+
+收口详情见：
+
+1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+
+## 破坏性变更与迁移说明（v0.3）
+
+1. connector 主路径已从 legacy `AppAdapterV1` 切换为 `AppConnectorV2`。
+2. bridge 默认协议面切到 V2（HTTP: `/v2/connector/*`，gRPC: V2 connector service）。
+3. runner/CI 环境变量命名正在从 `APPFS_V2_*` 迁移到 `APPFS_V3_*`。
+4. 迁移窗口内保留 `APPFS_V2_*` 兼容别名；同一开关同时设置时，`APPFS_V3_*` 优先。
+5. 为避免 branch protection / ruleset 的 expected-check 漂移，迁移窗口内冻结以下 check-run 名称：
+   - `AppFS Contract Gate (required, linux, inprocess v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2 high-risk)`
+   - `AppFS Contract Signal (informational, linux, grpc bridge v2)`
 
 ## v0.1 Legacy Reference（遗留参考）
 
@@ -289,30 +313,27 @@ flowchart TD
 
 ## AppFS 相关目录
 
-1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`：v0.2 目标、边界与术语。
-2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`：connector 契约与最小能力面。
-3. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`：backend 组件边界、状态机与数据流。
-4. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`：required / informational 合同测试集。
-5. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`：v0.3 connectorization 范围、issue 清单与门禁口径。
-6. `examples/appfs/`：参考夹具与 bridge 示例。
-7. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`snapshot_cache`、`recovery`、`events`、`paging`）。
+1. `docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md`：v0.3 架构决策与边界。
+2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`：冻结的 connector V2 契约面。
+3. `docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md`：v0.3 收口、迁移窗口与 CI 语义。
+4. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`：执行计划与状态对齐。
+5. `examples/appfs/`：参考夹具与 bridge 示例。
+6. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`snapshot_cache`、`recovery`、`events`、`paging`）。
 
 ## 当前状态
 
-当前仓库中的 AppFS v0.2 本轮实现已完成：
+当前仓库中的 AppFS v0.3 connectorization 收口已完成：
 
-1. Phase A ~ E 已收口。
-2. Linux required 集 `CT2-001..009` 已完成。
-3. `CT2-010` 最小跨平台矩阵已完成，作为 informational 证据保留。
-4. 真实 app connector 对接不作为 `v0.2` 已完成项，已转入 `v0.3` 主线跟进。
-5. `v0.1` 保留为 baseline/reference 与回归对照材料。
+1. Linux required 合同集（in-process runtime 主路径）已通过。
+2. HTTP/gRPC bridge CT2 子集在 CI 中以 informational signal 方式持续跟踪。
+3. 文档、release 说明与迁移语义已对齐 v0.3。
+4. `v0.1` 继续保留为 baseline/reference 与回归对照材料。
+5. 真实 app pilot rollout 不在本次仓库级收口声明内。
 
 收口与发布相关文档：
 
-1. [APPFS-v0.2-实施计划.zh-CN.md](docs/v2/APPFS-v0.2-实施计划.zh-CN.md)
-2. [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](docs/v2/APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
-3. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
-4. [APPFS-v0.2-RC门禁证据包.zh-CN.md](docs/v2/APPFS-v0.2-RC门禁证据包.zh-CN.md)
+1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+2. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
 
 ## 许可证
 

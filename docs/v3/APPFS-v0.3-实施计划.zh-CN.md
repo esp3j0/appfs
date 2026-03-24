@@ -1,8 +1,12 @@
 # APPFS v0.3 实施计划（Connectorization）
 
-- 版本：`v0.3 (draft)`
-- 状态：`Planning (2026-03-23)`
+- 版本：`v0.3`
+- 状态：`Closed for repository-level connectorization (2026-03-24)`
 - 目标：以破坏性升级方式完成 Connector 化收口，使 `in-process`、`HTTP bridge`、`gRPC bridge` 统一到同一套最新 connector 契约。
+
+> 2026-03-24 状态更新：
+> - V3-01 ~ V3-08、V3-10 已完成并进入仓库级发布口径。
+> - V3-09（真实 app pilot）不作为本次仓库发布收口的宣称项，后续以独立专项推进。
 
 ## 1. 背景与决策
 

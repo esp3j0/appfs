@@ -67,7 +67,7 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
 
 ## Runtime Quick Start (HTTP Bridge)
 
-This quick start runs the `v0.2` backend runtime with a reference/demo connector exposed through the Python HTTP bridge. It demonstrates the backend protocol path and runtime behavior; it is not a production connector rollout.
+This quick start runs the `v0.3` shipping runtime path: `agentfs serve appfs` routes through `AppConnectorV2` (V3 release semantics), with the reference/demo connector exposed by the Python HTTP bridge.
 
 Prerequisites:
 
@@ -223,13 +223,13 @@ Notes:
 
 ## Architecture
 
-### v0.2 Backend + Connector Call Chain
+### v0.3 Backend + Connector Call Chain
 
 ```mermaid
 flowchart TD
     A["Agent shell / PowerShell / bash"] --> B["AgentFS mount (Windows: WinFsp, Linux: FUSE)"]
     B --> C["AppFS tree (_meta, _stream, _paging, _snapshot, domain paths)"]
-    C --> D["agentfs serve appfs (v0.2 backend runtime)"]
+    C --> D["agentfs serve appfs (v0.3 runtime)"]
 
     D --> E["Action Dispatcher (ActionLineV2 parse + validation)"]
     D --> F["Snapshot Cache Manager (prewarm, read-through, stale handling)"]
@@ -252,11 +252,11 @@ flowchart TD
     G --> C
 ```
 
-### What `serve appfs` Does in v0.2
+### What `serve appfs` Does in v0.3
 
 `cargo run -- serve appfs --root ... --app-id ...` starts the AppFS backend runtime. In the current implementation it is a long-running process with a poll/event loop, but its role is no longer a thin v0.1 sidecar.
 
-In v0.2 it is responsible for:
+In v0.3 it is responsible for:
 
 1. loading manifest, action specs, snapshot specs, paging controls, and runtime policy;
 2. selecting and initializing the connector transport (in-process / HTTP bridge / gRPC bridge);
@@ -267,15 +267,39 @@ In v0.2 it is responsible for:
 Put differently:
 
 1. **v0.1** `serve appfs`: primarily a sidecar/reference runtime around action sinks and bridge dispatch.
-2. **v0.2** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector only provides app-specific upstream calls.
+2. **v0.3** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector focuses on upstream app I/O and mapping.
 
-## v0.2 Connector Status
+## v0.3 Release Status
 
-`v0.2.0` should be treated as backend/runtime baseline and contract-gate closure only. Real-app connector onboarding is not claimed as a completed `v0.2` capability and has been moved to the `v0.3` connectorization line.
+`v0.3` is the current shipping connectorization baseline in this repository.
 
-For current planning and execution baseline, see:
+Done and shipped in `v0.3`:
 
-1. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
+1. runtime default path routes through `AppConnectorV2` (in-process / HTTP bridge / gRPC bridge).
+2. startup prewarm, snapshot chunk fetch, live paging, and action submit all route through connector V2 surface.
+3. HTTP and gRPC reference bridges expose V2 connector endpoints/services.
+4. CT2/CI gate includes runtime-derived connector evidence checks.
+
+Not claimed in this closeout:
+
+1. multi-app production rollout strategy.
+2. broad real-app production onboarding as part of this repository release note.
+
+See release closeout details:
+
+1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+
+## Breaking Changes and Migration Notes (v0.3)
+
+1. Connector mainline moved from legacy `AppAdapterV1` path to `AppConnectorV2` path.
+2. Bridge V2 protocols are now the default runtime path (`/v2/connector/*` for HTTP; V2 connector service for gRPC).
+3. Runner/CI env naming is migrating from `APPFS_V2_*` to `APPFS_V3_*`.
+4. During the migration window, `APPFS_V2_*` remains as compatibility aliases; if both are set, `APPFS_V3_*` wins.
+5. CI check-run names are intentionally frozen during the migration window to avoid branch-protection expected-check drift:
+   - `AppFS Contract Gate (required, linux, inprocess v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2 high-risk)`
+   - `AppFS Contract Signal (informational, linux, grpc bridge v2)`
 
 ## v0.1 Legacy Reference
 
@@ -289,30 +313,27 @@ For v0.1 reference materials, see:
 
 ## Repository Map (AppFS-Relevant)
 
-1. `docs/v2/APPFS-v0.2-总览.zh-CN.md`: v0.2 goals, terminology, and scope.
-2. `docs/v2/APPFS-v0.2-Connector接口.zh-CN.md`: connector contract and minimum capability surface.
-3. `docs/v2/APPFS-v0.2-后端架构.zh-CN.md`: backend component boundaries, state machine, and data flow.
-4. `docs/v2/APPFS-v0.2-合同测试CT2.zh-CN.md`: required and informational contract cases.
-5. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`: v0.3 connectorization scope, issue map, and gates.
-6. `examples/appfs/`: reference fixtures and bridge examples.
-7. `cli/src/cmd/appfs/`: AppFS runtime modules (`core`, `snapshot_cache`, `recovery`, `events`, `paging`).
+1. `docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md`: v0.3 architecture decisions and boundaries.
+2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`: frozen connector V2 contract surface.
+3. `docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md`: v0.3 closeout, migration window, and CI semantics.
+4. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`: execution plan/status alignment and issue map.
+5. `examples/appfs/`: fixtures and bridge references.
+6. `cli/src/cmd/appfs/`: runtime modules (`core`, `snapshot_cache`, `recovery`, `events`, `paging`).
 
 ## Current Status
 
-AppFS v0.2 implementation is complete for the current round:
+AppFS v0.3 connectorization closeout is complete for this release line:
 
-1. Phase A through Phase E are completed.
-2. Linux required contract set `CT2-001..009` is green.
-3. `CT2-010` minimal cross-platform matrix is available as informational evidence.
-4. Real-app connector onboarding is not a claimed `v0.2` completion item; it is tracked in the `v0.3` line.
-5. `v0.1` remains in the repo as baseline/reference material and regression context.
+1. Linux required contract set for in-process runtime path is green.
+2. HTTP/gRPC bridge CT2 subsets are tracked as informational signals in CI.
+3. Documentation, release notes, and migration semantics are aligned to v0.3.
+4. `v0.1` remains as legacy baseline/reference context.
+5. Real-app pilot rollout is intentionally not claimed in this repository-level closeout.
 
 For release and closeout details, see:
 
-1. [APPFS-v0.2-实施计划.zh-CN.md](docs/v2/APPFS-v0.2-实施计划.zh-CN.md)
-2. [APPFS-v0.2-完成总结-2026-03-22.zh-CN.md](docs/v2/APPFS-v0.2-完成总结-2026-03-22.zh-CN.md)
-3. [APPFS-v0.2-RC迁移与上线包.zh-CN.md](docs/v2/APPFS-v0.2-RC迁移与上线包.zh-CN.md)
-4. [APPFS-v0.2-RC门禁证据包.zh-CN.md](docs/v2/APPFS-v0.2-RC门禁证据包.zh-CN.md)
+1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+2. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
 
 ## License
 
