@@ -435,6 +435,14 @@ where
                     Err(err) => {
                         let opened =
                             circuit_breaker.record_failure(Instant::now(), runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge http circuit opened after {} decode failure route={} {}",
+                                connector_error_codes_v2::INTERNAL,
+                                route,
+                                metrics.snapshot()
+                            );
+                        }
                         metrics.record_request(attempt, false);
                         log_observation(metrics, route, attempt, started.elapsed(), "failed");
                         return Err(ConnectorErrorV2 {
@@ -465,7 +473,15 @@ where
                 }
 
                 if retryable {
-                    circuit_breaker.record_failure(Instant::now(), runtime_options);
+                    let opened = circuit_breaker.record_failure(Instant::now(), runtime_options);
+                    if opened {
+                        eprintln!(
+                            "AppFS bridge http circuit opened after retryable status failure code={} route={} {}",
+                            status,
+                            route,
+                            metrics.snapshot()
+                        );
+                    }
                 } else {
                     circuit_breaker.record_success();
                 }
@@ -480,6 +496,13 @@ where
                 }
 
                 let opened = circuit_breaker.record_failure(Instant::now(), runtime_options);
+                if opened {
+                    eprintln!(
+                        "AppFS bridge http circuit opened after transport failure route={} {}",
+                        route,
+                        metrics.snapshot()
+                    );
+                }
                 metrics.record_request(attempt, false);
                 log_observation(metrics, route, attempt, started.elapsed(), "failed");
                 return Err(ConnectorErrorV2 {
