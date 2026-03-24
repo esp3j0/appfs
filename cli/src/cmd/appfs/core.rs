@@ -1,6 +1,9 @@
 use agentfs_sdk::{
-    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1,
-    AppAdapterV1, DemoAppAdapterV1, RequestContextV1,
+    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnectorV2, AuthStatusV2,
+    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
+    DemoAppConnectorV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
+    FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2,
+    SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -29,6 +32,227 @@ use super::{
     DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES, DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS,
     DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
+
+struct LegacyAdapterConnectorV2 {
+    app_id: String,
+    transport: ConnectorTransportV2,
+    adapter: Box<dyn AppAdapterV1>,
+}
+
+impl LegacyAdapterConnectorV2 {
+    fn new(
+        app_id: String,
+        transport: ConnectorTransportV2,
+        adapter: Box<dyn AppAdapterV1>,
+    ) -> Self {
+        Self {
+            app_id,
+            transport,
+            adapter,
+        }
+    }
+}
+
+fn map_adapter_error_v1_to_connector_error_v2(err: agentfs_sdk::AdapterErrorV1) -> ConnectorErrorV2 {
+    match err {
+        agentfs_sdk::AdapterErrorV1::Rejected {
+            code,
+            message,
+            retryable,
+        } => ConnectorErrorV2 {
+            code,
+            message,
+            retryable,
+            details: None,
+        },
+        agentfs_sdk::AdapterErrorV1::Internal { message } => ConnectorErrorV2 {
+            code: connector_error_codes_v2::INTERNAL.to_string(),
+            message,
+            retryable: true,
+            details: None,
+        },
+    }
+}
+
+impl AppConnectorV2 for LegacyAdapterConnectorV2 {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfoV2, ConnectorErrorV2> {
+        Ok(ConnectorInfoV2 {
+            connector_id: format!("legacy-v1-bridge-{}", self.app_id),
+            version: "v1-compat".to_string(),
+            app_id: self.app_id.clone(),
+            transport: self.transport,
+            supports_snapshot: true,
+            supports_live: true,
+            supports_action: true,
+            optional_features: vec!["legacy_v1_compat".to_string()],
+        })
+    }
+
+    fn health(
+        &mut self,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<HealthStatusV2, ConnectorErrorV2> {
+        Ok(HealthStatusV2 {
+            healthy: true,
+            auth_status: AuthStatusV2::Valid,
+            message: Some("legacy v1 adapter compatibility connector".to_string()),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
+        let meta = self
+            .adapter
+            .prewarm_snapshot_meta(resource_path, timeout)
+            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
+        Ok(SnapshotMetaV2 {
+            size_bytes: meta.size_bytes,
+            revision: meta.revision,
+            last_modified: None,
+            item_count: None,
+        })
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        _request: FetchSnapshotChunkRequestV2,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+        Err(ConnectorErrorV2 {
+            code: connector_error_codes_v2::NOT_SUPPORTED.to_string(),
+            message: "legacy v1 adapter bridge does not support snapshot chunk fetch".to_string(),
+            retryable: false,
+            details: None,
+        })
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+        let handle_id = request.handle_id.ok_or_else(|| ConnectorErrorV2 {
+            code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+            message: "handle_id is required for v1 live paging compatibility".to_string(),
+            retryable: false,
+            details: None,
+        })?;
+
+        let request_ctx = agentfs_sdk::RequestContextV1 {
+            app_id: ctx.app_id.clone(),
+            session_id: ctx.session_id.clone(),
+            request_id: ctx.request_id.clone(),
+            client_token: ctx.client_token.clone(),
+        };
+
+        let outcome = self
+            .adapter
+            .submit_control_action(
+                "/_paging/fetch_next.act",
+                agentfs_sdk::AdapterControlActionV1::PagingFetchNext {
+                    handle_id,
+                    page_no: request.cursor.as_deref().unwrap_or("0").parse::<u64>().unwrap_or(1),
+                    has_more: true,
+                },
+                &request_ctx,
+            )
+            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
+
+        let agentfs_sdk::AdapterControlOutcomeV1::Completed { content } = outcome;
+        let items = content
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let page = content.get("page").cloned().unwrap_or_default();
+        let handle_id = page
+            .get("handle_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("legacy-handle")
+            .to_string();
+        let page_no = page
+            .get("page_no")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
+        let has_more = page
+            .get("has_more")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        Ok(FetchLivePageResponseV2 {
+            items,
+            page: agentfs_sdk::LivePageInfoV2 {
+                handle_id,
+                page_no,
+                has_more,
+                mode: agentfs_sdk::LiveModeV2::Live,
+                expires_at: None,
+                next_cursor: None,
+                retry_after_ms: None,
+            },
+        })
+    }
+
+    fn submit_action(
+        &mut self,
+        request: SubmitActionRequestV2,
+        ctx: &ConnectorContextV2,
+    ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
+        let payload = serde_json::to_string(&request.payload).map_err(|err| ConnectorErrorV2 {
+            code: connector_error_codes_v2::INVALID_PAYLOAD.to_string(),
+            message: format!("failed to serialize action payload: {err}"),
+            retryable: false,
+            details: None,
+        })?;
+        let request_ctx = agentfs_sdk::RequestContextV1 {
+            app_id: ctx.app_id.clone(),
+            session_id: ctx.session_id.clone(),
+            request_id: ctx.request_id.clone(),
+            client_token: ctx.client_token.clone(),
+        };
+        let exec_mode = match request.execution_mode {
+            ActionExecutionModeV2::Inline => agentfs_sdk::AdapterExecutionModeV1::Inline,
+            ActionExecutionModeV2::Streaming => agentfs_sdk::AdapterExecutionModeV1::Streaming,
+        };
+
+        let outcome = self
+            .adapter
+            .submit_action(
+                &request.path,
+                &payload,
+                agentfs_sdk::AdapterInputModeV1::Json,
+                exec_mode,
+                &request_ctx,
+            )
+            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
+
+        let mapped = match outcome {
+            agentfs_sdk::AdapterSubmitOutcomeV1::Completed { content } => {
+                SubmitActionOutcomeV2::Completed { content }
+            }
+            agentfs_sdk::AdapterSubmitOutcomeV1::Streaming { plan } => {
+                SubmitActionOutcomeV2::Streaming {
+                    plan: agentfs_sdk::ActionStreamingPlanV2 {
+                        accepted_content: plan.accepted_content,
+                        progress_content: plan.progress_content,
+                        terminal_content: plan.terminal_content,
+                    },
+                }
+            }
+        };
+
+        Ok(SubmitActionResponseV2 {
+            request_id: ctx.request_id.clone(),
+            estimated_duration_ms: None,
+            outcome: mapped,
+        })
+    }
+}
 
 impl AppfsAdapter {
     pub(super) fn new(
@@ -110,10 +334,10 @@ impl AppfsAdapter {
             );
         }
 
-        let business_adapter: Box<dyn AppAdapterV1> =
+        let business_connector: Box<dyn AppConnectorV2> =
             if let Some(endpoint) = normalized_grpc_endpoint {
                 eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
-                Box::new(
+                let adapter = Box::new(
                     GrpcBridgeAdapterV1::new(
                         app_id.clone(),
                         endpoint,
@@ -123,22 +347,35 @@ impl AppfsAdapter {
                     .map_err(|err| {
                         anyhow::anyhow!("failed to initialize gRPC bridge adapter: {err}")
                     })?,
-                )
+                ) as Box<dyn AppAdapterV1>;
+                Box::new(LegacyAdapterConnectorV2::new(
+                    app_id.clone(),
+                    ConnectorTransportV2::GrpcBridge,
+                    adapter,
+                ))
             } else if let Some(endpoint) = normalized_http_endpoint {
                 eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
-                Box::new(HttpBridgeAdapterV1::new(
+                let adapter = Box::new(HttpBridgeAdapterV1::new(
                     app_id.clone(),
                     endpoint,
                     Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
                     bridge_config.runtime_options,
+                )) as Box<dyn AppAdapterV1>;
+                Box::new(LegacyAdapterConnectorV2::new(
+                    app_id.clone(),
+                    ConnectorTransportV2::HttpBridge,
+                    adapter,
                 ))
             } else {
-                Box::new(DemoAppAdapterV1::new(app_id.clone()))
+                Box::new(DemoAppConnectorV2::new(app_id.clone()))
             };
-        if business_adapter.app_id() != app_id {
+        let connector_info = business_connector
+            .connector_id()
+            .map_err(|err| anyhow::anyhow!("connector_id failed: {}: {}", err.code, err.message))?;
+        if connector_info.app_id != app_id {
             anyhow::bail!(
-                "Adapter app_id mismatch: adapter={} runtime={}",
-                business_adapter.app_id(),
+                "Connector app_id mismatch: connector={} runtime={}",
+                connector_info.app_id,
                 app_id
             );
         }
@@ -167,7 +404,7 @@ impl AppfsAdapter {
             )?,
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
-            business_adapter,
+            business_connector,
         };
         adapter.initialize_snapshot_states();
         adapter.recover_snapshot_expand_journal()?;
@@ -478,28 +715,32 @@ impl AppfsAdapter {
             }
         }
 
-        let request_ctx = RequestContextV1 {
+        let request_ctx = ConnectorContextV2 {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.clone(),
             client_token: client_token.clone(),
+            trace_id: None,
         };
-        let adapter_input_mode = match spec.input_mode {
-            InputMode::Json => AdapterInputModeV1::Json,
+        let execution_mode = match spec.execution_mode {
+            ExecutionMode::Inline => ActionExecutionModeV2::Inline,
+            ExecutionMode::Streaming => ActionExecutionModeV2::Streaming,
         };
-        let adapter_execution_mode = match spec.execution_mode {
-            ExecutionMode::Inline => AdapterExecutionModeV1::Inline,
-            ExecutionMode::Streaming => AdapterExecutionModeV1::Streaming,
-        };
+        let payload_json: JsonValue =
+            serde_json::from_str(payload).context("validated JSON payload must parse")?;
 
-        match self.business_adapter.submit_action(
-            &normalized_path,
-            payload,
-            adapter_input_mode,
-            adapter_execution_mode,
+        match self.business_connector.submit_action(
+            SubmitActionRequestV2 {
+                path: normalized_path.clone(),
+                payload: payload_json,
+                execution_mode,
+            },
             &request_ctx,
         ) {
-            Ok(AdapterSubmitOutcomeV1::Completed { content }) => {
+            Ok(SubmitActionResponseV2 {
+                outcome: SubmitActionOutcomeV2::Completed { content },
+                ..
+            }) => {
                 self.emit_event(
                     &normalized_path,
                     &request_id,
@@ -510,14 +751,27 @@ impl AppfsAdapter {
                 )?;
                 Ok(ProcessOutcome::Consumed)
             }
-            Ok(AdapterSubmitOutcomeV1::Streaming { plan }) => {
-                self.enqueue_streaming_job(&normalized_path, &request_id, client_token, plan)?;
+            Ok(SubmitActionResponseV2 {
+                outcome: SubmitActionOutcomeV2::Streaming { plan },
+                ..
+            }) => {
+                self.enqueue_streaming_job(
+                    &normalized_path,
+                    &request_id,
+                    client_token,
+                    agentfs_sdk::AdapterStreamingPlanV1 {
+                        accepted_content: plan.accepted_content,
+                        progress_content: plan.progress_content,
+                        terminal_content: plan.terminal_content,
+                    },
+                )?;
                 Ok(ProcessOutcome::Consumed)
             }
-            Err(AdapterErrorV1::Rejected {
+            Err(ConnectorErrorV2 {
                 code,
                 message,
                 retryable,
+                ..
             }) => {
                 self.emit_failed_with_retryable(
                     &normalized_path,
@@ -528,12 +782,6 @@ impl AppfsAdapter {
                     client_token,
                 )?;
                 Ok(ProcessOutcome::Consumed)
-            }
-            Err(AdapterErrorV1::Internal { message }) => {
-                eprintln!(
-                    "AppFS adapter transient bridge failure for {normalized_path}: {message}; will retry without advancing cursor"
-                );
-                Ok(ProcessOutcome::RetryPending)
             }
         }
     }

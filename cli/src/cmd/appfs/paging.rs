@@ -1,6 +1,4 @@
-use agentfs_sdk::{
-    AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, RequestContextV1,
-};
+use agentfs_sdk::{ConnectorContextV2, FetchLivePageRequestV2};
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
@@ -90,32 +88,49 @@ impl AppfsAdapter {
             return Ok(ProcessOutcome::Consumed);
         }
 
-        let current_page_no = self
-            .handles
-            .get(&handle_key)
-            .expect("paging handle should exist after precheck")
-            .page_no;
-        let page_no = current_page_no + 1;
-        let has_more = page_no < 3;
-        let request_ctx = RequestContextV1 {
+        let (upstream_cursor, resource_path) = {
+            let handle = self
+                .handles
+                .get(&handle_key)
+                .expect("paging handle should exist after precheck");
+            (handle.upstream_cursor.clone(), handle.resource_path.clone())
+        };
+        let request_ctx = ConnectorContextV2 {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.to_string(),
             client_token: client_token.clone(),
+            trace_id: None,
         };
-        match self.business_adapter.submit_control_action(
-            action_path,
-            AdapterControlActionV1::PagingFetchNext {
-                handle_id: handle_key.clone(),
-                page_no,
-                has_more,
+        match self.business_connector.fetch_live_page(
+            FetchLivePageRequestV2 {
+                resource_path,
+                handle_id: Some(handle_key.clone()),
+                cursor: upstream_cursor,
+                page_size: 50,
             },
             &request_ctx,
         ) {
-            Ok(AdapterControlOutcomeV1::Completed { content }) => {
+            Ok(response) => {
                 if let Some(handle) = self.handles.get_mut(&handle_key) {
-                    handle.page_no = page_no;
+                    handle.page_no = response.page.page_no;
+                    handle.upstream_cursor = response.page.next_cursor.clone();
+                    handle.expires_at_ts = response
+                        .page
+                        .expires_at
+                        .as_deref()
+                        .and_then(parse_rfc3339_timestamp);
                 }
+                let content = serde_json::json!({
+                    "items": response.items,
+                    "page": {
+                        "handle_id": response.page.handle_id,
+                        "page_no": response.page.page_no,
+                        "has_more": response.page.has_more,
+                        "mode": "live",
+                        "expires_at": response.page.expires_at,
+                    }
+                });
                 self.emit_event(
                     action_path,
                     request_id,
@@ -126,11 +141,22 @@ impl AppfsAdapter {
                 )?;
                 Ok(ProcessOutcome::Consumed)
             }
-            Err(AdapterErrorV1::Rejected {
-                code,
-                message,
-                retryable,
-            }) => {
+            Err(err) => {
+                let (code, message, retryable) = if err.code.eq("CURSOR_INVALID") {
+                    (
+                        ERR_PAGER_HANDLE_NOT_FOUND.to_string(),
+                        "handle cursor invalid".to_string(),
+                        false,
+                    )
+                } else if err.code.eq("CURSOR_EXPIRED") {
+                    (
+                        ERR_PAGER_HANDLE_EXPIRED.to_string(),
+                        "handle cursor expired".to_string(),
+                        false,
+                    )
+                } else {
+                    (err.code, err.message, err.retryable)
+                };
                 self.emit_failed_with_retryable(
                     action_path,
                     request_id,
@@ -140,12 +166,6 @@ impl AppfsAdapter {
                     client_token,
                 )?;
                 Ok(ProcessOutcome::Consumed)
-            }
-            Err(AdapterErrorV1::Internal { message }) => {
-                eprintln!(
-                    "AppFS adapter transient bridge failure for {action_path}: {message}; will retry without advancing cursor"
-                );
-                Ok(ProcessOutcome::RetryPending)
             }
         }
     }
@@ -218,55 +238,21 @@ impl AppfsAdapter {
             return Ok(ProcessOutcome::Consumed);
         }
 
-        let request_ctx = RequestContextV1 {
-            app_id: self.app_id.clone(),
-            session_id: self.session_id.clone(),
-            request_id: request_id.to_string(),
-            client_token: client_token.clone(),
-        };
-        match self.business_adapter.submit_control_action(
-            action_path,
-            AdapterControlActionV1::PagingClose {
-                handle_id: handle_key.clone(),
-            },
-            &request_ctx,
-        ) {
-            Ok(AdapterControlOutcomeV1::Completed { content }) => {
-                if let Some(handle) = self.handles.get_mut(&handle_key) {
-                    handle.closed = true;
-                }
-                self.emit_event(
-                    action_path,
-                    request_id,
-                    "action.completed",
-                    Some(content),
-                    None,
-                    client_token,
-                )?;
-                Ok(ProcessOutcome::Consumed)
-            }
-            Err(AdapterErrorV1::Rejected {
-                code,
-                message,
-                retryable,
-            }) => {
-                self.emit_failed_with_retryable(
-                    action_path,
-                    request_id,
-                    &code,
-                    &message,
-                    retryable,
-                    client_token,
-                )?;
-                Ok(ProcessOutcome::Consumed)
-            }
-            Err(AdapterErrorV1::Internal { message }) => {
-                eprintln!(
-                    "AppFS adapter transient bridge failure for {action_path}: {message}; will retry without advancing cursor"
-                );
-                Ok(ProcessOutcome::RetryPending)
-            }
+        if let Some(handle) = self.handles.get_mut(&handle_key) {
+            handle.closed = true;
         }
+        self.emit_event(
+            action_path,
+            request_id,
+            "action.completed",
+            Some(serde_json::json!({
+                "closed": true,
+                "handle_id": handle_key,
+            })),
+            None,
+            client_token,
+        )?;
+        Ok(ProcessOutcome::Consumed)
     }
 
     pub(super) fn load_known_handles(&mut self) -> Result<()> {
@@ -313,6 +299,18 @@ impl AppfsAdapter {
                             .and_then(|p| p.get("expires_at"))
                             .and_then(|v| v.as_str())
                             .and_then(parse_rfc3339_timestamp),
+                        upstream_cursor: json
+                            .get("page")
+                            .and_then(|p| p.get("next_cursor"))
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                        resource_path: format!(
+                            "/{}",
+                            path.strip_prefix(&self.app_dir)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .replace('\\', "/")
+                        ),
                     },
                 );
             }

@@ -1,4 +1,7 @@
-use agentfs_sdk::AdapterErrorV1;
+use agentfs_sdk::{
+    connector_error_codes_v2, ConnectorContextV2, ConnectorErrorV2, FetchSnapshotChunkRequestV2,
+    SnapshotResumeV2,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value as JsonValue};
@@ -42,9 +45,17 @@ impl AppfsAdapter {
         for spec in prewarm_specs {
             let resource_path = format!("/{}", spec.template);
             let timeout = Duration::from_millis(spec.prewarm_timeout_ms.max(1));
+            let request_id = format!("prewarm-{}", uuid::Uuid::new_v4());
+            let ctx = ConnectorContextV2 {
+                app_id: self.app_id.clone(),
+                session_id: self.session_id.clone(),
+                request_id,
+                client_token: None,
+                trace_id: None,
+            };
             match self
-                .business_adapter
-                .prewarm_snapshot_meta(&resource_path, timeout)
+                .business_connector
+                .prewarm_snapshot_meta(&resource_path, timeout, &ctx)
             {
                 Ok(meta) => {
                     self.transition_snapshot_state(&spec.template, SnapshotCacheState::Hot);
@@ -511,7 +522,7 @@ impl AppfsAdapter {
             );
         }
 
-        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel) {
+        let expanded_jsonl = match self.fetch_snapshot_jsonl_from_upstream(resource_rel, request_id) {
             Ok(content) => content,
             Err(upstream_reason) => {
                 self.transition_snapshot_state(resource_rel, SnapshotCacheState::Error);
@@ -652,7 +663,7 @@ impl AppfsAdapter {
             request_id,
             ERR_CACHE_MISS_EXPAND_FAILED,
             &format!(
-                "snapshot read-through skeleton not materialized yet: resource={} phase={} reason={}",
+                "snapshot read-through expansion failed: resource={} phase={} reason={}",
                 resource_path, phase, reason
             ),
             true,
@@ -662,27 +673,58 @@ impl AppfsAdapter {
     }
 
     fn fetch_snapshot_jsonl_from_upstream(
-        &self,
+        &mut self,
         resource_rel: &str,
+        request_id: &str,
     ) -> std::result::Result<String, String> {
-        if resource_rel != "chats/chat-001/messages.res.jsonl"
-            && resource_rel != "chats/chat-oversize/messages.res.jsonl"
-        {
-            return Err("connector has no expansion mapping for resource".to_string());
+        eprintln!("[cache.expand] fetch_snapshot_chunk resource=/{}", resource_rel);
+        let mut out = String::new();
+        let mut resume = SnapshotResumeV2::Start;
+        let mut total_bytes = 0usize;
+        let budget_bytes = 1_048_576_u64;
+
+        loop {
+            let ctx = ConnectorContextV2 {
+                app_id: self.app_id.clone(),
+                session_id: self.session_id.clone(),
+                request_id: request_id.to_string(),
+                client_token: None,
+                trace_id: None,
+            };
+            let response = self
+                .business_connector
+                .fetch_snapshot_chunk(
+                    FetchSnapshotChunkRequestV2 {
+                        resource_path: format!("/{}", resource_rel),
+                        resume,
+                        budget_bytes,
+                    },
+                    &ctx,
+                )
+                .map_err(snapshot_expand_error_summary)?;
+
+            for record in response.records {
+                let line = serde_json::to_string(&record.line)
+                    .map_err(|err| format!("invalid_snapshot_record line_serialize_failed: {err}"))?;
+                out.push_str(&line);
+                out.push('\n');
+                total_bytes += line.len() + 1;
+            }
+
+            if !response.has_more {
+                break;
+            }
+
+            let Some(next_cursor) = response.next_cursor else {
+                return Err("connector_response_invalid missing_next_cursor_when_has_more".to_string());
+            };
+            resume = SnapshotResumeV2::Cursor(next_cursor);
         }
 
-        eprintln!(
-            "[cache.expand] fetch_snapshot_chunk resource=/{}",
-            resource_rel
-        );
-        let mut out = String::new();
-        for idx in 1..=100u32 {
-            let second = (idx - 1) % 60;
-            out.push_str(&format!(
-                r#"{{"id":"m{idx:03}","text":"snapshot file expanded message {idx}","ts":"2026-03-20T00:00:{second:02}Z"}}"#
-            ));
-            out.push('\n');
+        if total_bytes == 0 {
+            return Err("connector_response_invalid empty_snapshot_chunk_stream".to_string());
         }
+
         Ok(out)
     }
 
@@ -754,27 +796,30 @@ impl AppfsAdapter {
     }
 }
 
-fn is_prewarm_timeout(err: &AdapterErrorV1) -> bool {
-    match err {
-        AdapterErrorV1::Rejected { code, message, .. } => {
-            code.eq_ignore_ascii_case("TIMEOUT")
-                || message
-                    .split_whitespace()
-                    .any(|segment| segment.eq_ignore_ascii_case("timeout"))
-        }
-        AdapterErrorV1::Internal { message } => message
+fn is_prewarm_timeout(err: &ConnectorErrorV2) -> bool {
+    err.code.eq_ignore_ascii_case(connector_error_codes_v2::TIMEOUT)
+        || err
+            .message
             .split_whitespace()
-            .any(|segment| segment.eq_ignore_ascii_case("timeout")),
-    }
+            .any(|segment| segment.eq_ignore_ascii_case("timeout"))
 }
 
-fn prewarm_error_summary(err: &AdapterErrorV1) -> String {
-    match err {
-        AdapterErrorV1::Rejected {
-            code,
-            message,
-            retryable,
-        } => format!("code={code} retryable={retryable} message={message}"),
-        AdapterErrorV1::Internal { message } => format!("internal message={message}"),
-    }
+fn prewarm_error_summary(err: &ConnectorErrorV2) -> String {
+    format!(
+        "code={} retryable={} message={} details={}",
+        err.code,
+        err.retryable,
+        err.message,
+        err.details.as_deref().unwrap_or("none")
+    )
+}
+
+fn snapshot_expand_error_summary(err: ConnectorErrorV2) -> String {
+    format!(
+        "connector_error code={} retryable={} message={} details={}",
+        err.code,
+        err.retryable,
+        err.message,
+        err.details.as_deref().unwrap_or("none")
+    )
 }
