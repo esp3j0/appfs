@@ -24,11 +24,11 @@
    - `fetch_snapshot_chunk`
    - `fetch_live_page`
    - `submit_action`
-   - `health`
-3. HTTP bridge 与 gRPC bridge 同步升级到 V2 协议。
-4. CI gate 与 CT2 证据升级，避免“假 bridge 覆盖”。
-5. 文档与 README 切换为 v0.3 connector 主线叙事。
-6. 至少 1 个真实 app（sandbox/测试租户）完成端到端 pilot 验收。
+3. connector 能力面保留并暴露 `health(ctx)`（用于 bridge/connector 可用性与认证状态表达）。
+4. HTTP bridge 与 gRPC bridge 同步升级到 V2 协议。
+5. CI gate 与 CT2 证据升级，避免“假 bridge 覆盖”。
+6. 文档与 README 切换为 v0.3 connector 主线叙事。
+7. 至少 1 个真实 app（sandbox/测试租户）完成端到端 pilot 验收。
 
 ### 2.2 Out of scope
 
@@ -82,7 +82,7 @@
 ### Phase B：SDK 与 Runtime 主路径升级
 
 1. 增加 V2 trait + 类型。
-2. runtime 改为调用 V2 connector（snapshot/live/action/prewarm/health）。
+2. runtime 改为调用 V2 connector（snapshot/live/action/prewarm）。
 
 门禁：
 
@@ -135,7 +135,7 @@
 
 1. V3-01：ADR + V2 契约冻结。
 2. V3-02：Rust SDK V2 trait/type 落地。
-3. V3-03：runtime 接 V2 connector（snapshot/live/action/prewarm/health）。
+3. V3-03：runtime 接 V2 connector（snapshot/live/action/prewarm）。
 4. V3-04：HTTP bridge V2 协议与 adapter 升级。
 5. V3-05：gRPC bridge V2 proto 与 adapter 升级。
 6. V3-06：demo connector parity（in-process/http/grpc）。

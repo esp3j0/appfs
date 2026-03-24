@@ -12,7 +12,6 @@
    - `fetch_snapshot_chunk`
    - `fetch_live_page`
    - `submit_action`
-   - `health`
 3. 三种 transport 主路径对齐到 V2 connector 语义：
    - in-process
    - HTTP bridge
@@ -42,6 +41,7 @@
    - 首选 `APPFS_V3_*`。
    - `APPFS_V2_*` 仍可用作别名。
    - 若同一键同时设置，`APPFS_V3_*` 优先。
+5. `health` 仍属于 connector 能力面，并由 bridge/reference connector 暴露；但不作为本次 runtime 主调用链已接入项进行宣称。
 
 ## 4. CI 与 check-run 策略（迁移窗口）
 
