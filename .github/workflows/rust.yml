@@ -147,7 +147,7 @@ jobs:
   # Informational AppFS bridge signal: CT2 subset over HTTP bridge path.
   # Required gate is the in-process job above; bridge jobs are non-blocking diagnostics.
   appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, http bridge v3)
+    name: AppFS Contract Signal (informational, linux, http bridge v2)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -245,7 +245,7 @@ jobs:
 
   # Informational AppFS bridge signal: higher-risk CT2 coverage over HTTP bridge path.
   appfs-contract-gate-http-bridge-v2-high-risk:
-    name: AppFS Contract Signal (informational, linux, http bridge v3 high-risk)
+    name: AppFS Contract Signal (informational, linux, http bridge v2 high-risk)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -431,7 +431,7 @@ jobs:
 
   # Informational AppFS bridge signal: CT2 subset over gRPC bridge path.
   appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, grpc bridge v3)
+    name: AppFS Contract Signal (informational, linux, grpc bridge v2)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate

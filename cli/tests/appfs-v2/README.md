@@ -103,4 +103,8 @@ Migration window (`APPFS_V2_*` -> `APPFS_V3_*`):
 2. If both are set for the same knob, `APPFS_V3_*` wins.
 3. Workflow/CI should use `APPFS_V3_*` going forward.
 4. Compatibility aliases are temporary and will be removed in a later v0.3 closure issue after branch-protection/check-run migration completes.
-5. The required CI check-run name is intentionally kept stable during this window (`AppFS Contract Gate (required, linux, inprocess v2)`) even though runner env semantics are now V3-first.
+5. CI check-run names are intentionally frozen during this window to avoid expected-check drift, even though runner env semantics are now V3-first:
+   - `AppFS Contract Gate (required, linux, inprocess v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2)`
+   - `AppFS Contract Signal (informational, linux, http bridge v2 high-risk)`
+   - `AppFS Contract Signal (informational, linux, grpc bridge v2)`
