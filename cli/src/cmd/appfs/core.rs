@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::action_dispatcher;
 use super::errors::{is_transient_connector_failure, ERR_INVALID_PAYLOAD};
 use super::grpc_bridge_adapter::GrpcBridgeAdapterV1;
-use super::http_bridge_adapter::HttpBridgeAdapterV1;
+use super::http_bridge_adapter::HttpBridgeConnectorV2;
 use super::shared::{
     action_template_matches, boundary_probe_from_bytes, collect_files_with_suffix,
     decode_jsonl_line, env_flag_enabled, extract_client_token, has_odd_unescaped_quotes,
@@ -371,16 +371,11 @@ impl AppfsAdapter {
                 ))
             } else if let Some(endpoint) = normalized_http_endpoint {
                 eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
-                let adapter = Box::new(HttpBridgeAdapterV1::new(
+                Box::new(HttpBridgeConnectorV2::new(
                     app_id.clone(),
                     endpoint,
                     Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
                     bridge_config.runtime_options,
-                )) as Box<dyn AppAdapterV1>;
-                Box::new(LegacyAdapterConnectorV2::new(
-                    app_id.clone(),
-                    ConnectorTransportV2::HttpBridge,
-                    adapter,
                 ))
             } else {
                 Box::new(DemoAppConnectorV2::new(app_id.clone()))

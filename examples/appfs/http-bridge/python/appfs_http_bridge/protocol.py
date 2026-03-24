@@ -22,6 +22,33 @@ class AdapterBackend(Protocol):
     def submit_control_close(self, handle_id: str) -> dict[str, object]:
         ...
 
+
+class ConnectorBackend(Protocol):
+    def connector_info(self) -> dict[str, Any]:
+        ...
+
+    def health(self, context: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def prewarm_snapshot_meta(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        ...
+
+    def fetch_snapshot_chunk(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        ...
+
+    def fetch_live_page(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def submit_action_v2(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        ...
+
+
 ALLOWED_EXECUTION_MODES = {"inline", "streaming"}
 ALLOWED_INPUT_MODES = {"json"}
 
@@ -135,6 +162,209 @@ def dispatch_submit_control(
         400,
         rejected_error("NOT_SUPPORTED", f"unsupported control action: {kind}"),
     )
+
+
+def dispatch_v2_connector_info(backend: ConnectorBackend) -> tuple[int, dict[str, Any]]:
+    try:
+        return (200, backend.connector_info())
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"backend connector_info failed: {err}", True))
+
+
+def dispatch_v2_health(payload: dict[str, Any], backend: ConnectorBackend) -> tuple[int, dict[str, Any]]:
+    context = payload.get("context")
+    context_error = validate_context(context)
+    if context_error is not None:
+        return context_error
+    try:
+        return (200, backend.health(context))
+    except Exception as err:
+        return (500, connector_error("UPSTREAM_UNAVAILABLE", f"health failed: {err}", True))
+
+
+def dispatch_v2_snapshot_prewarm(
+    payload: dict[str, Any],
+    backend: ConnectorBackend,
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    resource_path = request.get("resource_path")
+    if not isinstance(resource_path, str) or not resource_path.strip():
+        return (400, connector_error("INVALID_ARGUMENT", "resource_path is required", False))
+    timeout_ms = request.get("timeout_ms")
+    if (
+        isinstance(timeout_ms, bool)
+        or not isinstance(timeout_ms, int)
+        or timeout_ms <= 0
+    ):
+        return (400, connector_error("INVALID_ARGUMENT", "timeout_ms must be > 0", False))
+    try:
+        return (200, backend.prewarm_snapshot_meta(request, context))
+    except PermissionError as err:
+        return (403, connector_error("PERMISSION_DENIED", str(err), False))
+    except TimeoutError as err:
+        return (504, connector_error("TIMEOUT", str(err), True))
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"prewarm failed: {err}", True))
+
+
+def dispatch_v2_snapshot_fetch_chunk(
+    payload: dict[str, Any],
+    *,
+    fault_injector: FaultInjector,
+    backend: ConnectorBackend,
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    resource_path = request.get("resource_path")
+    if not isinstance(resource_path, str) or not resource_path.strip():
+        return (400, connector_error("INVALID_ARGUMENT", "resource_path is required", False))
+    budget_bytes = request.get("budget_bytes")
+    if isinstance(budget_bytes, bool) or not isinstance(budget_bytes, int) or budget_bytes <= 0:
+        return (400, connector_error("INVALID_ARGUMENT", "budget_bytes must be > 0", False))
+    resume = request.get("resume")
+    if not isinstance(resume, dict) or not isinstance(resume.get("kind"), str):
+        return (400, connector_error("INVALID_ARGUMENT", "resume.kind is required", False))
+    try:
+        return (200, backend.fetch_snapshot_chunk(request, context))
+    except NotImplementedError as err:
+        return (400, connector_error("NOT_SUPPORTED", str(err), False))
+    except ValueError as err:
+        return (400, connector_error("INVALID_ARGUMENT", str(err), False))
+    except Exception as err:
+        should_fail, remaining = fault_injector.maybe_fail_submit_action("/v2/connector/snapshot/fetch-chunk")
+        if should_fail:
+            return (
+                fault_injector.fail_http_status,
+                connector_error(
+                    "UPSTREAM_UNAVAILABLE",
+                    f"fault injected for snapshot chunk, remaining={remaining}",
+                    True,
+                ),
+            )
+        return (500, connector_error("INTERNAL", f"fetch_snapshot_chunk failed: {err}", True))
+
+
+def dispatch_v2_live_fetch_page(
+    payload: dict[str, Any], backend: ConnectorBackend
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    resource_path = request.get("resource_path")
+    if not isinstance(resource_path, str) or not resource_path.strip():
+        return (400, connector_error("INVALID_ARGUMENT", "resource_path is required", False))
+    page_size = request.get("page_size")
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size <= 0:
+        return (400, connector_error("INVALID_ARGUMENT", "page_size must be > 0", False))
+    try:
+        return (200, backend.fetch_live_page(request, context))
+    except ValueError as err:
+        return (400, connector_error("CURSOR_INVALID", str(err), False))
+    except TimeoutError as err:
+        return (400, connector_error("CURSOR_EXPIRED", str(err), False))
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"fetch_live_page failed: {err}", True))
+
+
+def dispatch_v2_submit_action(
+    payload: dict[str, Any],
+    *,
+    fault_injector: FaultInjector,
+    backend: ConnectorBackend,
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    path = request.get("path")
+    if not isinstance(path, str) or path.strip() == "":
+        return (400, connector_error("INVALID_ARGUMENT", "path is required", False))
+    if not _is_safe_action_path(path):
+        return (400, connector_error("INVALID_ARGUMENT", f"unsafe action path: {path}", False))
+    execution_mode = request.get("execution_mode")
+    if not isinstance(execution_mode, str) or execution_mode not in ALLOWED_EXECUTION_MODES:
+        return (400, connector_error("INVALID_ARGUMENT", "execution_mode must be inline|streaming", False))
+    payload_obj = request.get("payload")
+    if not isinstance(payload_obj, dict):
+        return (400, connector_error("INVALID_PAYLOAD", "payload must be object", False))
+
+    should_fail, remaining = fault_injector.maybe_fail_submit_action(path)
+    if should_fail:
+        return (
+            fault_injector.fail_http_status,
+            connector_error(
+                "UPSTREAM_UNAVAILABLE",
+                f"fault injected for path={path}, remaining={remaining}",
+                True,
+            ),
+        )
+
+    try:
+        return (200, backend.submit_action_v2(request, context))
+    except ValueError as err:
+        return (400, connector_error("INVALID_PAYLOAD", str(err), False))
+    except RuntimeError as err:
+        message = str(err)
+        if "rate limit" in message.lower():
+            return (429, connector_error("RATE_LIMITED", message, True))
+        return (503, connector_error("UPSTREAM_UNAVAILABLE", message, True))
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"submit_action failed: {err}", True))
+
+
+def parse_v2_wrapped_request(
+    payload: dict[str, Any]
+) -> dict[str, Any]:
+    context = payload.get("context")
+    context_error = validate_context(context)
+    if context_error is not None:
+        return {"error": context_error}
+    request = payload.get("request")
+    if not isinstance(request, dict):
+        return {
+            "error": (
+                400,
+                connector_error("INVALID_ARGUMENT", "request object is required", False),
+            )
+        }
+    return {"context": context, "request": request}
+
+
+def validate_context(context: Any) -> tuple[int, dict[str, Any]] | None:
+    if not isinstance(context, dict):
+        return (400, connector_error("INVALID_ARGUMENT", "context object is required", False))
+    required = ["app_id", "session_id", "request_id"]
+    for field in required:
+        value = context.get(field)
+        if not isinstance(value, str) or value.strip() == "":
+            return (
+                400,
+                connector_error("INVALID_ARGUMENT", f"context.{field} must be non-empty string", False),
+            )
+    return None
+
+
+def connector_error(
+    code: str, message: str, retryable: bool, details: str | None = None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "retryable": bool(retryable),
+    }
+    if details is not None and details.strip():
+        out["details"] = details
+    return out
 
 
 def _is_safe_action_path(path: str) -> bool:

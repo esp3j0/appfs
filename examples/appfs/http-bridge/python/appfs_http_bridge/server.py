@@ -9,7 +9,16 @@ from .errors import internal_error, rejected_error
 from .fault_injector import FaultInjector
 from .jsonplaceholder_backend import JsonPlaceholderBackend
 from .mock_aiim import MockAiimBackend
-from .protocol import dispatch_submit_action, dispatch_submit_control
+from .protocol import (
+    dispatch_submit_action,
+    dispatch_submit_control,
+    dispatch_v2_connector_info,
+    dispatch_v2_health,
+    dispatch_v2_live_fetch_page,
+    dispatch_v2_snapshot_fetch_chunk,
+    dispatch_v2_snapshot_prewarm,
+    dispatch_v2_submit_action,
+)
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
@@ -32,6 +41,27 @@ class BridgeApplication:
         self.fault_injector = fault_injector or FaultInjector()
 
     def dispatch(self, route: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        if route == "/v2/connector/info":
+            return dispatch_v2_connector_info(self.backend)
+        if route == "/v2/connector/health":
+            return dispatch_v2_health(payload, self.backend)
+        if route == "/v2/connector/snapshot/prewarm":
+            return dispatch_v2_snapshot_prewarm(payload, self.backend)
+        if route == "/v2/connector/snapshot/fetch-chunk":
+            return dispatch_v2_snapshot_fetch_chunk(
+                payload,
+                fault_injector=self.fault_injector,
+                backend=self.backend,
+            )
+        if route == "/v2/connector/live/fetch-page":
+            return dispatch_v2_live_fetch_page(payload, self.backend)
+        if route == "/v2/connector/action/submit":
+            return dispatch_v2_submit_action(
+                payload,
+                fault_injector=self.fault_injector,
+                backend=self.backend,
+            )
+
         if route == "/v1/submit-action":
             return dispatch_submit_action(
                 payload,

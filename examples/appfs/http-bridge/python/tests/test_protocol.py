@@ -8,7 +8,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from appfs_http_bridge.fault_injector import FaultInjector, FaultState
 from appfs_http_bridge.mock_aiim import MockAiimBackend
-from appfs_http_bridge.protocol import dispatch_submit_action, dispatch_submit_control
+from appfs_http_bridge.protocol import (
+    dispatch_submit_action,
+    dispatch_submit_control,
+    dispatch_v2_connector_info,
+    dispatch_v2_health,
+    dispatch_v2_live_fetch_page,
+    dispatch_v2_snapshot_fetch_chunk,
+    dispatch_v2_snapshot_prewarm,
+    dispatch_v2_submit_action,
+)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -129,6 +138,142 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(body["kind"], "rejected")
         self.assertEqual(body["code"], "NOT_SUPPORTED")
         self.assertFalse(body["retryable"])
+
+    def test_v2_connector_info(self) -> None:
+        status, body = dispatch_v2_connector_info(self.backend)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["transport"], "http_bridge")
+        self.assertEqual(body["app_id"], "aiim")
+
+    def test_v2_health(self) -> None:
+        status, body = dispatch_v2_health(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                }
+            },
+            self.backend,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["healthy"])
+
+    def test_v2_snapshot_fetch_chunk(self) -> None:
+        status, body = dispatch_v2_snapshot_fetch_chunk(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "resource_path": "/chats/chat-001/messages.res.jsonl",
+                    "resume": {"kind": "start"},
+                    "budget_bytes": 1024,
+                },
+            },
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["records"]), 2)
+        self.assertTrue(body["has_more"])
+
+    def test_v2_live_fetch_page(self) -> None:
+        payload = {
+            "context": {
+                "app_id": "aiim",
+                "session_id": "sess-1",
+                "request_id": "req-1",
+            },
+            "request": {
+                "resource_path": "/chats/chat-001/messages.res.json",
+                "handle_id": "ph-1",
+                "cursor": None,
+                "page_size": 20,
+            },
+        }
+        status, body = dispatch_v2_live_fetch_page(payload, self.backend)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["page"]["page_no"], 1)
+
+    def test_v2_live_fetch_page_cursor_invalid(self) -> None:
+        status, body = dispatch_v2_live_fetch_page(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "resource_path": "/chats/chat-001/messages.res.json",
+                    "handle_id": "ph-1",
+                    "cursor": "invalid",
+                    "page_size": 20,
+                },
+            },
+            self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "CURSOR_INVALID")
+
+    def test_v2_submit_action(self) -> None:
+        status, body = dispatch_v2_submit_action(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "path": "/contacts/zhangsan/send_message.act",
+                    "payload": {"text": "hello"},
+                    "execution_mode": "inline",
+                },
+            },
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["outcome"]["kind"], "completed")
+
+    def test_v2_prewarm_requires_timeout(self) -> None:
+        status, body = dispatch_v2_snapshot_prewarm(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "resource_path": "/chats/chat-001/messages.res.jsonl",
+                },
+            },
+            self.backend,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
+    def test_v2_submit_action_rate_limited(self) -> None:
+        status, body = dispatch_v2_submit_action(
+            {
+                "context": {
+                    "app_id": "aiim",
+                    "session_id": "sess-1",
+                    "request_id": "req-1",
+                },
+                "request": {
+                    "path": "/contacts/zhangsan/rate_limited.act",
+                    "payload": {"text": "hello"},
+                    "execution_mode": "inline",
+                },
+            },
+            fault_injector=self.fault,
+            backend=self.backend,
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(body["code"], "RATE_LIMITED")
 
 
 if __name__ == "__main__":
