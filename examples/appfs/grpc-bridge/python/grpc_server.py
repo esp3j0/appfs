@@ -44,6 +44,10 @@ def _env_delay_ms(name: str) -> int:
     raw = os.getenv(name, "").strip()
     if raw == "":
         return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
 
 
 def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
@@ -67,10 +71,6 @@ def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
                 retryable=False,
             )
     return None
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return 0
 
 
 def _parse_fail_status_code(raw: str) -> grpc.StatusCode:
