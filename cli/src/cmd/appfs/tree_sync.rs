@@ -342,8 +342,7 @@ impl AppTreeSyncService {
             if full.is_dir() {
                 remove_empty_dir_with_retry(&full)?;
             } else {
-                fs::remove_file(&full)
-                    .with_context(|| format!("Failed to remove file {}", full.display()))?;
+                remove_file_with_retry(&full)?;
             }
         }
         Ok(())
@@ -540,6 +539,39 @@ fn remove_empty_dir_with_retry(path: &Path) -> Result<()> {
         }
     }
     unreachable!("remove_empty_dir_with_retry should return within retry loop");
+}
+
+fn remove_file_with_retry(path: &Path) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 6;
+    for attempt in 0..MAX_ATTEMPTS {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                if attempt + 1 < MAX_ATTEMPTS {
+                    std::thread::sleep(Duration::from_millis(15 * (attempt + 1) as u64));
+                    continue;
+                }
+                return Err(err)
+                    .with_context(|| format!("Failed to remove file {}", path.display()));
+            }
+        }
+
+        if !path.exists() {
+            return Ok(());
+        }
+
+        if attempt + 1 < MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(15 * (attempt + 1) as u64));
+            continue;
+        }
+
+        return Err(anyhow::anyhow!(
+            "Failed to remove file {} (file still present after delete)",
+            path.display()
+        ));
+    }
+    unreachable!("remove_file_with_retry should return within retry loop");
 }
 
 fn is_runtime_protected_path(rel: &str) -> bool {
