@@ -188,6 +188,8 @@ struct OpenFile {
     is_symlink: bool,
     /// Pending delete flag - file should be deleted on close
     delete_on_close: std::sync::atomic::AtomicBool,
+    /// True once deletion has already been executed successfully.
+    deleted: std::sync::atomic::AtomicBool,
     /// Path to the file (for deletion on close)
     path: String,
 }
@@ -557,6 +559,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             is_dir: true,
                             is_symlink: false,
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                            deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
                         },
                     );
@@ -570,6 +573,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             is_dir: false,
                             is_symlink: true,
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                            deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
                         },
                     );
@@ -592,6 +596,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     delete_on_close: std::sync::atomic::AtomicBool::new(
                                         delete_on_close,
                                     ),
+                                    deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
                                 },
                             );
@@ -664,6 +669,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             is_dir: true,
                             is_symlink: false,
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                            deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
                         },
                     );
@@ -677,6 +683,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             is_dir: false,
                             is_symlink: true,
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
+                            deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
                         },
                     );
@@ -698,6 +705,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     delete_on_close: std::sync::atomic::AtomicBool::new(
                                         delete_on_close,
                                     ),
+                                    deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
                                 },
                             );
@@ -765,6 +773,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     delete_on_close: std::sync::atomic::AtomicBool::new(
                                         delete_on_close,
                                     ),
+                                    deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
                                 },
                             );
@@ -780,6 +789,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     delete_on_close: std::sync::atomic::AtomicBool::new(
                                         delete_on_close,
                                     ),
+                                    deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
                                 },
                             );
@@ -802,6 +812,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                             delete_on_close: std::sync::atomic::AtomicBool::new(
                                                 delete_on_close,
                                             ),
+                                            deleted: std::sync::atomic::AtomicBool::new(false),
                                             path: path_owned,
                                         },
                                     );
@@ -832,8 +843,9 @@ impl FileSystemContext for AgentFSWinFsp {
 
             let delete_flag = FspCleanupFlags::FspCleanupDelete.is_flagged(flags);
             let pending_delete = open_file.delete_on_close.load(Ordering::SeqCst);
+            let already_deleted = open_file.deleted.load(Ordering::SeqCst);
             (
-                delete_flag || pending_delete,
+                !already_deleted && (delete_flag || pending_delete),
                 open_file.is_dir,
                 open_file.path.clone(),
             )
@@ -1013,15 +1025,22 @@ impl FileSystemContext for AgentFSWinFsp {
             }
         }
 
-        let open_files = self.open_files.lock();
-        if let Some(open_file) = open_files.get(&context.fh) {
-            open_file
-                .delete_on_close
-                .store(delete_file, Ordering::SeqCst);
-            Ok(())
-        } else {
-            Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER))
+        if delete_file {
+            if let Err(e) = self.delete_path(&path, is_dir) {
+                return Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e)));
+            }
         }
+
+        let open_files = self.open_files.lock();
+        let Some(open_file) = open_files.get(&context.fh) else {
+            return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
+        };
+        open_file.delete_on_close.store(false, Ordering::SeqCst);
+        open_file.deleted.store(delete_file, Ordering::SeqCst);
+        if !delete_file {
+            open_file.deleted.store(false, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     fn rename(
