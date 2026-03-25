@@ -39,6 +39,213 @@ class MockAiimBackend:
     closed_handles: set[str] = field(default_factory=set)
     live_pages: dict[str, int] = field(default_factory=dict)
 
+    def _action_manifest(self, template: str, execution_mode: str = "inline") -> dict[str, Any]:
+        return {
+            "template": template,
+            "kind": "action",
+            "input_mode": "json",
+            "execution_mode": execution_mode,
+        }
+
+    def _snapshot_manifest(self, template: str, max_bytes: int) -> dict[str, Any]:
+        return {
+            "template": template,
+            "kind": "resource",
+            "output_mode": "jsonl",
+            "snapshot": {
+                "max_materialized_bytes": max_bytes,
+                "prewarm": True,
+                "prewarm_timeout_ms": 5000,
+                "read_through_timeout_ms": 10000,
+                "on_timeout": "return_stale",
+            },
+        }
+
+    def _live_manifest(self, template: str) -> dict[str, Any]:
+        return {
+            "template": template,
+            "kind": "resource",
+            "output_mode": "json",
+            "paging": {"enabled": True, "mode": "live"},
+        }
+
+    def _structure_nodes(self, active_scope: str) -> list[dict[str, Any]]:
+        nodes: list[dict[str, Any]] = [
+            {
+                "path": "contacts",
+                "kind": "directory",
+                "manifest_entry": None,
+                "seed_content": None,
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "contacts/zhangsan",
+                "kind": "directory",
+                "manifest_entry": None,
+                "seed_content": None,
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "contacts/zhangsan/send_message.act",
+                "kind": "action_file",
+                "manifest_entry": self._action_manifest(
+                    "contacts/{contact_id}/send_message.act", "inline"
+                ),
+                "seed_content": None,
+                "mutable": True,
+                "scope": None,
+            },
+            {
+                "path": "feed",
+                "kind": "directory",
+                "manifest_entry": None,
+                "seed_content": None,
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "feed/recommendations.res.json",
+                "kind": "live_resource",
+                "manifest_entry": self._live_manifest("feed/recommendations.res.json"),
+                "seed_content": {
+                    "items": [],
+                    "page": {"handle_id": "", "page_no": 0, "has_more": True, "mode": "live"},
+                },
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_paging",
+                "kind": "directory",
+                "manifest_entry": None,
+                "seed_content": None,
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_paging/fetch_next.act",
+                "kind": "action_file",
+                "manifest_entry": self._action_manifest("_paging/fetch_next.act", "inline"),
+                "seed_content": None,
+                "mutable": True,
+                "scope": None,
+            },
+            {
+                "path": "_paging/close.act",
+                "kind": "action_file",
+                "manifest_entry": self._action_manifest("_paging/close.act", "inline"),
+                "seed_content": None,
+                "mutable": True,
+                "scope": None,
+            },
+            {
+                "path": "_app",
+                "kind": "directory",
+                "manifest_entry": None,
+                "seed_content": None,
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_app/enter_scope.act",
+                "kind": "action_file",
+                "manifest_entry": self._action_manifest("_app/enter_scope.act", "inline"),
+                "seed_content": None,
+                "mutable": True,
+                "scope": None,
+            },
+            {
+                "path": "_app/refresh_structure.act",
+                "kind": "action_file",
+                "manifest_entry": self._action_manifest("_app/refresh_structure.act", "inline"),
+                "seed_content": None,
+                "mutable": True,
+                "scope": None,
+            },
+        ]
+
+        if active_scope == "chat-long":
+            nodes.extend(
+                [
+                    {
+                        "path": "chats",
+                        "kind": "directory",
+                        "manifest_entry": None,
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-long",
+                    },
+                    {
+                        "path": "chats/chat-long",
+                        "kind": "directory",
+                        "manifest_entry": None,
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-long",
+                    },
+                    {
+                        "path": "chats/chat-long/messages.res.jsonl",
+                        "kind": "snapshot_resource",
+                        "manifest_entry": self._snapshot_manifest(
+                            "chats/chat-long/messages.res.jsonl", 1024
+                        ),
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-long",
+                    },
+                ]
+            )
+        else:
+            nodes.extend(
+                [
+                    {
+                        "path": "chats",
+                        "kind": "directory",
+                        "manifest_entry": None,
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-001",
+                    },
+                    {
+                        "path": "chats/chat-001",
+                        "kind": "directory",
+                        "manifest_entry": None,
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-001",
+                    },
+                    {
+                        "path": "chats/chat-001/messages.res.jsonl",
+                        "kind": "snapshot_resource",
+                        "manifest_entry": self._snapshot_manifest(
+                            "chats/chat-001/messages.res.jsonl", 10 * 1024 * 1024
+                        ),
+                        "seed_content": None,
+                        "mutable": False,
+                        "scope": "chat-001",
+                    },
+                ]
+            )
+
+        return nodes
+
+    def _structure_snapshot(self, scope: str | None) -> dict[str, Any]:
+        if scope in (None, "chat-001"):
+            active_scope = "chat-001"
+        elif scope == "chat-long":
+            active_scope = "chat-long"
+        else:
+            raise ValueError(f"unknown structure scope: {scope}")
+        return {
+            "app_id": "aiim",
+            "revision": f"demo-structure-{active_scope}",
+            "active_scope": active_scope,
+            "ownership_prefixes": ["_meta", "contacts", "feed", "chats", "_paging", "_app"],
+            "nodes": self._structure_nodes(active_scope),
+        }
+
     def connector_info(self) -> dict[str, Any]:
         return {
             "connector_id": "mock-aiim-http-v2",
@@ -218,6 +425,42 @@ class MockAiimBackend:
             "estimated_duration_ms": 120,
             "outcome": outcome,
         }
+
+    def get_app_structure(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        _ = context
+        snapshot = self._structure_snapshot(None)
+        if request.get("known_revision") == snapshot["revision"]:
+            return {
+                "result": {
+                    "kind": "unchanged",
+                    "app_id": str(request.get("app_id", "aiim")),
+                    "revision": snapshot["revision"],
+                    "active_scope": snapshot["active_scope"],
+                }
+            }
+        return {"result": {"kind": "snapshot", "snapshot": snapshot}}
+
+    def refresh_app_structure(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        _ = context
+        reason = request.get("reason")
+        target_scope = request.get("target_scope")
+        if reason == "enter_scope" and not isinstance(target_scope, str):
+            raise ValueError("target_scope is required for enter_scope refresh")
+        snapshot = self._structure_snapshot(target_scope if isinstance(target_scope, str) else None)
+        if request.get("known_revision") == snapshot["revision"]:
+            return {
+                "result": {
+                    "kind": "unchanged",
+                    "app_id": str(request.get("app_id", "aiim")),
+                    "revision": snapshot["revision"],
+                    "active_scope": snapshot["active_scope"],
+                }
+            }
+        return {"result": {"kind": "snapshot", "snapshot": snapshot}}
 
     # Legacy v1 methods kept for baseline compatibility
     def submit_action(self, path: str, execution_mode: str, payload: str) -> dict[str, object]:

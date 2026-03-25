@@ -48,6 +48,16 @@ class ConnectorBackend(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def get_app_structure(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        ...
+
+    def refresh_app_structure(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        ...
+
 
 ALLOWED_EXECUTION_MODES = {"inline", "streaming"}
 ALLOWED_INPUT_MODES = {"json"}
@@ -343,6 +353,87 @@ def dispatch_v2_submit_action(
         return (503, connector_error("UPSTREAM_UNAVAILABLE", message, True))
     except Exception as err:
         return (500, connector_error("INTERNAL", f"submit_action failed: {err}", True))
+
+
+def dispatch_v3_get_app_structure(
+    payload: dict[str, Any],
+    backend: ConnectorBackend,
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    app_id = request.get("app_id")
+    if not isinstance(app_id, str) or not app_id.strip():
+        return (400, connector_error("INVALID_ARGUMENT", "app_id is required", False))
+    known_revision = request.get("known_revision")
+    if known_revision is not None and (
+        not isinstance(known_revision, str) or known_revision.strip() == ""
+    ):
+        return (
+            400,
+            connector_error("INVALID_ARGUMENT", "known_revision must be non-empty string when provided", False),
+        )
+    try:
+        return (200, backend.get_app_structure(request, context))
+    except ValueError as err:
+        return (400, connector_error("INVALID_ARGUMENT", str(err), False))
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"get_app_structure failed: {err}", True))
+
+
+def dispatch_v3_refresh_app_structure(
+    payload: dict[str, Any],
+    backend: ConnectorBackend,
+) -> tuple[int, dict[str, Any]]:
+    parsed = parse_v2_wrapped_request(payload)
+    if "error" in parsed:
+        return parsed["error"]
+    context = parsed["context"]
+    request = parsed["request"]
+    app_id = request.get("app_id")
+    if not isinstance(app_id, str) or not app_id.strip():
+        return (400, connector_error("INVALID_ARGUMENT", "app_id is required", False))
+    reason = request.get("reason")
+    if not isinstance(reason, str) or reason.strip() == "":
+        return (400, connector_error("INVALID_ARGUMENT", "reason is required", False))
+    known_revision = request.get("known_revision")
+    if known_revision is not None and (
+        not isinstance(known_revision, str) or known_revision.strip() == ""
+    ):
+        return (
+            400,
+            connector_error("INVALID_ARGUMENT", "known_revision must be non-empty string when provided", False),
+        )
+    target_scope = request.get("target_scope")
+    if target_scope is not None and (
+        not isinstance(target_scope, str) or target_scope.strip() == ""
+    ):
+        return (
+            400,
+            connector_error("INVALID_ARGUMENT", "target_scope must be non-empty string when provided", False),
+        )
+    trigger_action_path = request.get("trigger_action_path")
+    if trigger_action_path is not None and (
+        not isinstance(trigger_action_path, str) or trigger_action_path.strip() == ""
+    ):
+        return (
+            400,
+            connector_error(
+                "INVALID_ARGUMENT",
+                "trigger_action_path must be non-empty string when provided",
+                False,
+            ),
+        )
+    try:
+        return (200, backend.refresh_app_structure(request, context))
+    except ValueError as err:
+        message = str(err)
+        code = "STRUCTURE_SCOPE_INVALID" if "scope" in message.lower() else "INVALID_ARGUMENT"
+        return (400, connector_error(code, message, False))
+    except Exception as err:
+        return (500, connector_error("INTERNAL", f"refresh_app_structure failed: {err}", True))
 
 
 def parse_v2_wrapped_request(

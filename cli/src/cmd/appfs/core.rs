@@ -927,7 +927,16 @@ pub(super) fn build_structure_connector(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    if normalized_http_endpoint.is_some() || normalized_grpc_endpoint.is_some() {
+    if let Some(endpoint) = normalized_http_endpoint {
+        return Ok(Some(Box::new(HttpBridgeConnectorV2::new(
+            app_id.to_string(),
+            endpoint.to_string(),
+            Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
+            bridge_config.runtime_options,
+        ))));
+    }
+
+    if normalized_grpc_endpoint.is_some() {
         return Ok(None);
     }
 
@@ -1393,8 +1402,14 @@ mod tests {
     };
     use serde_json::{json, Value as JsonValue};
     use std::fs::{self, OpenOptions};
-    use std::io::Write;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::path::Path;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::thread;
     use tempfile::TempDir;
 
     struct PagingCompatAdapter {
@@ -1531,6 +1546,16 @@ mod tests {
         }
     }
 
+    fn http_bridge_config(endpoint: String) -> AppfsBridgeConfig {
+        AppfsBridgeConfig {
+            adapter_http_endpoint: Some(endpoint),
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            runtime_options: super::super::BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
+        }
+    }
+
     fn fixture_adapter() -> (TempDir, AppfsAdapter) {
         let temp = TempDir::new().expect("tempdir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
@@ -1584,6 +1609,298 @@ mod tests {
         .expect("structured adapter");
 
         (temp, adapter)
+    }
+
+    struct TestHttpStructureBridge {
+        endpoint: String,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl TestHttpStructureBridge {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind test bridge");
+            let addr = listener.local_addr().expect("listener addr");
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_flag = Arc::clone(&stop);
+
+            let thread = thread::spawn(move || loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        handle_test_http_connection(&mut stream)
+                    }
+                    Err(_) => break,
+                }
+            });
+
+            Self {
+                endpoint: format!("http://{}", addr),
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for TestHttpStructureBridge {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = TcpStream::connect(self.endpoint.trim_start_matches("http://"));
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn connector_info_body() -> JsonValue {
+        json!({
+            "connector_id": "test-http-v3",
+            "version": "0.4.0-test",
+            "app_id": "aiim",
+            "transport": "http_bridge",
+            "supports_snapshot": true,
+            "supports_live": true,
+            "supports_action": true,
+            "optional_features": ["structure_sync_v3"],
+        })
+    }
+
+    fn action_manifest(template: &str) -> JsonValue {
+        json!({
+            "kind": "action",
+            "input_mode": "json",
+            "execution_mode": "inline",
+            "template": template,
+        })
+    }
+
+    fn snapshot_manifest(template: &str, max_bytes: u64) -> JsonValue {
+        json!({
+            "template": template,
+            "kind": "resource",
+            "output_mode": "jsonl",
+            "consistency": "read_through",
+            "snapshot": {
+                "max_materialized_bytes": max_bytes,
+                "prewarm": true,
+                "prewarm_timeout_ms": 5000,
+                "read_through_timeout_ms": 10000,
+                "on_timeout": "return_stale"
+            }
+        })
+    }
+
+    fn structure_snapshot(scope: &str) -> JsonValue {
+        let mut nodes = vec![
+            json!({"path":"contacts","kind":"directory","mutable":false}),
+            json!({"path":"contacts/zhangsan","kind":"directory","mutable":false}),
+            json!({
+                "path":"contacts/zhangsan/send_message.act",
+                "kind":"action_file",
+                "manifest_entry": action_manifest("contacts/{contact_id}/send_message.act"),
+                "mutable": true
+            }),
+            json!({"path":"_app","kind":"directory","mutable":false}),
+            json!({
+                "path":"_app/enter_scope.act",
+                "kind":"action_file",
+                "manifest_entry": action_manifest("_app/enter_scope.act"),
+                "mutable": true
+            }),
+            json!({
+                "path":"_app/refresh_structure.act",
+                "kind":"action_file",
+                "manifest_entry": action_manifest("_app/refresh_structure.act"),
+                "mutable": true
+            }),
+        ];
+
+        match scope {
+            "chat-long" => {
+                nodes.extend([
+                    json!({"path":"chats","kind":"directory","mutable":false,"scope":"chat-long"}),
+                    json!({"path":"chats/chat-long","kind":"directory","mutable":false,"scope":"chat-long"}),
+                    json!({
+                        "path":"chats/chat-long/messages.res.jsonl",
+                        "kind":"snapshot_resource",
+                        "manifest_entry": snapshot_manifest("chats/chat-long/messages.res.jsonl", 1024),
+                        "mutable": false,
+                        "scope":"chat-long"
+                    }),
+                ]);
+            }
+            _ => {
+                nodes.extend([
+                    json!({"path":"chats","kind":"directory","mutable":false,"scope":"chat-001"}),
+                    json!({"path":"chats/chat-001","kind":"directory","mutable":false,"scope":"chat-001"}),
+                    json!({
+                        "path":"chats/chat-001/messages.res.jsonl",
+                        "kind":"snapshot_resource",
+                        "manifest_entry": snapshot_manifest("chats/chat-001/messages.res.jsonl", 10 * 1024 * 1024),
+                        "mutable": false,
+                        "scope":"chat-001"
+                    }),
+                ]);
+            }
+        }
+
+        json!({
+            "app_id":"aiim",
+            "revision": format!("demo-structure-{scope}"),
+            "active_scope": scope,
+            "ownership_prefixes":["_meta","contacts","chats","_app"],
+            "nodes": nodes,
+        })
+    }
+
+    fn parse_http_request(stream: &mut TcpStream) -> Option<(String, JsonValue)> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).ok()?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let split = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let (header, body) = buffer.split_at(split + 4);
+        let header_text = String::from_utf8_lossy(header);
+        let request_line = header_text.lines().next()?;
+        let mut parts = request_line.split_whitespace();
+        let _method = parts.next()?;
+        let route = parts.next()?.to_string();
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    if name.eq_ignore_ascii_case("Content-Length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or(0);
+
+        let mut body_bytes = body.to_vec();
+        while body_bytes.len() < content_length {
+            let read = stream.read(&mut chunk).ok()?;
+            if read == 0 {
+                break;
+            }
+            body_bytes.extend_from_slice(&chunk[..read]);
+        }
+
+        let payload = if content_length == 0 {
+            json!({})
+        } else {
+            serde_json::from_slice(&body_bytes[..content_length]).ok()?
+        };
+        Some((route, payload))
+    }
+
+    fn write_http_json(stream: &mut TcpStream, status: u16, body: &JsonValue) {
+        let body_bytes = serde_json::to_vec(body).expect("encode body");
+        let response = format!(
+            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            status,
+            body_bytes.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write headers");
+        stream.write_all(&body_bytes).expect("write body");
+        stream.flush().expect("flush response");
+    }
+
+    fn handle_test_http_connection(stream: &mut TcpStream) {
+        let Some((route, payload)) = parse_http_request(stream) else {
+            return;
+        };
+
+        let (status, body) = match route.as_str() {
+            "/v2/connector/info" => (200, connector_info_body()),
+            "/v3/connector/structure/get" => {
+                let known_revision = payload
+                    .get("request")
+                    .and_then(|value| value.get("known_revision"))
+                    .and_then(|value| value.as_str());
+                if known_revision == Some("demo-structure-chat-001") {
+                    (
+                        200,
+                        json!({
+                            "result": {
+                                "kind": "unchanged",
+                                "app_id": "aiim",
+                                "revision": "demo-structure-chat-001",
+                                "active_scope": "chat-001"
+                            }
+                        }),
+                    )
+                } else {
+                    (
+                        200,
+                        json!({
+                            "result": {
+                                "kind": "snapshot",
+                                "snapshot": structure_snapshot("chat-001")
+                            }
+                        }),
+                    )
+                }
+            }
+            "/v3/connector/structure/refresh" => {
+                let request = payload.get("request").cloned().unwrap_or_else(|| json!({}));
+                let target_scope = request
+                    .get("target_scope")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("chat-001");
+                let snapshot = structure_snapshot(target_scope);
+                let revision = snapshot
+                    .get("revision")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let known_revision = request
+                    .get("known_revision")
+                    .and_then(|value| value.as_str());
+                if known_revision == Some(revision.as_str()) {
+                    (
+                        200,
+                        json!({
+                            "result": {
+                                "kind": "unchanged",
+                                "app_id": "aiim",
+                                "revision": revision,
+                                "active_scope": snapshot.get("active_scope").and_then(|value| value.as_str())
+                            }
+                        }),
+                    )
+                } else {
+                    (
+                        200,
+                        json!({"result": {"kind": "snapshot", "snapshot": snapshot}}),
+                    )
+                }
+            }
+            _ => (
+                404,
+                json!({
+                    "code":"NOT_SUPPORTED",
+                    "message": format!("unknown path: {route}"),
+                    "retryable": false
+                }),
+            ),
+        };
+
+        write_http_json(stream, status, &body);
     }
 
     fn append_text(path: &Path, text: &str) {
@@ -1698,6 +2015,96 @@ mod tests {
             Some(false)
         );
         assert!(adapter.app_dir.join("chats/chat-001").exists());
+    }
+
+    #[test]
+    fn http_bridge_structure_bootstrap_exposes_app_control_actions() {
+        let bridge = TestHttpStructureBridge::start();
+        let temp = TempDir::new().expect("tempdir");
+        let adapter = AppfsAdapter::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+            http_bridge_config(bridge.endpoint.clone()),
+        )
+        .expect("http structured adapter");
+
+        assert!(adapter.app_dir.join("_app/enter_scope.act").exists());
+        assert!(adapter.app_dir.join("_app/refresh_structure.act").exists());
+        assert!(adapter.app_dir.join("chats/chat-001").exists());
+        assert!(adapter
+            .snapshot_specs
+            .iter()
+            .any(|spec| spec.template == "chats/chat-001/messages.res.jsonl"));
+    }
+
+    #[test]
+    fn http_bridge_enter_scope_refreshes_structure_and_reloads_manifest() {
+        let bridge = TestHttpStructureBridge::start();
+        let temp = TempDir::new().expect("tempdir");
+        let mut adapter = AppfsAdapter::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+            http_bridge_config(bridge.endpoint.clone()),
+        )
+        .expect("http structured adapter");
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/enter_scope.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        append_text(
+            &action_path,
+            "{\"target_scope\":\"chat-long\",\"client_token\":\"scope-http-001\"}\n",
+        );
+        adapter.poll_once().expect("poll enter scope");
+
+        assert!(adapter.app_dir.join("chats/chat-long").exists());
+        assert!(!adapter.app_dir.join("chats/chat-001").exists());
+        assert!(adapter
+            .snapshot_specs
+            .iter()
+            .any(|spec| spec.template == "chats/chat-long/messages.res.jsonl"));
+
+        let events = token_events(&events_path, "scope-http-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+    }
+
+    #[test]
+    fn http_bridge_refresh_structure_reports_unchanged_revision() {
+        let bridge = TestHttpStructureBridge::start();
+        let temp = TempDir::new().expect("tempdir");
+        let mut adapter = AppfsAdapter::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+            http_bridge_config(bridge.endpoint.clone()),
+        )
+        .expect("http structured adapter");
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/refresh_structure.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        append_text(&action_path, "{\"client_token\":\"refresh-http-001\"}\n");
+        adapter.poll_once().expect("poll refresh");
+
+        let events = token_events(&events_path, "refresh-http-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+        let content = events[0].get("content").expect("refresh content");
+        assert_eq!(
+            content.get("refreshed").and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]

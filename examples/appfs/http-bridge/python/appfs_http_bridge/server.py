@@ -18,6 +18,8 @@ from .protocol import (
     dispatch_v2_snapshot_fetch_chunk,
     dispatch_v2_snapshot_prewarm,
     dispatch_v2_submit_action,
+    dispatch_v3_get_app_structure,
+    dispatch_v3_refresh_app_structure,
 )
 
 
@@ -46,6 +48,8 @@ class BridgeApplication:
             "fetch_snapshot_chunk",
             "fetch_live_page",
             "submit_action_v2",
+            "get_app_structure",
+            "refresh_app_structure",
         )
         missing = [name for name in required_v2_methods if not hasattr(self.backend, name)]
         if missing:
@@ -74,6 +78,10 @@ class BridgeApplication:
                 fault_injector=self.fault_injector,
                 backend=self.backend,
             )
+        if route == "/v3/connector/structure/get":
+            return dispatch_v3_get_app_structure(payload, self.backend)
+        if route == "/v3/connector/structure/refresh":
+            return dispatch_v3_refresh_app_structure(payload, self.backend)
 
         if route == "/v1/submit-action":
             return dispatch_submit_action(
@@ -83,10 +91,10 @@ class BridgeApplication:
             )
         if route == "/v1/submit-control-action":
             return dispatch_submit_control(payload, backend=self.backend)
-        if route.startswith("/v2/connector/"):
+        if route.startswith("/v2/connector/") or route.startswith("/v3/connector/"):
             return (
                 404,
-                connector_error("NOT_SUPPORTED", f"unknown v2 connector path: {route}", False),
+                connector_error("NOT_SUPPORTED", f"unknown connector path: {route}", False),
             )
         return (404, internal_error(f"unknown path: {route}"))
 
@@ -95,7 +103,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     application: BridgeApplication
 
     def do_POST(self) -> None:
-        is_v2 = self.path.startswith("/v2/connector/")
+        is_v2 = self.path.startswith("/v2/connector/") or self.path.startswith("/v3/connector/")
         raw_len = self.headers.get("Content-Length", "0")
         try:
             payload_len = int(raw_len)

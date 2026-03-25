@@ -85,6 +85,91 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["outcome"]["kind"], "completed")
 
+    def test_v3_get_app_structure_success(self) -> None:
+        status, body = self._post(
+            "/v3/connector/structure/get",
+            json.dumps(
+                {
+                    "context": {
+                        "app_id": "aiim",
+                        "session_id": "sess-1",
+                        "request_id": "req-1",
+                    },
+                    "request": {
+                        "app_id": "aiim",
+                    },
+                }
+            ),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result"]["kind"], "snapshot")
+        self.assertEqual(body["result"]["snapshot"]["app_id"], "aiim")
+        self.assertIn("_app/enter_scope.act", [node["path"] for node in body["result"]["snapshot"]["nodes"]])
+
+    def test_v3_refresh_app_structure_success(self) -> None:
+        status, body = self._post(
+            "/v3/connector/structure/refresh",
+            json.dumps(
+                {
+                    "context": {
+                        "app_id": "aiim",
+                        "session_id": "sess-1",
+                        "request_id": "req-1",
+                    },
+                    "request": {
+                        "app_id": "aiim",
+                        "reason": "enter_scope",
+                        "target_scope": "chat-long",
+                        "trigger_action_path": "/_app/enter_scope.act",
+                    },
+                }
+            ),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result"]["kind"], "snapshot")
+        self.assertEqual(body["result"]["snapshot"]["active_scope"], "chat-long")
+
+    def test_v3_refresh_requires_reason(self) -> None:
+        status, body = self._post(
+            "/v3/connector/structure/refresh",
+            json.dumps(
+                {
+                    "context": {
+                        "app_id": "aiim",
+                        "session_id": "sess-1",
+                        "request_id": "req-1",
+                    },
+                    "request": {
+                        "app_id": "aiim",
+                    },
+                }
+            ),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "INVALID_ARGUMENT")
+
+    def test_v3_refresh_unknown_scope_uses_structure_scope_invalid(self) -> None:
+        status, body = self._post(
+            "/v3/connector/structure/refresh",
+            json.dumps(
+                {
+                    "context": {
+                        "app_id": "aiim",
+                        "session_id": "sess-1",
+                        "request_id": "req-1",
+                    },
+                    "request": {
+                        "app_id": "aiim",
+                        "reason": "enter_scope",
+                        "target_scope": "missing-scope",
+                        "trigger_action_path": "/_app/enter_scope.act",
+                    },
+                }
+            ),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["code"], "STRUCTURE_SCOPE_INVALID")
+
     def test_v2_invalid_json_uses_connector_error_envelope(self) -> None:
         status, body = self._post("/v2/connector/action/submit", "{")
         self.assertEqual(status, 400)

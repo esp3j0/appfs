@@ -11,6 +11,10 @@ use agentfs_sdk::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
     AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
 };
+use agentfs_sdk::{
+    AppConnectorV3, ConnectorContextV3, ConnectorErrorV3, GetAppStructureRequestV3,
+    GetAppStructureResponseV3, RefreshAppStructureRequestV3, RefreshAppStructureResponseV3,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -286,6 +290,32 @@ impl AppConnectorV2 for HttpBridgeConnectorV2 {
             request,
         };
         self.post_json("v2/connector/action/submit", &wrapped)
+    }
+}
+
+impl AppConnectorV3 for HttpBridgeConnectorV2 {
+    fn get_app_structure(
+        &mut self,
+        request: GetAppStructureRequestV3,
+        ctx: &ConnectorContextV3,
+    ) -> std::result::Result<GetAppStructureResponseV3, ConnectorErrorV3> {
+        let wrapped = WrappedV2Request {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("v3/connector/structure/get", &wrapped)
+    }
+
+    fn refresh_app_structure(
+        &mut self,
+        request: RefreshAppStructureRequestV3,
+        ctx: &ConnectorContextV3,
+    ) -> std::result::Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
+        let wrapped = WrappedV2Request {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("v3/connector/structure/refresh", &wrapped)
     }
 }
 
