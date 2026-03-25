@@ -3,6 +3,8 @@ pub mod agentfs;
 pub mod hostfs_darwin;
 #[cfg(target_os = "linux")]
 pub mod hostfs_linux;
+#[cfg(target_os = "windows")]
+pub mod hostfs_windows;
 pub mod overlayfs;
 
 use crate::error::Result;
@@ -16,6 +18,8 @@ pub use agentfs::AgentFS;
 pub use hostfs_darwin::HostFS;
 #[cfg(target_os = "linux")]
 pub use hostfs_linux::HostFS;
+#[cfg(target_os = "windows")]
+pub use hostfs_windows::HostFS;
 pub use overlayfs::OverlayFS;
 
 /// Filesystem-specific errors with errno semantics

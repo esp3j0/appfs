@@ -3,15 +3,11 @@ use agentfs_sdk::FileSystem;
 use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
 #[cfg(unix)]
 use anyhow::Context;
-#[cfg(target_os = "windows")]
-use anyhow::Context;
 use anyhow::Result;
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
-#[cfg(unix)]
-use agentfs_sdk::{HostFS, OverlayFS};
-#[cfg(target_os = "windows")]
-use std::path::Path;
+#[cfg(any(unix, target_os = "windows"))]
+use agentfs_sdk::{AgentFS as SdkAgentFS, HostFS, OverlayFS};
 #[cfg(unix)]
 use std::{path::Path, process::Command};
 #[cfg(any(unix, target_os = "windows"))]
@@ -669,10 +665,9 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
-    hydrate_windows_overlay_base(&agentfs).await?;
 
     let fs: Arc<tokio::sync::Mutex<dyn agentfs_sdk::FileSystem + Send>> =
-        Arc::new(tokio::sync::Mutex::new(agentfs.fs));
+        overlay_mount_filesystem(&agentfs).await?;
     let fs = wrap_mount_fs_if_appfs_enabled(fs, &args)?;
     let fs: Arc<Mutex<dyn agentfs_sdk::FileSystem + Send>> =
         Arc::new(Mutex::new(WinfspTokioFsAdapter { inner: fs }));
@@ -704,152 +699,17 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-async fn hydrate_windows_overlay_base(agentfs: &agentfs_sdk::AgentFS) -> Result<()> {
-    let Some(base_path) = agentfs.is_overlay_enabled().await? else {
-        return Ok(());
-    };
-
-    let whiteouts = agentfs.get_whiteouts().await?;
-    let base_root = PathBuf::from(&base_path);
-    if !base_root.exists() {
-        anyhow::bail!(
-            "Overlay base directory does not exist: {}",
-            base_root.display()
-        );
-    }
-
-    eprintln!(
-        "Hydrating overlay base into WinFsp delta view from: {}",
-        base_root.display()
-    );
-
-    let mut pending_dirs = vec![base_root.clone()];
-    while let Some(dir) = pending_dirs.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("Failed to read base directory {}", dir.display()))?
-        {
-            let entry = entry.with_context(|| format!("Failed to enumerate {}", dir.display()))?;
-            let host_path = entry.path();
-            let rel = host_path.strip_prefix(&base_root).with_context(|| {
-                format!(
-                    "Failed to compute base-relative path for {} under {}",
-                    host_path.display(),
-                    base_root.display()
-                )
-            })?;
-            if rel.as_os_str().is_empty() {
-                continue;
-            }
-
-            let rel_slash = rel.to_string_lossy().replace('\\', "/");
-            let fs_path = format!("/{}", rel_slash);
-            if path_is_whiteouted(&fs_path, &whiteouts) {
-                continue;
-            }
-
-            let metadata = std::fs::symlink_metadata(&host_path)
-                .with_context(|| format!("Failed to stat {}", host_path.display()))?;
-            let file_type = metadata.file_type();
-
-            if file_type.is_dir() {
-                ensure_agentfs_parent_dirs(agentfs, &fs_path).await?;
-                match agentfs.fs.stat(&fs_path).await? {
-                    Some(stats) if !stats.is_directory() => {
-                        anyhow::bail!(
-                            "Cannot hydrate directory {} because a non-directory already exists in delta",
-                            fs_path
-                        );
-                    }
-                    None => {
-                        agentfs.fs.mkdir(&fs_path, 0, 0).await?;
-                    }
-                    _ => {}
-                }
-                pending_dirs.push(host_path);
-                continue;
-            }
-
-            ensure_agentfs_parent_dirs(agentfs, &fs_path).await?;
-            if let Some(existing) = agentfs.fs.stat(&fs_path).await? {
-                if file_type.is_file() && existing.is_file() {
-                    continue;
-                }
-                if file_type.is_symlink() && existing.is_symlink() {
-                    continue;
-                }
-                continue;
-            }
-
-            if file_type.is_symlink() {
-                let target = std::fs::read_link(&host_path)
-                    .with_context(|| format!("Failed to read symlink {}", host_path.display()))?;
-                let target = target.to_string_lossy().replace('\\', "/");
-                agentfs.fs.symlink(&target, &fs_path, 0, 0).await?;
-                continue;
-            }
-
-            if file_type.is_file() {
-                let bytes = std::fs::read(&host_path)
-                    .with_context(|| format!("Failed to read file {}", host_path.display()))?;
-                let mode = if metadata.permissions().readonly() {
-                    0o444
-                } else {
-                    0o644
-                };
-                let (_, file) = agentfs.fs.create_file(&fs_path, mode, 0, 0).await?;
-                if !bytes.is_empty() {
-                    file.pwrite(0, &bytes).await?;
-                }
-                file.fsync().await?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-async fn ensure_agentfs_parent_dirs(agentfs: &agentfs_sdk::AgentFS, fs_path: &str) -> Result<()> {
-    let path = Path::new(fs_path);
-    let mut current = PathBuf::new();
-    let mut components = path.components().peekable();
-
-    while let Some(component) = components.next() {
-        if components.peek().is_none() {
-            break;
-        }
-        current.push(component.as_os_str());
-        let dir_path = current.to_string_lossy().replace('\\', "/");
-        if dir_path.is_empty() || dir_path == "/" {
-            continue;
-        }
-        match agentfs.fs.stat(&dir_path).await? {
-            Some(stats) if !stats.is_directory() => {
-                anyhow::bail!("Parent path exists but is not a directory: {}", dir_path);
-            }
-            None => {
-                agentfs.fs.mkdir(&dir_path, 0, 0).await?;
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn path_is_whiteouted(path: &str, whiteouts: &HashSet<String>) -> bool {
-    let mut current = path.trim_end_matches('/');
-    loop {
-        if whiteouts.contains(current) {
-            return true;
-        }
-        if current.is_empty() || current == "/" {
-            return false;
-        }
-        current = current
-            .rsplit_once('/')
-            .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
-            .unwrap_or("/");
+async fn overlay_mount_filesystem(
+    agentfs: &SdkAgentFS,
+) -> Result<Arc<tokio::sync::Mutex<dyn agentfs_sdk::FileSystem + Send>>> {
+    if let Some(base_path) = agentfs.is_overlay_enabled().await? {
+        eprintln!("Using overlay filesystem with base: {}", base_path);
+        let hostfs = HostFS::new(&base_path)?;
+        let overlay = OverlayFS::new(Arc::new(hostfs), agentfs.fs.clone());
+        overlay.load().await?;
+        Ok(Arc::new(tokio::sync::Mutex::new(overlay)))
+    } else {
+        Ok(Arc::new(tokio::sync::Mutex::new(agentfs.fs.clone())))
     }
 }
 
@@ -1550,8 +1410,8 @@ pub fn prune_mounts(_force: bool) -> Result<()> {
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_overlay_tests {
-    use super::hydrate_windows_overlay_base;
-    use agentfs_sdk::{agentfs_dir, AgentFS, AgentFSOptions};
+    use super::overlay_mount_filesystem;
+    use agentfs_sdk::{agentfs_dir, AgentFS, AgentFSOptions, BoxedFile, FileSystem, Stats};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1576,8 +1436,27 @@ mod windows_overlay_tests {
         }
     }
 
+    async fn lookup_path(fs: &dyn FileSystem, path: &str) -> Option<Stats> {
+        let mut current = fs.getattr(1).await.expect("root getattr")?;
+        for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+            current = fs
+                .lookup(current.ino, segment)
+                .await
+                .expect("lookup path segment")?;
+        }
+        Some(current)
+    }
+
+    async fn read_file(fs: &dyn FileSystem, path: &str) -> Vec<u8> {
+        let stats = lookup_path(fs, path).await.expect("lookup file");
+        let file: BoxedFile = fs.open(stats.ino, 0).await.expect("open file");
+        file.pread(0, stats.size as u64)
+            .await
+            .expect("read file bytes")
+    }
+
     #[tokio::test]
-    async fn winfsp_overlay_hydration_materializes_base_tree_without_overwriting_delta() {
+    async fn winfsp_overlay_uses_hostfs_base_without_hydrating_delta() {
         let fixture_root = TempDir::new().expect("fixture tempdir");
         let app_dir = fixture_root.path().join("aiim");
         let source_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
@@ -1618,29 +1497,31 @@ mod windows_overlay_tests {
             .await
             .expect("fsync override manifest");
 
-        hydrate_windows_overlay_base(&agent)
+        let fs = overlay_mount_filesystem(&agent)
             .await
-            .expect("hydrate overlay base");
+            .expect("create overlay mount filesystem");
+        let fs = fs.lock().await;
 
+        assert!(
+            lookup_path(&*fs, "/aiim/chats/chat-001/messages.res.jsonl")
+                .await
+                .is_some(),
+            "base snapshot should be visible through overlay view"
+        );
         assert!(
             agent
                 .fs
                 .stat("/aiim/chats/chat-001/messages.res.jsonl")
                 .await
-                .expect("stat hydrated snapshot")
-                .is_some(),
-            "base snapshot should be materialized into delta"
+                .expect("stat delta snapshot")
+                .is_none(),
+            "base snapshot should not be copied into delta"
         );
-        let manifest = agent
-            .fs
-            .read_file("/aiim/_meta/manifest.res.json")
-            .await
-            .expect("read manifest")
-            .expect("manifest bytes");
+        let manifest = read_file(&*fs, "/aiim/_meta/manifest.res.json").await;
         assert_eq!(
             std::str::from_utf8(&manifest).expect("manifest utf8"),
             "{\"override\":true}\n",
-            "existing delta file should not be overwritten by hydration"
+            "delta override should win over base"
         );
         let delta_only = agent
             .fs
