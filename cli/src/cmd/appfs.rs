@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, fs};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+};
 use uuid::Uuid;
 
 mod action_dispatcher;
@@ -22,6 +25,7 @@ mod recovery;
 pub(crate) mod registry;
 mod shared;
 mod snapshot_cache;
+mod supervisor_control;
 #[cfg(test)]
 mod tests;
 mod tree_sync;
@@ -148,14 +152,12 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
                 "--managed does not accept explicit --app-id/--app/--session-id/adapter endpoint bootstrap flags; load them from the persisted AppFS registry instead"
             );
         }
-        let existing = registry::read_app_registry(&root)?.ok_or_else(|| {
-            anyhow::anyhow!("managed AppFS registry not found under {}", root.display())
-        })?;
-        let runtime_args = registry::runtime_args_from_registry(&existing)?;
-        if runtime_args.is_empty() {
-            anyhow::bail!("managed AppFS registry does not contain any registered apps");
-        }
-        (runtime_args, Some(existing))
+        let existing = registry::read_app_registry(&root)?;
+        let runtime_args = match existing.as_ref() {
+            Some(doc) => registry::runtime_args_from_registry(doc)?,
+            None => Vec::new(),
+        };
+        (runtime_args, existing)
     } else {
         (
             build_runtime_cli_args(app_id, app_ids, session_id, bridge_args, Some("aiim"))?,
@@ -165,7 +167,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let resolved_runtime_args = resolve_runtime_cli_args(runtime_args);
     let mut supervisor = AppfsRuntimeSupervisor::new(root, resolved_runtime_args)?;
     supervisor.prepare_action_sinks()?;
-    supervisor.persist_registry(existing_registry.as_ref())?;
+    supervisor.sync_registry_to_disk(existing_registry.as_ref())?;
     supervisor.log_started();
     eprintln!("Press Ctrl+C to stop.");
 
@@ -285,46 +287,64 @@ pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridge
     }
 }
 
+struct AppRuntimeEntry {
+    runtime: ResolvedAppfsRuntimeCliArgs,
+    adapter: AppfsAdapter,
+}
+
 struct AppfsRuntimeSupervisor {
     root: PathBuf,
-    runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
-    adapters: Vec<AppfsAdapter>,
+    control_plane: supervisor_control::SupervisorControlPlane,
+    runtimes: BTreeMap<String, AppRuntimeEntry>,
 }
 
 impl AppfsRuntimeSupervisor {
     fn new(root: PathBuf, runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>) -> Result<Self> {
-        let mut adapters = Vec::with_capacity(runtime_args.len());
-        for runtime in &runtime_args {
-            adapters.push(AppfsAdapter::new(
-                root.clone(),
-                runtime.app_id.clone(),
-                runtime.session_id.clone(),
-                build_appfs_bridge_config(runtime.bridge.clone()),
-            )?);
+        let mut runtimes = BTreeMap::new();
+        for runtime in runtime_args {
+            let entry = Self::build_runtime_entry(&root, runtime)?;
+            if runtimes
+                .insert(entry.runtime.app_id.clone(), entry)
+                .is_some()
+            {
+                anyhow::bail!("duplicate runtime app_id during supervisor bootstrap");
+            }
         }
         Ok(Self {
+            control_plane: supervisor_control::SupervisorControlPlane::new(
+                root.clone(),
+                std::env::var("APPFS_V2_ACTIONLINE_STRICT")
+                    .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "True"))
+                    .unwrap_or(false),
+            )?,
             root,
-            runtime_args,
-            adapters,
+            runtimes,
         })
     }
 
     fn prepare_action_sinks(&mut self) -> Result<()> {
-        for adapter in &mut self.adapters {
-            adapter.prepare_action_sinks()?;
+        self.control_plane.prepare_action_sinks()?;
+        for entry in self.runtimes.values_mut() {
+            entry.adapter.prepare_action_sinks()?;
         }
         Ok(())
     }
 
     fn poll_once(&mut self) -> Result<()> {
-        for adapter in &mut self.adapters {
-            adapter.poll_once()?;
+        let invocations = self.control_plane.drain_invocations()?;
+        for invocation in invocations {
+            self.handle_control_invocation(invocation)?;
         }
+        for entry in self.runtimes.values_mut() {
+            entry.adapter.poll_once()?;
+        }
+        self.sync_registry_to_disk(None)?;
         Ok(())
     }
 
     fn log_started(&self) {
-        for adapter in &self.adapters {
+        for entry in self.runtimes.values() {
+            let adapter = &entry.adapter;
             eprintln!(
                 "AppFS adapter started for {} (app_id={} session={})",
                 adapter.app_dir.display(),
@@ -334,29 +354,238 @@ impl AppfsRuntimeSupervisor {
         }
     }
 
-    fn persist_registry(&self, existing: Option<&registry::AppfsAppsRegistryDoc>) -> Result<()> {
+    fn sync_registry_to_disk(
+        &self,
+        existing: Option<&registry::AppfsAppsRegistryDoc>,
+    ) -> Result<()> {
+        let existing = match existing {
+            Some(existing) => Some(existing.clone()),
+            None => registry::read_app_registry(&self.root)?,
+        };
         let active_scopes = self
-            .adapters
+            .runtimes
             .iter()
-            .map(|adapter| {
-                let state_path = adapter
-                    .app_dir
-                    .join("_meta")
-                    .join(APP_STRUCTURE_SYNC_STATE_FILENAME);
-                let active_scope = fs::read_to_string(&state_path)
-                    .ok()
-                    .and_then(|content| serde_json::from_str::<JsonValue>(&content).ok())
-                    .and_then(|value| {
-                        value
-                            .get("active_scope")
-                            .and_then(|scope| scope.as_str())
-                            .map(ToString::to_string)
-                    });
-                (adapter.app_id.clone(), active_scope)
-            })
+            .map(|(app_id, entry)| (app_id.clone(), read_active_scope(&entry.adapter.app_dir)))
             .collect::<HashMap<_, _>>();
-        let doc = registry::build_app_registry_doc(&self.runtime_args, &active_scopes, existing);
+        let runtime_args = self
+            .runtimes
+            .values()
+            .map(|entry| entry.runtime.clone())
+            .collect::<Vec<_>>();
+        let doc =
+            registry::build_app_registry_doc(&runtime_args, &active_scopes, existing.as_ref());
+        if existing.as_ref() == Some(&doc) {
+            return Ok(());
+        }
         registry::write_app_registry(&self.root, &doc)
+    }
+
+    fn handle_control_invocation(
+        &mut self,
+        invocation: supervisor_control::SupervisorControlInvocation,
+    ) -> Result<()> {
+        match invocation {
+            supervisor_control::SupervisorControlInvocation::Register {
+                request_id,
+                client_token,
+                request,
+            } => self.handle_register_app(&request_id, client_token, request),
+            supervisor_control::SupervisorControlInvocation::Unregister {
+                request_id,
+                client_token,
+                request,
+            } => self.handle_unregister_app(&request_id, client_token, request),
+            supervisor_control::SupervisorControlInvocation::List {
+                request_id,
+                client_token,
+            } => self.handle_list_apps(&request_id, client_token),
+        }
+    }
+
+    fn handle_register_app(
+        &mut self,
+        request_id: &str,
+        client_token: Option<String>,
+        request: action_dispatcher::RegisterAppRequest,
+    ) -> Result<()> {
+        if self.runtimes.contains_key(&request.app_id) {
+            self.control_plane.emit_failed(
+                "/_appfs/register_app.act",
+                request_id,
+                "APP_ALREADY_REGISTERED",
+                &format!("app {} is already registered", request.app_id),
+                client_token,
+            )?;
+            return Ok(());
+        }
+
+        let runtime = match register_request_to_runtime(request) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                self.control_plane.emit_failed(
+                    "/_appfs/register_app.act",
+                    request_id,
+                    "APP_REGISTER_INVALID",
+                    &err.to_string(),
+                    client_token,
+                )?;
+                return Ok(());
+            }
+        };
+
+        match Self::build_runtime_entry(&self.root, runtime.clone()) {
+            Ok(mut entry) => {
+                entry.adapter.prepare_action_sinks()?;
+                let app_id = entry.runtime.app_id.clone();
+                let session_id = entry.runtime.session_id.clone();
+                let transport = transport_summary(&entry.runtime.bridge);
+                self.runtimes.insert(app_id.clone(), entry);
+                self.sync_registry_to_disk(None)?;
+                self.control_plane.emit_completed(
+                    "/_appfs/register_app.act",
+                    request_id,
+                    serde_json::json!({
+                        "app_id": app_id,
+                        "session_id": session_id,
+                        "transport": transport,
+                        "registered": true,
+                    }),
+                    client_token,
+                )?;
+            }
+            Err(err) => {
+                self.control_plane.emit_failed(
+                    "/_appfs/register_app.act",
+                    request_id,
+                    "APP_REGISTER_FAILED",
+                    &format!("failed to register app: {err}"),
+                    client_token,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_unregister_app(
+        &mut self,
+        request_id: &str,
+        client_token: Option<String>,
+        request: action_dispatcher::UnregisterAppRequest,
+    ) -> Result<()> {
+        let Some(entry) = self.runtimes.remove(&request.app_id) else {
+            self.control_plane.emit_failed(
+                "/_appfs/unregister_app.act",
+                request_id,
+                "APP_NOT_REGISTERED",
+                &format!("app {} is not registered", request.app_id),
+                client_token,
+            )?;
+            return Ok(());
+        };
+        self.sync_registry_to_disk(None)?;
+        self.control_plane.emit_completed(
+            "/_appfs/unregister_app.act",
+            request_id,
+            serde_json::json!({
+                "app_id": entry.runtime.app_id,
+                "session_id": entry.runtime.session_id,
+                "unregistered": true,
+            }),
+            client_token,
+        )?;
+        Ok(())
+    }
+
+    fn handle_list_apps(&mut self, request_id: &str, client_token: Option<String>) -> Result<()> {
+        let apps = self
+            .runtimes
+            .values()
+            .map(|entry| {
+                serde_json::json!({
+                    "app_id": entry.runtime.app_id,
+                    "session_id": entry.runtime.session_id,
+                    "transport": transport_summary(&entry.runtime.bridge),
+                    "active_scope": read_active_scope(&entry.adapter.app_dir),
+                })
+            })
+            .collect::<Vec<_>>();
+        self.control_plane.emit_completed(
+            "/_appfs/list_apps.act",
+            request_id,
+            serde_json::json!({ "apps": apps }),
+            client_token,
+        )?;
+        Ok(())
+    }
+
+    fn build_runtime_entry(
+        root: &PathBuf,
+        runtime: ResolvedAppfsRuntimeCliArgs,
+    ) -> Result<AppRuntimeEntry> {
+        let adapter = AppfsAdapter::new(
+            root.clone(),
+            runtime.app_id.clone(),
+            runtime.session_id.clone(),
+            build_appfs_bridge_config(runtime.bridge.clone()),
+        )?;
+        Ok(AppRuntimeEntry { runtime, adapter })
+    }
+}
+
+fn register_request_to_runtime(
+    request: action_dispatcher::RegisterAppRequest,
+) -> Result<ResolvedAppfsRuntimeCliArgs> {
+    let session_id = normalize_appfs_session_id(request.session_id);
+    let doc = registry::AppfsAppsRegistryDoc {
+        version: registry::APPFS_REGISTRY_VERSION,
+        apps: vec![registry::AppfsRegisteredAppDoc {
+            app_id: request.app_id,
+            transport: request.transport,
+            session_id: session_id.clone(),
+            registered_at: chrono::Utc::now().to_rfc3339(),
+            active_scope: None,
+        }],
+    };
+    let mut runtimes = resolve_runtime_cli_args(registry::runtime_args_from_registry(&doc)?);
+    let runtime = runtimes
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("register request did not resolve any runtime args"))?;
+    Ok(ResolvedAppfsRuntimeCliArgs {
+        session_id,
+        ..runtime
+    })
+}
+
+fn read_active_scope(app_dir: &PathBuf) -> Option<String> {
+    let state_path = app_dir
+        .join("_meta")
+        .join(APP_STRUCTURE_SYNC_STATE_FILENAME);
+    fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<JsonValue>(&content).ok())
+        .and_then(|value| {
+            value
+                .get("active_scope")
+                .and_then(|scope| scope.as_str())
+                .map(ToString::to_string)
+        })
+}
+
+fn transport_summary(bridge: &AppfsBridgeCliArgs) -> JsonValue {
+    if let Some(endpoint) = &bridge.adapter_http_endpoint {
+        serde_json::json!({
+            "kind": "http",
+            "endpoint": endpoint,
+        })
+    } else if let Some(endpoint) = &bridge.adapter_grpc_endpoint {
+        serde_json::json!({
+            "kind": "grpc",
+            "endpoint": endpoint,
+        })
+    } else {
+        serde_json::json!({
+            "kind": "in_process",
+        })
     }
 }
 
@@ -598,6 +827,10 @@ mod supervisor_tests {
             .collect()
     }
 
+    fn control_events(temp: &TempDir, token: &str) -> Vec<JsonValue> {
+        token_events(&temp.path().join("_appfs/_stream/events.evt.jsonl"), token)
+    }
+
     #[test]
     fn normalize_app_ids_defaults_and_deduplicates() {
         let app_ids = normalize_appfs_app_ids(
@@ -691,7 +924,9 @@ mod supervisor_tests {
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
-        supervisor.persist_registry(None).expect("persist registry");
+        supervisor
+            .sync_registry_to_disk(None)
+            .expect("persist registry");
 
         let stored = registry::read_app_registry(temp.path())
             .expect("read registry")
@@ -756,7 +991,7 @@ mod supervisor_tests {
         .expect("write sync state");
 
         supervisor
-            .persist_registry(Some(&existing))
+            .sync_registry_to_disk(Some(&existing))
             .expect("persist registry");
 
         let stored = registry::read_app_registry(temp.path())
@@ -764,5 +999,95 @@ mod supervisor_tests {
             .expect("registry exists");
         assert_eq!(stored.apps[0].registered_at, "2026-03-25T00:00:00Z");
         assert_eq!(stored.apps[0].active_scope.as_deref(), Some("chat-long"));
+    }
+
+    #[test]
+    fn supervisor_can_register_app_dynamically_from_empty_runtime() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new()).expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        append_text(
+            &temp.path().join("_appfs/register_app.act"),
+            "{\"app_id\":\"notion\",\"transport\":{\"kind\":\"in_process\",\"http_timeout_ms\":5000,\"grpc_timeout_ms\":5000,\"bridge_max_retries\":2,\"bridge_initial_backoff_ms\":100,\"bridge_max_backoff_ms\":1000,\"bridge_circuit_breaker_failures\":5,\"bridge_circuit_breaker_cooldown_ms\":3000},\"client_token\":\"reg-001\"}\n",
+        );
+
+        supervisor.poll_once().expect("poll register");
+
+        assert!(supervisor.runtimes.contains_key("notion"));
+        assert!(temp.path().join("notion/_meta/manifest.res.json").exists());
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read registry")
+            .expect("registry exists");
+        assert_eq!(stored.apps.len(), 1);
+        assert_eq!(stored.apps[0].app_id, "notion");
+
+        let events = control_events(&temp, "reg-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+    }
+
+    #[test]
+    fn supervisor_can_list_and_unregister_apps_without_deleting_tree() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime_args = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            Vec::new(),
+            Some("sess-aiim".to_string()),
+            bridge_args(),
+            None,
+        )
+        .expect("build runtime args");
+        let mut supervisor = AppfsRuntimeSupervisor::new(
+            temp.path().to_path_buf(),
+            resolve_runtime_cli_args(runtime_args),
+        )
+        .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        supervisor
+            .sync_registry_to_disk(None)
+            .expect("persist registry");
+
+        append_text(
+            &temp.path().join("_appfs/list_apps.act"),
+            "{\"client_token\":\"list-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll list");
+        let list_events = control_events(&temp, "list-001");
+        assert_eq!(list_events.len(), 1);
+        assert_eq!(
+            list_events[0]
+                .get("content")
+                .and_then(|value| value.get("apps"))
+                .and_then(|value| value.as_array())
+                .map(|apps| apps.len()),
+            Some(1)
+        );
+
+        append_text(
+            &temp.path().join("_appfs/unregister_app.act"),
+            "{\"app_id\":\"aiim\",\"client_token\":\"unreg-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll unregister");
+
+        assert!(!supervisor.runtimes.contains_key("aiim"));
+        assert!(temp.path().join("aiim").exists());
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read registry")
+            .expect("registry exists");
+        assert!(stored.apps.is_empty());
+
+        let unregister_events = control_events(&temp, "unreg-001");
+        assert_eq!(unregister_events.len(), 1);
+        assert_eq!(
+            unregister_events[0]
+                .get("type")
+                .and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
     }
 }

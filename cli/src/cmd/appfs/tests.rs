@@ -1,11 +1,12 @@
 use serde_json::Value;
 
 use super::action_dispatcher::{
-    parse_action_line_v2, parse_enter_scope_request, parse_paging_request,
-    parse_snapshot_refresh_request, parse_structure_refresh_request,
-    validate_submit_payload as validate_payload,
+    parse_action_line_v2, parse_enter_scope_request, parse_list_apps_request, parse_paging_request,
+    parse_register_app_request, parse_snapshot_refresh_request, parse_structure_refresh_request,
+    parse_unregister_app_request, validate_submit_payload as validate_payload,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
+use super::registry::AppfsRegistryTransportKind;
 use super::shared::{
     action_template_matches, boundary_probe_from_bytes, decode_jsonl_line,
     deterministic_shorten_segment, extract_client_token, has_odd_unescaped_quotes,
@@ -281,6 +282,32 @@ fn parse_structure_refresh_allows_optional_target_scope() {
     let req = parse_structure_refresh_request(r#"{"target_scope":"chat-long"}"#)
         .expect("expected refresh with target scope");
     assert_eq!(req.target_scope.as_deref(), Some("chat-long"));
+}
+
+#[test]
+fn parse_register_app_request_requires_transport_and_app_id() {
+    let req = parse_register_app_request(
+        r#"{"app_id":"notion","session_id":"sess-notion","transport":{"kind":"http","endpoint":"http://127.0.0.1:8080","http_timeout_ms":5000,"grpc_timeout_ms":5000,"bridge_max_retries":2,"bridge_initial_backoff_ms":100,"bridge_max_backoff_ms":1000,"bridge_circuit_breaker_failures":5,"bridge_circuit_breaker_cooldown_ms":3000}}"#,
+    )
+    .expect("valid register request");
+    assert_eq!(req.app_id, "notion");
+    assert_eq!(req.session_id.as_deref(), Some("sess-notion"));
+    assert_eq!(req.transport.kind, AppfsRegistryTransportKind::Http);
+    assert!(parse_register_app_request(r#"{"transport":{}}"#).is_err());
+}
+
+#[test]
+fn parse_unregister_app_request_requires_app_id() {
+    let req =
+        parse_unregister_app_request(r#"{"app_id":"notion"}"#).expect("valid unregister request");
+    assert_eq!(req.app_id, "notion");
+    assert!(parse_unregister_app_request(r#"{}"#).is_err());
+}
+
+#[test]
+fn parse_list_apps_request_requires_json_object() {
+    assert!(parse_list_apps_request(r#"{}"#).is_ok());
+    assert!(parse_list_apps_request(r#"[]"#).is_err());
 }
 
 #[test]
