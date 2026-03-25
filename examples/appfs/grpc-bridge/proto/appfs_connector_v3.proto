@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package appfs.connector.v3;
+
+message ConnectorContextV3 {
+  string app_id = 1;
+  string session_id = 2;
+  string request_id = 3;
+  optional string client_token = 4;
+  optional string trace_id = 5;
+}
+
+message ConnectorErrorV3 {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  optional string details = 4;
+}
+
+enum AppStructureSyncReasonV3 {
+  APP_STRUCTURE_SYNC_REASON_V3_UNSPECIFIED = 0;
+  APP_STRUCTURE_SYNC_REASON_V3_INITIALIZE = 1;
+  APP_STRUCTURE_SYNC_REASON_V3_ENTER_SCOPE = 2;
+  APP_STRUCTURE_SYNC_REASON_V3_REFRESH = 3;
+  APP_STRUCTURE_SYNC_REASON_V3_RECOVER = 4;
+}
+
+enum AppStructureNodeKindV3 {
+  APP_STRUCTURE_NODE_KIND_V3_UNSPECIFIED = 0;
+  APP_STRUCTURE_NODE_KIND_V3_DIRECTORY = 1;
+  APP_STRUCTURE_NODE_KIND_V3_ACTION_FILE = 2;
+  APP_STRUCTURE_NODE_KIND_V3_SNAPSHOT_RESOURCE = 3;
+  APP_STRUCTURE_NODE_KIND_V3_LIVE_RESOURCE = 4;
+  APP_STRUCTURE_NODE_KIND_V3_STATIC_JSON_RESOURCE = 5;
+}
+
+message GetAppStructureRequestV3 {
+  string app_id = 1;
+  optional string known_revision = 2;
+}
+
+message RefreshAppStructureRequestV3 {
+  string app_id = 1;
+  optional string known_revision = 2;
+  AppStructureSyncReasonV3 reason = 3;
+  optional string target_scope = 4;
+  optional string trigger_action_path = 5;
+}
+
+message AppStructureNodeV3 {
+  string path = 1;
+  AppStructureNodeKindV3 kind = 2;
+  optional string manifest_entry_json = 3;
+  optional string seed_content_json = 4;
+  bool mutable = 5;
+  optional string scope = 6;
+}
+
+message AppStructureSnapshotV3 {
+  string app_id = 1;
+  string revision = 2;
+  optional string active_scope = 3;
+  repeated string ownership_prefixes = 4;
+  repeated AppStructureNodeV3 nodes = 5;
+}
+
+message AppStructureSyncUnchangedV3 {
+  string app_id = 1;
+  string revision = 2;
+  optional string active_scope = 3;
+}
+
+message AppStructureSyncSnapshotV3 {
+  AppStructureSnapshotV3 snapshot = 1;
+}
+
+message AppStructureSyncResultV3 {
+  oneof kind {
+    AppStructureSyncUnchangedV3 unchanged = 1;
+    AppStructureSyncSnapshotV3 snapshot = 2;
+  }
+}
+
+message GetAppStructureRequest {
+  ConnectorContextV3 context = 1;
+  GetAppStructureRequestV3 request = 2;
+}
+
+message GetAppStructureResponse {
+  oneof result {
+    AppStructureSyncResultV3 response = 1;
+    ConnectorErrorV3 error = 2;
+  }
+}
+
+message RefreshAppStructureRequest {
+  ConnectorContextV3 context = 1;
+  RefreshAppStructureRequestV3 request = 2;
+}
+
+message RefreshAppStructureResponse {
+  oneof result {
+    AppStructureSyncResultV3 response = 1;
+    ConnectorErrorV3 error = 2;
+  }
+}
+
+service AppfsConnectorV3 {
+  rpc GetAppStructure(GetAppStructureRequest) returns (GetAppStructureResponse);
+  rpc RefreshAppStructure(RefreshAppStructureRequest) returns (RefreshAppStructureResponse);
+}

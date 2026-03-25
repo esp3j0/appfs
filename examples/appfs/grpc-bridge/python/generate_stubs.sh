@@ -9,10 +9,13 @@ python3 -m grpc_tools.protoc \
   --python_out="$SCRIPT_DIR" \
   --grpc_python_out="$SCRIPT_DIR" \
   "$PROTO_DIR/appfs_adapter_v1.proto" \
-  "$PROTO_DIR/appfs_connector_v2.proto"
+  "$PROTO_DIR/appfs_connector_v2.proto" \
+  "$PROTO_DIR/appfs_connector_v3.proto"
 
 echo "Generated stubs:"
 echo "  $SCRIPT_DIR/appfs_adapter_v1_pb2.py"
 echo "  $SCRIPT_DIR/appfs_adapter_v1_pb2_grpc.py"
 echo "  $SCRIPT_DIR/appfs_connector_v2_pb2.py"
 echo "  $SCRIPT_DIR/appfs_connector_v2_pb2_grpc.py"
+echo "  $SCRIPT_DIR/appfs_connector_v3_pb2.py"
+echo "  $SCRIPT_DIR/appfs_connector_v3_pb2_grpc.py"

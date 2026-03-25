@@ -12,6 +12,8 @@ import appfs_adapter_v1_pb2 as pb1
 import appfs_adapter_v1_pb2_grpc as pb1_grpc
 import appfs_connector_v2_pb2 as pb2
 import appfs_connector_v2_pb2_grpc as pb2_grpc
+import appfs_connector_v3_pb2 as pb3
+import appfs_connector_v3_pb2_grpc as pb3_grpc
 
 
 def _env_int(name: str, default: int) -> int:
@@ -71,6 +73,214 @@ def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
                 retryable=False,
             )
     return None
+
+
+def _validate_context_v3(message: object) -> pb3.ConnectorErrorV3 | None:
+    if not hasattr(message, "HasField") or not message.HasField("context"):
+        return pb3.ConnectorErrorV3(
+            code="INVALID_ARGUMENT",
+            message="context object is required",
+            retryable=False,
+        )
+    ctx = message.context
+    required = (
+        ("app_id", ctx.app_id),
+        ("session_id", ctx.session_id),
+        ("request_id", ctx.request_id),
+    )
+    for field, value in required:
+        if not isinstance(value, str) or value.strip() == "":
+            return pb3.ConnectorErrorV3(
+                code="INVALID_ARGUMENT",
+                message=f"context.{field} must be non-empty string",
+                retryable=False,
+            )
+    return None
+
+
+def _action_manifest(template: str, execution_mode: str = "inline") -> dict[str, object]:
+    return {
+        "template": template,
+        "kind": "action",
+        "input_mode": "json",
+        "execution_mode": execution_mode,
+    }
+
+
+def _snapshot_manifest(template: str, max_bytes: int) -> dict[str, object]:
+    return {
+        "template": template,
+        "kind": "resource",
+        "output_mode": "jsonl",
+        "snapshot": {
+            "max_materialized_bytes": max_bytes,
+            "prewarm": True,
+            "prewarm_timeout_ms": 5000,
+            "read_through_timeout_ms": 10000,
+            "on_timeout": "return_stale",
+        },
+    }
+
+
+def _live_manifest(template: str) -> dict[str, object]:
+    return {
+        "template": template,
+        "kind": "resource",
+        "output_mode": "json",
+        "paging": {
+            "enabled": True,
+            "mode": "live",
+        },
+    }
+
+
+def _structure_nodes(active_scope: str) -> list[dict[str, object]]:
+    nodes: list[dict[str, object]] = [
+        {"path": "contacts", "kind": "directory", "mutable": False},
+        {"path": "contacts/zhangsan", "kind": "directory", "mutable": False},
+        {
+            "path": "contacts/zhangsan/send_message.act",
+            "kind": "action_file",
+            "manifest_entry": _action_manifest("contacts/{contact_id}/send_message.act"),
+            "mutable": True,
+        },
+        {"path": "feed", "kind": "directory", "mutable": False},
+        {
+            "path": "feed/recommendations.res.json",
+            "kind": "live_resource",
+            "manifest_entry": _live_manifest("feed/recommendations.res.json"),
+            "seed_content": {
+                "items": [],
+                "page": {"handle_id": "", "page_no": 0, "has_more": True, "mode": "live"},
+            },
+            "mutable": False,
+        },
+        {"path": "_paging", "kind": "directory", "mutable": False},
+        {
+            "path": "_paging/fetch_next.act",
+            "kind": "action_file",
+            "manifest_entry": _action_manifest("_paging/fetch_next.act"),
+            "mutable": True,
+        },
+        {
+            "path": "_paging/close.act",
+            "kind": "action_file",
+            "manifest_entry": _action_manifest("_paging/close.act"),
+            "mutable": True,
+        },
+        {"path": "_app", "kind": "directory", "mutable": False},
+        {
+            "path": "_app/enter_scope.act",
+            "kind": "action_file",
+            "manifest_entry": _action_manifest("_app/enter_scope.act"),
+            "mutable": True,
+        },
+        {
+            "path": "_app/refresh_structure.act",
+            "kind": "action_file",
+            "manifest_entry": _action_manifest("_app/refresh_structure.act"),
+            "mutable": True,
+        },
+    ]
+
+    if active_scope == "chat-long":
+        nodes.extend(
+            [
+                {"path": "chats", "kind": "directory", "mutable": False, "scope": "chat-long"},
+                {
+                    "path": "chats/chat-long",
+                    "kind": "directory",
+                    "mutable": False,
+                    "scope": "chat-long",
+                },
+                {
+                    "path": "chats/chat-long/messages.res.jsonl",
+                    "kind": "snapshot_resource",
+                    "manifest_entry": _snapshot_manifest(
+                        "chats/chat-long/messages.res.jsonl", 1024
+                    ),
+                    "mutable": False,
+                    "scope": "chat-long",
+                },
+            ]
+        )
+    else:
+        nodes.extend(
+            [
+                {"path": "chats", "kind": "directory", "mutable": False, "scope": "chat-001"},
+                {
+                    "path": "chats/chat-001",
+                    "kind": "directory",
+                    "mutable": False,
+                    "scope": "chat-001",
+                },
+                {
+                    "path": "chats/chat-001/messages.res.jsonl",
+                    "kind": "snapshot_resource",
+                    "manifest_entry": _snapshot_manifest(
+                        "chats/chat-001/messages.res.jsonl", 10 * 1024 * 1024
+                    ),
+                    "mutable": False,
+                    "scope": "chat-001",
+                },
+            ]
+        )
+    return nodes
+
+
+def _structure_snapshot(scope: str | None) -> dict[str, object]:
+    if scope in (None, "chat-001"):
+        active_scope = "chat-001"
+    elif scope == "chat-long":
+        active_scope = "chat-long"
+    else:
+        raise ValueError(f"unknown structure scope: {scope}")
+    return {
+        "app_id": "aiim",
+        "revision": f"demo-structure-{active_scope}",
+        "active_scope": active_scope,
+        "ownership_prefixes": ["_meta", "contacts", "feed", "chats", "_paging", "_app"],
+        "nodes": _structure_nodes(active_scope),
+    }
+
+
+def _node_kind_v3(kind: str) -> int:
+    mapping = {
+        "directory": pb3.APP_STRUCTURE_NODE_KIND_V3_DIRECTORY,
+        "action_file": pb3.APP_STRUCTURE_NODE_KIND_V3_ACTION_FILE,
+        "snapshot_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_SNAPSHOT_RESOURCE,
+        "live_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_LIVE_RESOURCE,
+        "static_json_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_STATIC_JSON_RESOURCE,
+    }
+    return mapping.get(kind, pb3.APP_STRUCTURE_NODE_KIND_V3_UNSPECIFIED)
+
+
+def _snapshot_message_v3(snapshot: dict[str, object]) -> pb3.AppStructureSnapshotV3:
+    return pb3.AppStructureSnapshotV3(
+        app_id=str(snapshot["app_id"]),
+        revision=str(snapshot["revision"]),
+        active_scope=snapshot.get("active_scope"),
+        ownership_prefixes=[str(value) for value in snapshot.get("ownership_prefixes", [])],
+        nodes=[
+            pb3.AppStructureNodeV3(
+                path=str(node["path"]),
+                kind=_node_kind_v3(str(node["kind"])),
+                manifest_entry_json=(
+                    _json_compact(node["manifest_entry"])
+                    if node.get("manifest_entry") is not None
+                    else None
+                ),
+                seed_content_json=(
+                    _json_compact(node["seed_content"])
+                    if node.get("seed_content") is not None
+                    else None
+                ),
+                mutable=bool(node.get("mutable", False)),
+                scope=node.get("scope"),
+            )
+            for node in snapshot.get("nodes", [])
+        ],
+    )
 
 
 def _parse_fail_status_code(raw: str) -> grpc.StatusCode:
@@ -537,10 +747,127 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         )
 
 
+class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
+    def GetAppStructure(
+        self, request: pb3.GetAppStructureRequest, context: grpc.ServicerContext
+    ):
+        _ = context
+        context_error = _validate_context_v3(request)
+        if context_error is not None:
+            return pb3.GetAppStructureResponse(error=context_error)
+        if not request.HasField("request"):
+            return pb3.GetAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="INVALID_ARGUMENT",
+                    message="missing request payload",
+                    retryable=False,
+                )
+            )
+        req = request.request
+        if not req.app_id.strip():
+            return pb3.GetAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="INVALID_ARGUMENT",
+                    message="app_id is required",
+                    retryable=False,
+                )
+            )
+        snapshot = _structure_snapshot(None)
+        if req.known_revision and req.known_revision == snapshot["revision"]:
+            return pb3.GetAppStructureResponse(
+                response=pb3.AppStructureSyncResultV3(
+                    unchanged=pb3.AppStructureSyncUnchangedV3(
+                        app_id=req.app_id,
+                        revision=str(snapshot["revision"]),
+                        active_scope=str(snapshot["active_scope"]),
+                    )
+                )
+            )
+        return pb3.GetAppStructureResponse(
+            response=pb3.AppStructureSyncResultV3(
+                snapshot=pb3.AppStructureSyncSnapshotV3(
+                    snapshot=_snapshot_message_v3(snapshot)
+                )
+            )
+        )
+
+    def RefreshAppStructure(
+        self, request: pb3.RefreshAppStructureRequest, context: grpc.ServicerContext
+    ):
+        _ = context
+        context_error = _validate_context_v3(request)
+        if context_error is not None:
+            return pb3.RefreshAppStructureResponse(error=context_error)
+        if not request.HasField("request"):
+            return pb3.RefreshAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="INVALID_ARGUMENT",
+                    message="missing request payload",
+                    retryable=False,
+                )
+            )
+        req = request.request
+        if not req.app_id.strip():
+            return pb3.RefreshAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="INVALID_ARGUMENT",
+                    message="app_id is required",
+                    retryable=False,
+                )
+            )
+        if req.reason == pb3.APP_STRUCTURE_SYNC_REASON_V3_UNSPECIFIED:
+            return pb3.RefreshAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="INVALID_ARGUMENT",
+                    message="reason is required",
+                    retryable=False,
+                )
+            )
+        if (
+            req.reason == pb3.APP_STRUCTURE_SYNC_REASON_V3_ENTER_SCOPE
+            and not req.target_scope.strip()
+        ):
+            return pb3.RefreshAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="STRUCTURE_SCOPE_INVALID",
+                    message="target_scope is required for enter_scope refresh",
+                    retryable=False,
+                )
+            )
+        try:
+            snapshot = _structure_snapshot(req.target_scope if req.target_scope else None)
+        except ValueError as err:
+            return pb3.RefreshAppStructureResponse(
+                error=pb3.ConnectorErrorV3(
+                    code="STRUCTURE_SCOPE_INVALID",
+                    message=str(err),
+                    retryable=False,
+                )
+            )
+        if req.known_revision and req.known_revision == snapshot["revision"]:
+            return pb3.RefreshAppStructureResponse(
+                response=pb3.AppStructureSyncResultV3(
+                    unchanged=pb3.AppStructureSyncUnchangedV3(
+                        app_id=req.app_id,
+                        revision=str(snapshot["revision"]),
+                        active_scope=str(snapshot["active_scope"]),
+                    )
+                )
+            )
+        return pb3.RefreshAppStructureResponse(
+            response=pb3.AppStructureSyncResultV3(
+                snapshot=pb3.AppStructureSyncSnapshotV3(
+                    snapshot=_snapshot_message_v3(snapshot)
+                )
+            )
+        )
+
+
 def main() -> None:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     pb1_grpc.add_AppfsAdapterBridgeServicer_to_server(BridgeServiceV1(), server)
     pb2_grpc.add_AppfsConnectorV2Servicer_to_server(BridgeServiceV2(), server)
+    pb3_grpc.add_AppfsConnectorV3Servicer_to_server(BridgeServiceV3(), server)
     server.add_insecure_port("127.0.0.1:50051")
     server.start()
     print("AppFS gRPC bridge listening on 127.0.0.1:50051")

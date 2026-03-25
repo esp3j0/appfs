@@ -11,6 +11,12 @@ use agentfs_sdk::{
     SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
     SubmitActionRequestV2, SubmitActionResponseV2,
 };
+use agentfs_sdk::{
+    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
+    AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3, ConnectorErrorV3,
+    GetAppStructureRequestV3, GetAppStructureResponseV3, RefreshAppStructureRequestV3,
+    RefreshAppStructureResponseV3,
+};
 use serde_json::Value as JsonValue;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -22,6 +28,9 @@ pub(super) mod proto {
 pub(super) mod proto_v2 {
     tonic::include_proto!("appfs.connector.v2");
 }
+pub(super) mod proto_v3 {
+    tonic::include_proto!("appfs.connector.v3");
+}
 
 use proto::appfs_adapter_bridge_client::AppfsAdapterBridgeClient;
 use proto::submit_action_response::Result as SubmitActionResult;
@@ -32,6 +41,7 @@ use proto::{
     RequestContext, SubmitActionRequest, SubmitControlActionRequest,
 };
 use proto_v2::appfs_connector_v2_client::AppfsConnectorV2Client;
+use proto_v3::appfs_connector_v3_client::AppfsConnectorV3Client;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct GrpcBridgeAdapterV1 {
@@ -45,6 +55,7 @@ pub(super) struct GrpcBridgeAdapterV1 {
 pub(super) struct GrpcBridgeConnectorV2 {
     app_id: String,
     client: AppfsConnectorV2Client<Channel>,
+    client_v3: AppfsConnectorV3Client<Channel>,
     runtime_options: BridgeRuntimeOptions,
     metrics: BridgeMetrics,
     circuit_breaker: BridgeCircuitBreaker,
@@ -271,7 +282,8 @@ impl GrpcBridgeConnectorV2 {
 
         Ok(Self {
             app_id,
-            client: AppfsConnectorV2Client::new(channel),
+            client: AppfsConnectorV2Client::new(channel.clone()),
+            client_v3: AppfsConnectorV3Client::new(channel),
             runtime_options,
             metrics: BridgeMetrics::default(),
             circuit_breaker: BridgeCircuitBreaker::default(),
@@ -357,6 +369,75 @@ impl GrpcBridgeConnectorV2 {
                 elapsed.as_millis(),
                 self.metrics.snapshot()
             );
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn run_v3_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorErrorV3>
+    where
+        F: FnMut(AppfsConnectorV3Client<Channel>) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
+            self.metrics.record_short_circuit();
+            return Err(ConnectorErrorV3 {
+                code: connector_error_codes_v2::INTERNAL.to_string(),
+                message: format!(
+                    "bridge grpc circuit open for {method}; retry_in_ms={} metrics={}",
+                    remaining.as_millis(),
+                    self.metrics.snapshot()
+                ),
+                retryable: true,
+                details: None,
+            });
+        }
+
+        let max_attempts = self.runtime_options.max_retries.saturating_add(1).max(1);
+        let started = Instant::now();
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let client = self.client_v3.clone();
+            match f(client) {
+                Ok(response) => {
+                    self.circuit_breaker.record_success();
+                    self.metrics.record_request(attempt, true);
+                    self.log_observation(method, attempt, started.elapsed(), "ok");
+                    return Ok(response.into_inner());
+                }
+                Err(status) => {
+                    let retryable = is_retryable_grpc_code(status.code());
+                    if retryable && attempt < max_attempts {
+                        let backoff = self.runtime_options.retry_backoff_for_attempt(attempt);
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    if retryable {
+                        let opened = self
+                            .circuit_breaker
+                            .record_failure(Instant::now(), self.runtime_options);
+                        if opened {
+                            eprintln!(
+                                "AppFS bridge grpc circuit opened after {} failure code={} {}",
+                                method,
+                                status.code(),
+                                self.metrics.snapshot()
+                            );
+                        }
+                    } else {
+                        self.circuit_breaker.record_success();
+                    }
+
+                    self.metrics.record_request(attempt, false);
+                    self.log_observation(method, attempt, started.elapsed(), "failed");
+                    return Err(map_grpc_status_v3(
+                        method,
+                        status,
+                        attempt,
+                        &self.metrics.snapshot(),
+                    ));
+                }
+            }
         }
     }
 
@@ -630,6 +711,76 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     }
 }
 
+impl AppConnectorV3 for GrpcBridgeConnectorV2 {
+    fn get_app_structure(
+        &mut self,
+        request: GetAppStructureRequestV3,
+        ctx: &ConnectorContextV3,
+    ) -> Result<GetAppStructureResponseV3, ConnectorErrorV3> {
+        if request.app_id != self.app_id {
+            return Err(ConnectorErrorV3 {
+                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+                message: format!(
+                    "grpc structure connector app_id mismatch expected={} got={}",
+                    self.app_id, request.app_id
+                ),
+                retryable: false,
+                details: None,
+            });
+        }
+        let req = proto_v3::GetAppStructureRequest {
+            context: Some(to_proto_context_v3(ctx)),
+            request: Some(to_proto_get_app_structure_request_v3(request)),
+        };
+        let response = self.run_v3_rpc("GetAppStructure", |mut client| {
+            run_async(client.get_app_structure(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v3::get_app_structure_response::Result::Response(resp)) => {
+                from_proto_get_app_structure_response_v3(resp)
+            }
+            Some(proto_v3::get_app_structure_response::Result::Error(err)) => {
+                Err(from_proto_connector_error_v3(err))
+            }
+            None => Err(empty_result_error_v3("GetAppStructure")),
+        }
+    }
+
+    fn refresh_app_structure(
+        &mut self,
+        request: RefreshAppStructureRequestV3,
+        ctx: &ConnectorContextV3,
+    ) -> Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
+        if request.app_id != self.app_id {
+            return Err(ConnectorErrorV3 {
+                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+                message: format!(
+                    "grpc structure connector app_id mismatch expected={} got={}",
+                    self.app_id, request.app_id
+                ),
+                retryable: false,
+                details: None,
+            });
+        }
+        let req = proto_v3::RefreshAppStructureRequest {
+            context: Some(to_proto_context_v3(ctx)),
+            request: Some(to_proto_refresh_app_structure_request_v3(request)),
+        };
+        let response = self.run_v3_rpc("RefreshAppStructure", |mut client| {
+            run_async(client.refresh_app_structure(req.clone()))
+        })?;
+        match response.result {
+            Some(proto_v3::refresh_app_structure_response::Result::Response(resp)) => {
+                from_proto_refresh_app_structure_response_v3(resp)
+            }
+            Some(proto_v3::refresh_app_structure_response::Result::Error(err)) => {
+                Err(from_proto_connector_error_v3(err))
+            }
+            None => Err(empty_result_error_v3("RefreshAppStructure")),
+        }
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn to_proto_input_mode(mode: AdapterInputModeV1) -> InputMode {
     match mode {
@@ -717,6 +868,40 @@ fn empty_result_error(method: &str) -> ConnectorErrorV2 {
     }
 }
 
+fn empty_result_error_v3(method: &str) -> ConnectorErrorV3 {
+    ConnectorErrorV3 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc {} returned empty result", method),
+        retryable: true,
+        details: None,
+    }
+}
+
+fn map_grpc_status_v3(
+    method: &str,
+    status: tonic::Status,
+    attempts: u32,
+    metrics: &str,
+) -> ConnectorErrorV3 {
+    ConnectorErrorV3 {
+        code: if is_retryable_grpc_code(status.code()) {
+            connector_error_codes_v2::UPSTREAM_UNAVAILABLE.to_string()
+        } else {
+            connector_error_codes_v2::INTERNAL.to_string()
+        },
+        message: format!(
+            "bridge grpc {} error: code={} message={} attempts={} metrics={}",
+            method,
+            status.code(),
+            status.message(),
+            attempts,
+            metrics
+        ),
+        retryable: is_retryable_grpc_code(status.code()),
+        details: None,
+    }
+}
+
 fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2 {
     proto_v2::ConnectorContextV2 {
         app_id: ctx.app_id.clone(),
@@ -724,6 +909,47 @@ fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2
         request_id: ctx.request_id.clone(),
         client_token: ctx.client_token.clone(),
         trace_id: ctx.trace_id.clone(),
+    }
+}
+
+fn to_proto_context_v3(ctx: &ConnectorContextV3) -> proto_v3::ConnectorContextV3 {
+    proto_v3::ConnectorContextV3 {
+        app_id: ctx.app_id.clone(),
+        session_id: ctx.session_id.clone(),
+        request_id: ctx.request_id.clone(),
+        client_token: ctx.client_token.clone(),
+        trace_id: ctx.trace_id.clone(),
+    }
+}
+
+fn to_proto_get_app_structure_request_v3(
+    request: GetAppStructureRequestV3,
+) -> proto_v3::GetAppStructureRequestV3 {
+    proto_v3::GetAppStructureRequestV3 {
+        app_id: request.app_id,
+        known_revision: request.known_revision,
+    }
+}
+
+fn to_proto_refresh_app_structure_request_v3(
+    request: RefreshAppStructureRequestV3,
+) -> proto_v3::RefreshAppStructureRequestV3 {
+    let reason = match request.reason {
+        AppStructureSyncReasonV3::Initialize => {
+            proto_v3::AppStructureSyncReasonV3::Initialize as i32
+        }
+        AppStructureSyncReasonV3::EnterScope => {
+            proto_v3::AppStructureSyncReasonV3::EnterScope as i32
+        }
+        AppStructureSyncReasonV3::Refresh => proto_v3::AppStructureSyncReasonV3::Refresh as i32,
+        AppStructureSyncReasonV3::Recover => proto_v3::AppStructureSyncReasonV3::Recover as i32,
+    };
+    proto_v3::RefreshAppStructureRequestV3 {
+        app_id: request.app_id,
+        known_revision: request.known_revision,
+        reason,
+        target_scope: request.target_scope,
+        trigger_action_path: request.trigger_action_path,
     }
 }
 
@@ -993,8 +1219,149 @@ fn from_proto_connector_error(err: proto_v2::ConnectorErrorV2) -> ConnectorError
     }
 }
 
+fn from_proto_connector_error_v3(err: proto_v3::ConnectorErrorV3) -> ConnectorErrorV3 {
+    ConnectorErrorV3 {
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        details: err.details,
+    }
+}
+
+fn from_proto_get_app_structure_response_v3(
+    response: proto_v3::AppStructureSyncResultV3,
+) -> Result<GetAppStructureResponseV3, ConnectorErrorV3> {
+    Ok(GetAppStructureResponseV3 {
+        result: from_proto_structure_sync_result_v3(response)?,
+    })
+}
+
+fn from_proto_refresh_app_structure_response_v3(
+    response: proto_v3::AppStructureSyncResultV3,
+) -> Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
+    Ok(RefreshAppStructureResponseV3 {
+        result: from_proto_structure_sync_result_v3(response)?,
+    })
+}
+
+fn from_proto_structure_sync_result_v3(
+    response: proto_v3::AppStructureSyncResultV3,
+) -> Result<AppStructureSyncResultV3, ConnectorErrorV3> {
+    match response.kind {
+        Some(proto_v3::app_structure_sync_result_v3::Kind::Unchanged(unchanged)) => {
+            Ok(AppStructureSyncResultV3::Unchanged {
+                app_id: unchanged.app_id,
+                revision: unchanged.revision,
+                active_scope: unchanged.active_scope,
+            })
+        }
+        Some(proto_v3::app_structure_sync_result_v3::Kind::Snapshot(snapshot)) => {
+            Ok(AppStructureSyncResultV3::Snapshot {
+                snapshot: from_proto_structure_snapshot_v3(snapshot.snapshot.ok_or_else(
+                    || {
+                        malformed_payload_v3(
+                            "structure.result.snapshot.snapshot",
+                            "snapshot payload is required",
+                        )
+                    },
+                )?)?,
+            })
+        }
+        None => Err(malformed_payload_v3(
+            "structure.result.kind",
+            "result kind is empty",
+        )),
+    }
+}
+
+fn from_proto_structure_snapshot_v3(
+    snapshot: proto_v3::AppStructureSnapshotV3,
+) -> Result<AppStructureSnapshotV3, ConnectorErrorV3> {
+    if snapshot.revision.trim().is_empty() {
+        return Err(malformed_payload_v3(
+            "structure.snapshot.revision",
+            "revision must be non-empty",
+        ));
+    }
+    let mut nodes = Vec::with_capacity(snapshot.nodes.len());
+    for node in snapshot.nodes {
+        nodes.push(from_proto_structure_node_v3(node)?);
+    }
+    Ok(AppStructureSnapshotV3 {
+        app_id: snapshot.app_id,
+        revision: snapshot.revision,
+        active_scope: snapshot.active_scope,
+        ownership_prefixes: snapshot.ownership_prefixes,
+        nodes,
+    })
+}
+
+fn from_proto_structure_node_v3(
+    node: proto_v3::AppStructureNodeV3,
+) -> Result<AppStructureNodeV3, ConnectorErrorV3> {
+    if node.path.trim().is_empty() {
+        return Err(malformed_payload_v3(
+            "structure.snapshot.nodes[].path",
+            "path must be non-empty",
+        ));
+    }
+    let kind = match proto_v3::AppStructureNodeKindV3::try_from(node.kind).map_err(|_| {
+        malformed_payload_v3(
+            "structure.snapshot.nodes[].kind",
+            format!("unknown enum value {}", node.kind),
+        )
+    })? {
+        proto_v3::AppStructureNodeKindV3::Directory => AppStructureNodeKindV3::Directory,
+        proto_v3::AppStructureNodeKindV3::ActionFile => AppStructureNodeKindV3::ActionFile,
+        proto_v3::AppStructureNodeKindV3::SnapshotResource => {
+            AppStructureNodeKindV3::SnapshotResource
+        }
+        proto_v3::AppStructureNodeKindV3::LiveResource => AppStructureNodeKindV3::LiveResource,
+        proto_v3::AppStructureNodeKindV3::StaticJsonResource => {
+            AppStructureNodeKindV3::StaticJsonResource
+        }
+        proto_v3::AppStructureNodeKindV3::Unspecified => {
+            return Err(malformed_payload_v3(
+                "structure.snapshot.nodes[].kind",
+                "UNSPECIFIED enum value is not allowed",
+            ))
+        }
+    };
+    let manifest_entry = match node.manifest_entry_json {
+        Some(json) => Some(parse_json_text_v3(
+            &json,
+            "structure.snapshot.nodes[].manifest_entry_json",
+        )?),
+        None => None,
+    };
+    let seed_content = match node.seed_content_json {
+        Some(json) => Some(parse_json_text_v3(
+            &json,
+            "structure.snapshot.nodes[].seed_content_json",
+        )?),
+        None => None,
+    };
+    Ok(AppStructureNodeV3 {
+        path: node.path,
+        kind,
+        manifest_entry,
+        seed_content,
+        mutable: node.r#mutable,
+        scope: node.scope,
+    })
+}
+
 fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
     serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV2 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc invalid json in {field}: {err}"),
+        retryable: true,
+        details: None,
+    })
+}
+
+fn parse_json_text_v3(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV3> {
+    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV3 {
         code: connector_error_codes_v2::INTERNAL.to_string(),
         message: format!("bridge grpc invalid json in {field}: {err}"),
         retryable: true,
@@ -1036,6 +1403,15 @@ fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorEr
     }
 }
 
+fn malformed_payload_v3(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV3 {
+    ConnectorErrorV3 {
+        code: connector_error_codes_v2::INTERNAL.to_string(),
+        message: format!("bridge grpc malformed payload in {field}: {reason}"),
+        retryable: false,
+        details: None,
+    }
+}
+
 fn run_async<F, T>(fut: F) -> T
 where
     F: Future<Output = T>,
@@ -1057,8 +1433,10 @@ mod tests {
     use agentfs_sdk::{
         ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
         AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-        AppConnectorV2, ConnectorContextV2, FetchLivePageRequestV2, FetchSnapshotChunkRequestV2,
-        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+        AppConnectorV2, AppConnectorV3, AppStructureSyncReasonV3, ConnectorContextV2,
+        FetchLivePageRequestV2, FetchSnapshotChunkRequestV2, GetAppStructureRequestV3,
+        RefreshAppStructureRequestV3, RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2,
+        SubmitActionRequestV2,
     };
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -1273,6 +1651,9 @@ mod tests {
 
     #[derive(Default)]
     struct TestConnectorV2Service;
+
+    #[derive(Default)]
+    struct TestConnectorV3Service;
 
     #[tonic::async_trait]
     impl super::proto_v2::appfs_connector_v2_server::AppfsConnectorV2 for TestConnectorV2Service {
@@ -1538,6 +1919,124 @@ mod tests {
         }
     }
 
+    #[tonic::async_trait]
+    impl super::proto_v3::appfs_connector_v3_server::AppfsConnectorV3 for TestConnectorV3Service {
+        async fn get_app_structure(
+            &self,
+            request: Request<super::proto_v3::GetAppStructureRequest>,
+        ) -> Result<Response<super::proto_v3::GetAppStructureResponse>, Status> {
+            let req = request
+                .into_inner()
+                .request
+                .ok_or_else(|| Status::invalid_argument("missing request"))?;
+            let response = if req.known_revision.as_deref() == Some("demo-structure-chat-001") {
+                super::proto_v3::GetAppStructureResponse {
+                    result: Some(
+                        super::proto_v3::get_app_structure_response::Result::Response(
+                            super::proto_v3::AppStructureSyncResultV3 {
+                                kind: Some(
+                                    super::proto_v3::app_structure_sync_result_v3::Kind::Unchanged(
+                                        super::proto_v3::AppStructureSyncUnchangedV3 {
+                                            app_id: req.app_id,
+                                            revision: "demo-structure-chat-001".to_string(),
+                                            active_scope: Some("chat-001".to_string()),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                }
+            } else {
+                super::proto_v3::GetAppStructureResponse {
+                    result: Some(
+                        super::proto_v3::get_app_structure_response::Result::Response(
+                            super::proto_v3::AppStructureSyncResultV3 {
+                                kind: Some(
+                                    super::proto_v3::app_structure_sync_result_v3::Kind::Snapshot(
+                                        super::proto_v3::AppStructureSyncSnapshotV3 {
+                                            snapshot: Some(structure_snapshot_proto_v3("chat-001")),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                }
+            };
+            Ok(Response::new(response))
+        }
+
+        async fn refresh_app_structure(
+            &self,
+            request: Request<super::proto_v3::RefreshAppStructureRequest>,
+        ) -> Result<Response<super::proto_v3::RefreshAppStructureResponse>, Status> {
+            let req = request
+                .into_inner()
+                .request
+                .ok_or_else(|| Status::invalid_argument("missing request"))?;
+            if req.reason == super::proto_v3::AppStructureSyncReasonV3::EnterScope as i32
+                && req.target_scope.is_none()
+            {
+                return Ok(Response::new(
+                    super::proto_v3::RefreshAppStructureResponse {
+                        result: Some(
+                            super::proto_v3::refresh_app_structure_response::Result::Error(
+                                super::proto_v3::ConnectorErrorV3 {
+                                    code: "STRUCTURE_SCOPE_INVALID".to_string(),
+                                    message: "target_scope is required for enter_scope refresh"
+                                        .to_string(),
+                                    retryable: false,
+                                    details: None,
+                                },
+                            ),
+                        ),
+                    },
+                ));
+            }
+
+            let target_scope = req.target_scope.unwrap_or_else(|| "chat-001".to_string());
+            let snapshot = structure_snapshot_proto_v3(&target_scope);
+            if req.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
+                return Ok(Response::new(super::proto_v3::RefreshAppStructureResponse {
+                    result: Some(
+                        super::proto_v3::refresh_app_structure_response::Result::Response(
+                            super::proto_v3::AppStructureSyncResultV3 {
+                                kind: Some(
+                                    super::proto_v3::app_structure_sync_result_v3::Kind::Unchanged(
+                                        super::proto_v3::AppStructureSyncUnchangedV3 {
+                                            app_id: req.app_id,
+                                            revision: snapshot.revision,
+                                            active_scope: snapshot.active_scope,
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                }));
+            }
+
+            Ok(Response::new(
+                super::proto_v3::RefreshAppStructureResponse {
+                    result: Some(
+                        super::proto_v3::refresh_app_structure_response::Result::Response(
+                            super::proto_v3::AppStructureSyncResultV3 {
+                                kind: Some(
+                                    super::proto_v3::app_structure_sync_result_v3::Kind::Snapshot(
+                                        super::proto_v3::AppStructureSyncSnapshotV3 {
+                                            snapshot: Some(snapshot),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ))
+        }
+    }
+
     fn test_ctx_v2() -> ConnectorContextV2 {
         ConnectorContextV2 {
             app_id: "aiim".to_string(),
@@ -1570,6 +2069,166 @@ mod tests {
                 )
                 .await
                 .expect("run test grpc v2 server");
+        });
+
+        (addr, shutdown_tx)
+    }
+
+    fn structure_snapshot_proto_v3(scope: &str) -> super::proto_v3::AppStructureSnapshotV3 {
+        let mut nodes = vec![
+            super::proto_v3::AppStructureNodeV3 {
+                path: "contacts".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: None,
+            },
+            super::proto_v3::AppStructureNodeV3 {
+                path: "contacts/zhangsan".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: None,
+            },
+            super::proto_v3::AppStructureNodeV3 {
+                path: "contacts/zhangsan/send_message.act".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::ActionFile as i32,
+                manifest_entry_json: Some(
+                    "{\"template\":\"contacts/{contact_id}/send_message.act\",\"kind\":\"action\",\"input_mode\":\"json\",\"execution_mode\":\"inline\"}".to_string(),
+                ),
+                seed_content_json: None,
+                r#mutable: true,
+                scope: None,
+            },
+            super::proto_v3::AppStructureNodeV3 {
+                path: "_app".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: None,
+            },
+            super::proto_v3::AppStructureNodeV3 {
+                path: "_app/enter_scope.act".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::ActionFile as i32,
+                manifest_entry_json: Some(
+                    "{\"template\":\"_app/enter_scope.act\",\"kind\":\"action\",\"input_mode\":\"json\",\"execution_mode\":\"inline\"}".to_string(),
+                ),
+                seed_content_json: None,
+                r#mutable: true,
+                scope: None,
+            },
+            super::proto_v3::AppStructureNodeV3 {
+                path: "_app/refresh_structure.act".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::ActionFile as i32,
+                manifest_entry_json: Some(
+                    "{\"template\":\"_app/refresh_structure.act\",\"kind\":\"action\",\"input_mode\":\"json\",\"execution_mode\":\"inline\"}".to_string(),
+                ),
+                seed_content_json: None,
+                r#mutable: true,
+                scope: None,
+            },
+        ];
+
+        if scope == "chat-long" {
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-long".to_string()),
+            });
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats/chat-long".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-long".to_string()),
+            });
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats/chat-long/messages.res.jsonl".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::SnapshotResource as i32,
+                manifest_entry_json: Some(
+                    "{\"template\":\"chats/chat-long/messages.res.jsonl\",\"kind\":\"resource\",\"output_mode\":\"jsonl\",\"snapshot\":{\"max_materialized_bytes\":1024,\"prewarm\":true,\"prewarm_timeout_ms\":5000,\"read_through_timeout_ms\":10000,\"on_timeout\":\"return_stale\"}}".to_string(),
+                ),
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-long".to_string()),
+            });
+        } else {
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-001".to_string()),
+            });
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats/chat-001".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::Directory as i32,
+                manifest_entry_json: None,
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-001".to_string()),
+            });
+            nodes.push(super::proto_v3::AppStructureNodeV3 {
+                path: "chats/chat-001/messages.res.jsonl".to_string(),
+                kind: super::proto_v3::AppStructureNodeKindV3::SnapshotResource as i32,
+                manifest_entry_json: Some(
+                    "{\"template\":\"chats/chat-001/messages.res.jsonl\",\"kind\":\"resource\",\"output_mode\":\"jsonl\",\"snapshot\":{\"max_materialized_bytes\":10485760,\"prewarm\":true,\"prewarm_timeout_ms\":5000,\"read_through_timeout_ms\":10000,\"on_timeout\":\"return_stale\"}}".to_string(),
+                ),
+                seed_content_json: None,
+                r#mutable: false,
+                scope: Some("chat-001".to_string()),
+            });
+        }
+
+        super::proto_v3::AppStructureSnapshotV3 {
+            app_id: "aiim".to_string(),
+            revision: format!("demo-structure-{scope}"),
+            active_scope: Some(scope.to_string()),
+            ownership_prefixes: vec![
+                "_meta".to_string(),
+                "contacts".to_string(),
+                "chats".to_string(),
+                "_app".to_string(),
+            ],
+            nodes,
+        }
+    }
+
+    async fn spawn_test_grpc_v2_v3_server() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test grpc v2/v3 listener");
+        let addr = listener.local_addr().expect("read local addr");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    super::proto_v2::appfs_connector_v2_server::AppfsConnectorV2Server::new(
+                        TestConnectorV2Service,
+                    ),
+                )
+                .add_service(
+                    super::proto_v3::appfs_connector_v3_server::AppfsConnectorV3Server::new(
+                        TestConnectorV3Service,
+                    ),
+                )
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async move {
+                        let _ = shutdown_rx.await;
+                    },
+                )
+                .await
+                .expect("run test grpc v2/v3 server");
         });
 
         (addr, shutdown_tx)
@@ -1808,6 +2467,88 @@ mod tests {
             .expect_err("rate limited should fail");
         assert_eq!(rate_limit_err.code, "RATE_LIMITED");
         assert!(rate_limit_err.retryable);
+
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn grpc_bridge_connector_v3_structure_roundtrip() {
+        let (addr, shutdown) = spawn_test_grpc_v2_v3_server().await;
+        let mut connector = GrpcBridgeConnectorV2::new(
+            "aiim".to_string(),
+            format!("http://{}", addr),
+            Duration::from_millis(1000),
+            super::BridgeRuntimeOptions::from_cli(1, 10, 100, 3, 200),
+        )
+        .expect("create grpc bridge v2/v3 connector");
+        let ctx = test_ctx_v2();
+
+        let initial = connector
+            .get_app_structure(
+                GetAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: None,
+                },
+                &ctx,
+            )
+            .expect("initial structure");
+        match initial.result {
+            agentfs_sdk::AppStructureSyncResultV3::Snapshot { snapshot } => {
+                assert_eq!(snapshot.active_scope.as_deref(), Some("chat-001"));
+                assert!(snapshot
+                    .nodes
+                    .iter()
+                    .any(|node| node.path == "_app/enter_scope.act"));
+            }
+            _ => panic!("expected snapshot result"),
+        }
+
+        let refreshed = connector
+            .refresh_app_structure(
+                RefreshAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: Some("demo-structure-chat-001".to_string()),
+                    reason: AppStructureSyncReasonV3::Refresh,
+                    target_scope: None,
+                    trigger_action_path: Some("/_app/refresh_structure.act".to_string()),
+                },
+                &ctx,
+            )
+            .expect("unchanged refresh");
+        match refreshed.result {
+            agentfs_sdk::AppStructureSyncResultV3::Unchanged {
+                revision,
+                active_scope,
+                ..
+            } => {
+                assert_eq!(revision, "demo-structure-chat-001");
+                assert_eq!(active_scope.as_deref(), Some("chat-001"));
+            }
+            _ => panic!("expected unchanged result"),
+        }
+
+        let enter_scope = connector
+            .refresh_app_structure(
+                RefreshAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: Some("demo-structure-chat-001".to_string()),
+                    reason: AppStructureSyncReasonV3::EnterScope,
+                    target_scope: Some("chat-long".to_string()),
+                    trigger_action_path: Some("/_app/enter_scope.act".to_string()),
+                },
+                &ctx,
+            )
+            .expect("enter scope refresh");
+        match enter_scope.result {
+            agentfs_sdk::AppStructureSyncResultV3::Snapshot { snapshot } => {
+                assert_eq!(snapshot.active_scope.as_deref(), Some("chat-long"));
+                assert!(snapshot
+                    .nodes
+                    .iter()
+                    .any(|node| node.path == "chats/chat-long/messages.res.jsonl"));
+            }
+            _ => panic!("expected snapshot result"),
+        }
 
         let _ = shutdown.send(());
     }
