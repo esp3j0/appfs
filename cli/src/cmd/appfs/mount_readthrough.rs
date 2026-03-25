@@ -117,6 +117,20 @@ impl MountSnapshotRuntime {
     }
 }
 
+fn should_expand_on_open(
+    stats: Option<&Stats>,
+    has_journal: bool,
+    force_expand_existing: bool,
+) -> bool {
+    if force_expand_existing || has_journal {
+        return true;
+    }
+    match stats {
+        None => true,
+        Some(stats) => stats.size == 0,
+    }
+}
+
 impl MountSnapshotReadThroughFs {
     fn new(inner: DynFs, config: MountSnapshotReadThroughConfig) -> Self {
         let mut path_cache = HashMap::new();
@@ -922,7 +936,11 @@ impl FileSystem for MountSnapshotReadThroughFs {
                     .journal_contains(&resource_app_id, &resource_rel)
                     .await
                     .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                if should_force_expand || has_journal {
+                let current_stats = self
+                    .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
+                    .await
+                    .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+                if should_expand_on_open(current_stats.as_ref(), has_journal, should_force_expand) {
                     self.ensure_snapshot_materialized(&resource_app_id, &resource_rel, "open")
                         .await
                         .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
@@ -1080,6 +1098,39 @@ impl FileSystem for MountSnapshotReadThroughFs {
         &self,
     ) -> std::result::Result<agentfs_sdk::FilesystemStats, agentfs_sdk::error::Error> {
         self.inner.lock().await.statfs().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_expand_on_open;
+    use agentfs_sdk::{Stats, DEFAULT_FILE_MODE};
+
+    fn file_stats(size: u64) -> Stats {
+        Stats {
+            ino: 1,
+            mode: DEFAULT_FILE_MODE,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            size: size as i64,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            atime_nsec: 0,
+            mtime_nsec: 0,
+            ctime_nsec: 0,
+            rdev: 0,
+        }
+    }
+
+    #[test]
+    fn open_expands_missing_placeholder_or_journaled_snapshot() {
+        assert!(should_expand_on_open(None, false, false));
+        assert!(should_expand_on_open(Some(&file_stats(0)), false, false));
+        assert!(should_expand_on_open(Some(&file_stats(128)), true, false));
+        assert!(should_expand_on_open(Some(&file_stats(128)), false, true));
+        assert!(!should_expand_on_open(Some(&file_stats(128)), false, false));
     }
 }
 
