@@ -33,3 +33,7 @@ sh "$DIR/test-appfs-contract.sh"
 # Optional AppFS v2 Phase-B contract skeleton suite (disabled by default).
 # Enable with: APPFS_V2_CONTRACT_TESTS=1 ./tests/all.sh
 sh "$DIR/test-appfs-v2-contract.sh"
+
+# Optional AppFS v4 structure-sync contract suite (disabled by default).
+# Enable with: APPFS_V4_STRUCTURE_TESTS=1 ./tests/all.sh
+sh "$DIR/test-appfs-v4-structure-contract.sh"

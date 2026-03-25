@@ -57,6 +57,12 @@ jobs:
         APPFS_V3_BUILD_BEFORE_RUN: "0"
       run: sh ./tests/test-appfs-v2-contract.sh
 
+    - name: Run AppFS v4 structure contract suite
+      env:
+        APPFS_V4_STRUCTURE_TESTS: "1"
+        APPFS_V4_BUILD_BEFORE_RUN: "0"
+      run: sh ./tests/test-appfs-v4-structure-contract.sh
+
   # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
     # Keep check-run name stable for branch protection; semantic: http legacy baseline gate.

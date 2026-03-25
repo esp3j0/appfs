@@ -101,6 +101,11 @@ impl AppTreeSyncService {
     fn sync_initial(&mut self, connector: &mut dyn AppConnectorV3) -> Result<()> {
         let state = self.load_state()?;
         let ctx = self.context("structure-init");
+        eprintln!(
+            "[structure.sync] op=get_app_structure app={} known_revision={}",
+            self.app_id,
+            state.revision.as_deref().unwrap_or("<none>")
+        );
         let response = connector.get_app_structure(
             GetAppStructureRequestV3 {
                 app_id: self.app_id.clone(),
@@ -112,9 +117,23 @@ impl AppTreeSyncService {
         match response.result {
             AppStructureSyncResultV3::Unchanged { .. } => {
                 bootstrap_runtime_scaffolding(&self.root, &self.app_id)?;
+                eprintln!(
+                    "[structure.sync] result app={} changed=false revision={} active_scope={}",
+                    self.app_id,
+                    state.revision.as_deref().unwrap_or("<none>"),
+                    state.active_scope.as_deref().unwrap_or("<none>")
+                );
             }
             AppStructureSyncResultV3::Snapshot { snapshot } => {
+                let revision = snapshot.revision.clone();
+                let active_scope = snapshot.active_scope.clone();
                 self.apply_snapshot(snapshot)?;
+                eprintln!(
+                    "[structure.sync] result app={} changed=true revision={} active_scope={}",
+                    self.app_id,
+                    revision,
+                    active_scope.as_deref().unwrap_or("<none>")
+                );
             }
         }
         Ok(())
@@ -130,6 +149,14 @@ impl AppTreeSyncService {
     ) -> Result<StructureSyncOutcome> {
         let state = self.load_state()?;
         let ctx = self.context("structure-refresh");
+        eprintln!(
+            "[structure.sync] op=refresh_app_structure app={} reason={} target_scope={} trigger_action_path={} known_revision={}",
+            self.app_id,
+            structure_reason_label(reason),
+            target_scope.as_deref().unwrap_or("<none>"),
+            trigger_action_path.as_deref().unwrap_or("<none>"),
+            state.revision.as_deref().unwrap_or("<none>")
+        );
         let response = connector.refresh_app_structure(
             RefreshAppStructureRequestV3 {
                 app_id: self.app_id.clone(),
@@ -146,15 +173,29 @@ impl AppTreeSyncService {
                 revision,
                 active_scope,
                 ..
-            } => Ok(StructureSyncOutcome {
-                changed: false,
-                revision: Some(revision),
-                active_scope,
-            }),
+            } => {
+                eprintln!(
+                    "[structure.sync] result app={} changed=false revision={} active_scope={}",
+                    self.app_id,
+                    revision,
+                    active_scope.as_deref().unwrap_or("<none>")
+                );
+                Ok(StructureSyncOutcome {
+                    changed: false,
+                    revision: Some(revision),
+                    active_scope,
+                })
+            }
             AppStructureSyncResultV3::Snapshot { snapshot } => {
                 let revision = snapshot.revision.clone();
                 let active_scope = snapshot.active_scope.clone();
                 self.apply_snapshot(snapshot)?;
+                eprintln!(
+                    "[structure.sync] result app={} changed=true revision={} active_scope={}",
+                    self.app_id,
+                    revision,
+                    active_scope.as_deref().unwrap_or("<none>")
+                );
                 Ok(StructureSyncOutcome {
                     changed: true,
                     revision: Some(revision),
@@ -466,6 +507,15 @@ fn is_runtime_protected_path(rel: &str) -> bool {
         || rel == format!("_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}")
 }
 
+fn structure_reason_label(reason: AppStructureSyncReasonV3) -> &'static str {
+    match reason {
+        AppStructureSyncReasonV3::Initialize => "initialize",
+        AppStructureSyncReasonV3::EnterScope => "enter_scope",
+        AppStructureSyncReasonV3::Refresh => "refresh",
+        AppStructureSyncReasonV3::Recover => "recover",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_runtime_scaffolding, AppTreeSyncService};
@@ -521,6 +571,38 @@ mod tests {
 
         assert!(!temp.path().join("aiim/chats/chat-001").exists());
         assert!(temp.path().join("aiim/chats/chat-long").exists());
+        assert!(temp.path().join("aiim/_stream/custom-runtime.log").exists());
+    }
+
+    #[test]
+    fn failed_structure_refresh_leaves_previous_tree_intact() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut service = AppTreeSyncService::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+        );
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        service
+            .sync_initial(&mut connector)
+            .expect("initial structure sync should succeed");
+
+        fs::write(temp.path().join("aiim/_stream/custom-runtime.log"), b"keep")
+            .expect("write runtime-owned file");
+
+        let err = service
+            .refresh(
+                &mut connector,
+                agentfs_sdk::AppStructureSyncReasonV3::EnterScope,
+                Some("missing-scope".to_string()),
+                Some("/_app/enter_scope.act".to_string()),
+            )
+            .expect_err("unknown scope should fail");
+        assert!(err
+            .to_string()
+            .contains("unknown structure scope: missing-scope"));
+        assert!(temp.path().join("aiim/chats/chat-001").exists());
+        assert!(!temp.path().join("aiim/chats/chat-long").exists());
         assert!(temp.path().join("aiim/_stream/custom-runtime.log").exists());
     }
 
