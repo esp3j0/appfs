@@ -16,6 +16,9 @@ This PowerShell script provides comprehensive testing for AgentFS Windows mounti
 
 # Keep mount after testing (for manual inspection)
 .\test-windows-mount.ps1 -SkipCleanup
+
+# Run the AppFS managed lifecycle regression test
+.\test-windows-appfs-managed.ps1
 ```
 
 ## Parameters
@@ -25,6 +28,34 @@ This PowerShell script provides comprehensive testing for AgentFS Windows mounti
 - `-QuickTest`: Run only core functionality tests
 - `-TestModule`: Run specific test module only
 - `-SkipCleanup`: Don't cleanup after tests (keep mount and database)
+
+## AppFS Managed Lifecycle Regression
+
+Use the dedicated script when you want to validate the Windows-specific AppFS managed path:
+
+```powershell
+.\test-windows-appfs-managed.ps1
+```
+
+What it covers:
+- start the demo HTTP bridge
+- `agentfs init`
+- `agentfs mount --managed-appfs` on WinFsp
+- `agentfs serve appfs --managed`
+- `/_appfs/register_app.act`
+- `/_app/enter_scope.act`
+- snapshot read-through after scope switch
+- `/_appfs/unregister_app.act`
+
+Useful flags:
+- `-SkipCleanup`: keep the mount/database after the run
+- `-KeepLogs`: keep temp logs even on success
+- `-AgentId`, `-MountPoint`, `-AppId`, `-HttpEndpoint`: override defaults
+
+Requirements:
+- Python 3.12+ available as `python`
+- WinFsp installed
+- the HTTP demo bridge port (`127.0.0.1:8080` by default) must be free
 
 ## Test Modules
 

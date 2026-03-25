@@ -65,9 +65,29 @@ echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"<from-page>
    - `execution_mode`: `inline`
    - `input_mode`: `json`
 
-## 运行时快速开始（HTTP Bridge）
+## 运行时模式
 
-这套 quick start 对应当前 `v0.3` shipping 主路径：
+仓库当前有两条实际可用的 AppFS 运行时模式：
+
+1. 显式 bootstrap 模式（`v0.3` 基线）
+   - `agentfs mount` 使用 `--appfs-app-id` / `--appfs-app`
+   - `agentfs serve appfs` 使用 `--app-id` / `--app`
+   - connector endpoint 直接通过 CLI 传入
+   - 适合固定 demo、兼容性测试和简单单 app 场景
+2. managed registry 模式（当前 `v0.4` 开发主路径）
+   - `agentfs mount` 使用 `--managed-appfs`
+   - `agentfs serve appfs` 使用 `--managed`
+   - 共享的 app/runtime 路由落在 `/_appfs/apps.registry.json`
+   - app 可在运行时通过 `/_appfs/register_app.act` / `/_appfs/unregister_app.act` 动态增删
+   - app 结构初始化、scope 切换和刷新走 `AppConnectorV3`
+
+这两种模式都保留了 mount-side snapshot read-through，以及 runtime-side action/event/control 处理。
+
+## 运行时快速开始
+
+### 模式 A：显式单 App HTTP Bridge（`v0.3` 基线）
+
+这套 quick start 对应稳定的单 app bootstrap 主路径：
 
 1. `agentfs mount` 从 `--base` 夹具暴露 app 树，并在普通文件读取时自动扩展 cold snapshot。
 2. `agentfs serve appfs` 负责 action/event/control plane。
@@ -225,6 +245,72 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 8. 运行时语义为 `at-least-once`，建议业务层基于 `client_token`/`request_id` 做幂等去重。
 9. runtime 会兼容 shell 展开导致的多行 JSON 片段，并尝试合并相邻行恢复为单次请求；推荐写法仍是单行 JSON，并在字符串中使用转义 `\\n`。
 
+### 模式 B：Managed Registry + 动态 App 生命周期（Windows PowerShell 示例）
+
+当你要测试运行时动态注册 app、结构同步、scope 切换或多 app 路由时，使用这条路径更合适。mount 和 runtime 共享同一份 `/_appfs/apps.registry.json`，因此启动时不需要重复传 app ID 和 connector endpoint。
+
+1. 启动 HTTP bridge（终端 A）。
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
+uv run python bridge_server.py
+```
+
+2. 初始化一个空 AgentFS（终端 B）。
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- init managed-http --force
+```
+
+3. 以 managed 模式挂载 AgentFS（终端 C）。
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- mount .agentfs\managed-http.db C:\mnt\appfs-managed-http --backend winfsp --foreground --managed-appfs
+```
+
+4. 以 managed 模式启动 runtime supervisor（终端 D）。
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- serve appfs --root C:\mnt\appfs-managed-http --managed
+```
+
+5. 订阅 root-level 生命周期事件流（终端 E）。
+
+```powershell
+Get-Content C:\mnt\appfs-managed-http\_appfs\_stream\events.evt.jsonl -Wait
+```
+
+6. 运行时注册一个 app（终端 F）。
+
+```powershell
+Add-Content C:\mnt\appfs-managed-http\_appfs\register_app.act '{"app_id":"aiim","transport":{"kind":"http","endpoint":"http://127.0.0.1:8080","http_timeout_ms":5000,"grpc_timeout_ms":5000,"bridge_max_retries":2,"bridge_initial_backoff_ms":100,"bridge_max_backoff_ms":1000,"bridge_circuit_breaker_failures":5,"bridge_circuit_breaker_cooldown_ms":3000},"client_token":"reg-http-001"}'
+```
+
+7. 切换 scope，并从 managed mount 路径直接读取 snapshot。
+
+```powershell
+Add-Content C:\mnt\appfs-managed-http\aiim\_app\enter_scope.act '{"target_scope":"chat-long","client_token":"scope-http-001"}'
+Get-Content C:\mnt\appfs-managed-http\aiim\chats\chat-long\messages.res.jsonl | Select-Object -First 5
+```
+
+8. 使用完成后注销 app。
+
+```powershell
+Add-Content C:\mnt\appfs-managed-http\_appfs\unregister_app.act '{"app_id":"aiim","client_token":"unreg-http-001"}'
+Get-Content C:\mnt\appfs-managed-http\_appfs\apps.registry.json -Raw
+```
+
+Managed 模式说明：
+
+1. `serve appfs --managed` 可以从空 registry 启动；即使还没有任何 app，root-level 的 `/_appfs` 控制面也已经存在。
+2. `register_app.act` 会把 transport/session 配置持久化进 `/_appfs/apps.registry.json`，`mount --managed-appfs` 会复用这份 registry 做 read-through 路由。
+3. `/_app/enter_scope.act` 和 `/_app/refresh_structure.act` 是 per-app 控制动作，由 `AppConnectorV3` 驱动。
+4. `unregister_app.act` 会移除 runtime ownership 和 registry membership，但默认不会删除磁盘上的 app 目录。
+5. Linux 下也可使用同一套模式，只需把 `--backend` 换成 `fuse`，并替换挂载点与 shell 命令。
+
 ## 架构
 
 ### 当前 Runtime 拓扑
@@ -233,68 +319,80 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 flowchart TD
     A["Agent shell / PowerShell / bash"] --> B["AgentFS 挂载后端（Linux: FUSE，macOS: NFS，Windows: WinFsp）"]
     B --> C["AppFS-aware mount wrapper"]
-    C --> D["Overlay/base 树 + AppFS 树（_meta、_stream、_paging、_snapshot、业务路径）"]
-    A --> E["agentfs serve appfs（v0.3 runtime）"]
+    C --> D["Overlay/base 树 + AppFS 树（_appfs、_meta、_stream、_paging、_snapshot、业务路径）"]
+    A --> E["agentfs serve appfs supervisor"]
     E --> D
+    E --> F["/_appfs/apps.registry.json"]
+    C --> F
 
-    C --> F["Connector transport"]
-    E --> F
+    E --> G["Per-app runtime(s)"]
+    G --> H["AppTreeSyncService"]
 
-    F --> G["进程内 connector"]
-    F --> H["HTTP bridge connector"]
-    F --> I["gRPC bridge connector"]
+    C --> I["AppConnectorV2"]
+    G --> I
+    H --> J["AppConnectorV3"]
 
-    H --> J["HTTP bridge service"]
-    I --> K["gRPC bridge service"]
-    G --> L["真实 app backend 或 reference demo backend"]
-    J --> L
-    K --> L
+    I --> K["Connector transport（进程内 / HTTP / gRPC）"]
+    J --> K
+    K --> L["真实 app backend 或 reference demo backend"]
 ```
 
 ### 当前职责拆分
 
-现在的架构是显式分成 `mount` 和 `serve appfs` 两部分的。
+现在的架构仍然是显式分成 `mount` 和 `serve appfs` 两部分，但 `AppConnectorV2` 与 `AppConnectorV3` 的职责已经分层。
 
-`agentfs mount ... --appfs-app-id ...` 负责：
+`agentfs mount` 负责：
 
-1. 从配置的 `--base` fixture/root 暴露 app 树；
-2. 装载普通读取拦截所需的 manifest/snapshot 声明；
-3. 在已声明 `*.res.jsonl` 的 `lookup/open` 上执行 snapshot cold-miss 自动扩展；
-4. 把物化后的 snapshot JSONL、journal 状态和 recovery 工件写回挂载树。
+1. 暴露 overlay/base 树与 AppFS 视图；
+2. 从显式 CLI 参数（`--appfs-app-id` / `--appfs-app`）或 shared managed registry（`--managed-appfs`）装载 app 路由；
+3. 装载普通读取拦截所需的 manifest/snapshot 声明；
+4. 在已声明 `*.res.jsonl` 的 `lookup/open` 上执行 snapshot cold-miss 自动扩展；
+5. 把物化后的 snapshot JSONL、journal 状态和 recovery 工件写回挂载树。
 
-`cargo run -- serve appfs --root ... --app-id ...` 负责：
+`agentfs serve appfs` 负责：
 
-1. 装载 manifest、action spec、paging 控制与运行策略；
+1. 拥有 action/event/control plane；
 2. 选择并初始化 connector transport（进程内 / HTTP bridge / gRPC bridge）；
 3. 执行 ActionLineV2 校验与 submit-time reject；
-4. 驱动 action submit、事件发射、live paging、startup prewarm、显式 `/_snapshot/refresh.act` 和 runtime recovery；
-5. 把事件、重放工件和 cursor 回写到挂载树。
+4. 通过 `AppConnectorV2` 驱动 action submit、事件发射、live paging、startup prewarm、显式 `/_snapshot/refresh.act` 和 runtime recovery；
+5. 通过 `AppConnectorV3` 完成 connector-owned 结构初始化与刷新；
+6. 在 managed 模式下，负责 `/_appfs/register_app.act`、`/_appfs/unregister_app.act`、`/_appfs/list_apps.act` 以及 `/_appfs/apps.registry.json` 的同步。
 
-换句话说：
+契约面拆分：
 
-1. 普通文件读取走 mount 路径；
-2. action/event/control plane 走 `serve appfs`；
-3. 两边共享同一套 connector 契约面。
+1. `AppConnectorV2` 负责 action submit、startup prewarm、snapshot chunk fetch 和 live paging。
+2. `AppConnectorV3` 负责 app 结构 bootstrap、`enter_scope` 和 structure refresh。
+3. 普通文件读取仍走 mount 路径；action/event/control 仍走 `serve appfs`。
 
-## v0.3 发布状态说明
+## 发布轨道
 
-`v0.3` 是当前仓库的 connectorization shipping 基线。
+### v0.3 已发布基线
 
-本次已完成并可对外声明：
+`v0.3` 仍然是当前仓库对外发布的 connectorization 基线。
+
+已完成并可稳定宣称：
 
 1. runtime 默认主路径切到 `AppConnectorV2`（in-process / HTTP bridge / gRPC bridge）。
 2. prewarm、snapshot chunk、live paging、submit action 全部走 connector V2 能力面。
 3. HTTP/gRPC reference bridge 已提供 V2 connector 协议面。
 4. CT2/CI 门禁已加入 runtime-derived connector evidence 断言。
 
-本次不宣称完成：
-
-1. 多真实 app 的生产级 rollout。
-2. 仓库级发布说明内的“大规模真实 app 接入完成”。
-
 收口详情见：
 
 1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+
+### v0.4 仓库内开发主线
+
+仓库当前分支还包含 `v0.4` 的 app structure sync + managed runtime 工作流。这部分已经可以在仓库内测试，但目前还没有单独作为新的仓库级 release note 对外宣称。
+
+当前已在树内完成：
+
+1. in-process / HTTP bridge / gRPC bridge 三条路径的 `AppConnectorV3` 结构同步能力。
+2. `AppTreeSyncService`，以及 `/_app/enter_scope.act` / `/_app/refresh_structure.act`。
+3. shared managed registry：`/_appfs/apps.registry.json`。
+4. 动态 app 生命周期：`/_appfs/register_app.act`、`/_appfs/unregister_app.act`、`/_appfs/list_apps.act`。
+5. multi-app runtime supervisor 与 mount-side `--managed-appfs` 路由。
+6. Windows 手动回归验证脚本：[cli/test-windows-appfs-managed.ps1](cli/test-windows-appfs-managed.ps1) 和 [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)。
 
 ## 破坏性变更与迁移说明（v0.3）
 
@@ -324,23 +422,29 @@ flowchart TD
 2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`：冻结的 connector V2 契约面。
 3. `docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md`：v0.3 收口、迁移窗口与 CI 语义。
 4. `docs/v3/APPFS-v0.3-实施计划.zh-CN.md`：执行计划与状态对齐。
-5. `examples/appfs/`：参考夹具与 bridge 示例。
-6. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`snapshot_cache`、`recovery`、`events`、`paging`）。
+5. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`：structure sync、managed registry 与 multi-app 决策。
+6. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`：冻结的 `AppConnectorV3` 结构契约。
+7. `examples/appfs/`：参考夹具与 bridge 示例。
+8. `cli/src/cmd/appfs/`：AppFS runtime 分层模块（`core`、`tree_sync`、`registry`、`supervisor_control`、`snapshot_cache`、`events`、`paging`）。
+9. `cli/TEST-WINDOWS.md`：Windows 手动验证指南。
+10. `cli/test-windows-appfs-managed.ps1`：Windows managed lifecycle 回归脚本。
 
 ## 当前状态
 
-当前仓库中的 AppFS v0.3 connectorization 收口已完成：
+当前仓库里有两条同时存在的主线：
 
-1. Linux required 合同集（in-process runtime 主路径）已通过。
-2. HTTP/gRPC bridge CT2 子集在 CI 中以 informational signal 方式持续跟踪。
-3. 文档、release 说明与迁移语义已对齐 v0.3。
+1. `v0.3` connectorization 已合入、已对齐文档，并保持 release baseline。
+2. `v0.4` structure sync、managed runtime lifecycle 和 multi-app supervisor 已在树内实现，可做手动验证。
+3. Linux 仍是主要 required CI 平台；Windows 现在补了专门的 managed lifecycle 手动回归脚本。
 4. `v0.1` 继续保留为 baseline/reference 与回归对照材料。
-5. 真实 app pilot rollout 不在本次仓库级收口声明内。
+5. 更广泛的真实 app 生产级接入，仍然不在当前仓库级 release claim 内。
 
-收口与发布相关文档：
+收口、设计与执行文档：
 
 1. [APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
 2. [APPFS-v0.3-实施计划.zh-CN.md](docs/v3/APPFS-v0.3-实施计划.zh-CN.md)
+3. [APPFS-v0.4-AppStructureSync-ADR.zh-CN.md](docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md)
+4. [APPFS-v0.4-Connector结构接口.zh-CN.md](docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md)
 
 ## 许可证
 
