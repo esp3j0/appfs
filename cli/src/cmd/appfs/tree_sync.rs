@@ -339,7 +339,7 @@ impl AppTreeSyncService {
                 continue;
             }
             if full.is_dir() {
-                fs::remove_dir_all(&full)
+                fs::remove_dir(&full)
                     .with_context(|| format!("Failed to remove directory {}", full.display()))?;
             } else {
                 fs::remove_file(&full)
