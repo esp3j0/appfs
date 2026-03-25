@@ -131,6 +131,20 @@ fn should_expand_on_open(
     }
 }
 
+fn should_skip_existing_expand(
+    stats: Option<&Stats>,
+    has_journal: bool,
+    force_expand_existing: bool,
+) -> bool {
+    if has_journal || force_expand_existing {
+        return false;
+    }
+    match stats {
+        Some(stats) => stats.size > 0,
+        None => false,
+    }
+}
+
 impl MountSnapshotReadThroughFs {
     fn new(inner: DynFs, config: MountSnapshotReadThroughConfig) -> Self {
         let mut path_cache = HashMap::new();
@@ -358,10 +372,8 @@ impl MountSnapshotReadThroughFs {
         let resource_fs_rel = format!("{}/{}", app_id, resource_rel);
         let has_journal = self.journal_contains(app_id, resource_rel).await?;
         let force_expand_existing = trigger == "open" && snapshot_force_expand_on_refresh();
-        if self.lookup_path(&resource_fs_rel).await?.is_some()
-            && !has_journal
-            && !force_expand_existing
-        {
+        let current_stats = self.lookup_path(&resource_fs_rel).await?;
+        if should_skip_existing_expand(current_stats.as_ref(), has_journal, force_expand_existing) {
             if trigger == "lookup_miss" {
                 eprintln!(
                     "[cache] coalesced concurrent miss resource={} trigger={}",
@@ -1103,7 +1115,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
 
 #[cfg(test)]
 mod tests {
-    use super::should_expand_on_open;
+    use super::{should_expand_on_open, should_skip_existing_expand};
     use agentfs_sdk::{Stats, DEFAULT_FILE_MODE};
 
     fn file_stats(size: u64) -> Stats {
@@ -1131,6 +1143,31 @@ mod tests {
         assert!(should_expand_on_open(Some(&file_stats(128)), true, false));
         assert!(should_expand_on_open(Some(&file_stats(128)), false, true));
         assert!(!should_expand_on_open(Some(&file_stats(128)), false, false));
+    }
+
+    #[test]
+    fn existing_expand_skips_only_non_empty_materialized_files() {
+        assert!(!should_skip_existing_expand(None, false, false));
+        assert!(!should_skip_existing_expand(
+            Some(&file_stats(0)),
+            false,
+            false
+        ));
+        assert!(!should_skip_existing_expand(
+            Some(&file_stats(128)),
+            true,
+            false
+        ));
+        assert!(!should_skip_existing_expand(
+            Some(&file_stats(128)),
+            false,
+            true
+        ));
+        assert!(should_skip_existing_expand(
+            Some(&file_stats(128)),
+            false,
+            false
+        ));
     }
 }
 
