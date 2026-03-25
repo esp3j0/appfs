@@ -42,9 +42,11 @@ const FILE_WRITE_DATA: u32 = 0x00000002;
 const FILE_APPEND_DATA: u32 = 0x00000004;
 const GENERIC_READ_ACCESS: u32 = 0x80000000;
 const GENERIC_WRITE_ACCESS: u32 = 0x40000000;
+const DELETE_ACCESS: u32 = 0x00010000;
 const OPEN_RDONLY: i32 = 0x0000;
 const OPEN_WRONLY: i32 = 0x0001;
 const OPEN_RDWR: i32 = 0x0002;
+const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
 
 // Reparse tag/constants for symbolic links
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
@@ -189,8 +191,9 @@ fn granted_access_to_open_flags(granted_access: u32) -> i32 {
         granted_access == 0 || (granted_access & (FILE_READ_DATA | GENERIC_READ_ACCESS)) != 0;
     let wants_write =
         (granted_access & (FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE_ACCESS)) != 0;
+    let wants_delete = (granted_access & DELETE_ACCESS) != 0;
 
-    if wants_write {
+    let mut flags = if wants_write {
         if wants_read {
             OPEN_RDWR
         } else {
@@ -198,7 +201,13 @@ fn granted_access_to_open_flags(granted_access: u32) -> i32 {
         }
     } else {
         OPEN_RDONLY
+    };
+
+    if !wants_read && (wants_write || wants_delete || granted_access != 0) {
+        flags |= OPEN_NO_READ_HINT;
     }
+
+    flags
 }
 
 /// Tracks an open file or directory handle

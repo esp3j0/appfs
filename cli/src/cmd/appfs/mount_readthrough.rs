@@ -28,6 +28,7 @@ const OPEN_READ_ONLY: i32 = 0;
 const OPEN_READ_WRITE: i32 = 2;
 const OPEN_ACCESS_MODE_MASK: i32 = 0x0003;
 const OPEN_WRITE_ONLY: i32 = 1;
+const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
 
 #[cfg(target_os = "windows")]
 const RAW_IO_ERROR: i32 = 1117;
@@ -134,6 +135,9 @@ fn should_expand_on_open(
 }
 
 fn open_requests_read(flags: i32) -> bool {
+    if (flags & OPEN_NO_READ_HINT) != 0 {
+        return false;
+    }
     let access_mode = flags & OPEN_ACCESS_MODE_MASK;
     access_mode != OPEN_WRITE_ONLY
 }
@@ -960,6 +964,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
                         .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
                         .await
                         .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+                    eprintln!(
+                        "[cache.open] app={} resource=/{} flags=0x{:x} size={} has_journal={} force_expand={} read_intent=true",
+                        resource_app_id,
+                        resource_rel,
+                        flags,
+                        current_stats.as_ref().map(|stats| stats.size).unwrap_or(-1),
+                        has_journal,
+                        should_force_expand
+                    );
                     if should_expand_on_open(
                         current_stats.as_ref(),
                         has_journal,
@@ -1129,8 +1142,8 @@ impl FileSystem for MountSnapshotReadThroughFs {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_requests_read, should_expand_on_open, should_skip_existing_expand, OPEN_READ_ONLY,
-        OPEN_READ_WRITE, OPEN_WRITE_ONLY,
+        open_requests_read, should_expand_on_open, should_skip_existing_expand, OPEN_NO_READ_HINT,
+        OPEN_READ_ONLY, OPEN_READ_WRITE, OPEN_WRITE_ONLY,
     };
     use agentfs_sdk::{Stats, DEFAULT_FILE_MODE};
 
@@ -1191,6 +1204,7 @@ mod tests {
         assert!(open_requests_read(OPEN_READ_ONLY));
         assert!(open_requests_read(OPEN_READ_WRITE));
         assert!(!open_requests_read(OPEN_WRITE_ONLY));
+        assert!(!open_requests_read(OPEN_READ_ONLY | OPEN_NO_READ_HINT));
     }
 }
 
