@@ -15,6 +15,8 @@ mod events;
 mod grpc_bridge_adapter;
 mod http_bridge_adapter;
 mod journal;
+#[cfg(any(unix, target_os = "windows"))]
+pub(crate) mod mount_readthrough;
 mod paging;
 mod recovery;
 mod shared;
@@ -64,7 +66,28 @@ pub struct AppfsServeArgs {
 }
 
 #[derive(Debug, Clone)]
-struct AppfsBridgeConfig {
+pub(crate) struct AppfsBridgeCliArgs {
+    pub adapter_http_endpoint: Option<String>,
+    pub adapter_http_timeout_ms: u64,
+    pub adapter_grpc_endpoint: Option<String>,
+    pub adapter_grpc_timeout_ms: u64,
+    pub adapter_bridge_max_retries: u32,
+    pub adapter_bridge_initial_backoff_ms: u64,
+    pub adapter_bridge_max_backoff_ms: u64,
+    pub adapter_bridge_circuit_breaker_failures: u32,
+    pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub(crate) struct AppfsRuntimeCliArgs {
+    pub app_id: String,
+    pub session_id: Option<String>,
+    pub bridge: AppfsBridgeCliArgs,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AppfsBridgeConfig {
     adapter_http_endpoint: Option<String>,
     adapter_http_timeout_ms: u64,
     adapter_grpc_endpoint: Option<String>,
@@ -89,24 +112,18 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_circuit_breaker_cooldown_ms,
     } = args;
 
-    let session_id = session_id.unwrap_or_else(|| {
-        let uuid = Uuid::new_v4().simple().to_string();
-        format!("sess-{}", &uuid[..8])
-    });
-    let bridge_runtime_options = BridgeRuntimeOptions::from_cli(
+    let session_id = normalize_appfs_session_id(session_id);
+    let bridge_config = build_appfs_bridge_config(AppfsBridgeCliArgs {
+        adapter_http_endpoint,
+        adapter_http_timeout_ms,
+        adapter_grpc_endpoint,
+        adapter_grpc_timeout_ms,
         adapter_bridge_max_retries,
         adapter_bridge_initial_backoff_ms,
         adapter_bridge_max_backoff_ms,
         adapter_bridge_circuit_breaker_failures,
         adapter_bridge_circuit_breaker_cooldown_ms,
-    );
-    let bridge_config = AppfsBridgeConfig {
-        adapter_http_endpoint,
-        adapter_http_timeout_ms,
-        adapter_grpc_endpoint,
-        adapter_grpc_timeout_ms,
-        runtime_options: bridge_runtime_options,
-    };
+    });
 
     let mut adapter = AppfsAdapter::new(root, app_id, session_id, bridge_config)?;
     adapter.prepare_action_sinks()?;
@@ -131,6 +148,30 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+pub(crate) fn normalize_appfs_session_id(session_id: Option<String>) -> String {
+    session_id.unwrap_or_else(|| {
+        let uuid = Uuid::new_v4().simple().to_string();
+        format!("sess-{}", &uuid[..8])
+    })
+}
+
+pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridgeConfig {
+    let bridge_runtime_options = BridgeRuntimeOptions::from_cli(
+        args.adapter_bridge_max_retries,
+        args.adapter_bridge_initial_backoff_ms,
+        args.adapter_bridge_max_backoff_ms,
+        args.adapter_bridge_circuit_breaker_failures,
+        args.adapter_bridge_circuit_breaker_cooldown_ms,
+    );
+    AppfsBridgeConfig {
+        adapter_http_endpoint: args.adapter_http_endpoint,
+        adapter_http_timeout_ms: args.adapter_http_timeout_ms,
+        adapter_grpc_endpoint: args.adapter_grpc_endpoint,
+        adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
+        runtime_options: bridge_runtime_options,
     }
 }
 

@@ -338,53 +338,7 @@ impl AppfsAdapter {
                 );
             }
         }
-        let normalized_http_endpoint = bridge_config
-            .adapter_http_endpoint
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        let normalized_grpc_endpoint = bridge_config
-            .adapter_grpc_endpoint
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        if normalized_http_endpoint.is_some() && normalized_grpc_endpoint.is_some() {
-            anyhow::bail!(
-                "Only one bridge endpoint can be configured at a time: --adapter-http-endpoint or --adapter-grpc-endpoint"
-            );
-        }
-
-        let business_connector: Box<dyn AppConnectorV2> =
-            if let Some(endpoint) = normalized_grpc_endpoint {
-                eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
-                Box::new(
-                    GrpcBridgeConnectorV2::new(
-                        app_id.clone(),
-                        endpoint,
-                        Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
-                        bridge_config.runtime_options,
-                    )
-                    .map_err(|err| {
-                        anyhow::anyhow!(
-                            "failed to initialize gRPC bridge connector: {}: {}",
-                            err.code,
-                            err.message
-                        )
-                    })?,
-                )
-            } else if let Some(endpoint) = normalized_http_endpoint {
-                eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
-                Box::new(HttpBridgeConnectorV2::new(
-                    app_id.clone(),
-                    endpoint,
-                    Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
-                    bridge_config.runtime_options,
-                ))
-            } else {
-                Box::new(DemoAppConnectorV2::new(app_id.clone()))
-            };
+        let business_connector = build_business_connector(&app_id, &bridge_config)?;
         let connector_info = business_connector
             .connector_id()
             .map_err(|err| anyhow::anyhow!("connector_id failed: {}: {}", err.code, err.message))?;
@@ -853,183 +807,253 @@ impl AppfsAdapter {
             .max_by_key(|spec| template_specificity(&spec.template))
     }
 
-    fn load_manifest_contract(manifest_path: &Path) -> Result<ManifestContract> {
+    pub(super) fn load_manifest_contract(manifest_path: &Path) -> Result<ManifestContract> {
         let manifest_json = fs::read_to_string(manifest_path)
             .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
-        let manifest: ManifestDoc = serde_json::from_str(&manifest_json)
-            .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+        parse_manifest_contract_json(&manifest_json, &manifest_path.display().to_string())
+    }
+}
 
-        let mut action_specs = Vec::new();
-        let mut action_templates = HashSet::new();
-        let mut snapshot_specs = Vec::new();
-        let mut requires_paging_controls = false;
-
-        for (template, node) in manifest.nodes {
-            match node.kind.as_str() {
-                "action" => {
-                    if !template.ends_with(".act") {
-                        continue;
-                    }
-
-                    let input_mode = match node.input_mode.as_deref() {
-                        Some("json") => InputMode::Json,
-                        Some(other) => {
-                            anyhow::bail!(
-                                "AppFS adapter requires input_mode=json for all action sinks, template={template}, found input_mode={other}"
-                            );
-                        }
-                        None => {
-                            anyhow::bail!(
-                                "AppFS adapter requires explicit input_mode=json for action template={template}"
-                            );
-                        }
-                    };
-
-                    let execution_mode = match node.execution_mode.as_deref() {
-                        Some("streaming") => ExecutionMode::Streaming,
-                        Some("inline") | None => ExecutionMode::Inline,
-                        Some(other) => {
-                            eprintln!(
-                                "AppFS adapter unknown execution_mode='{other}' for action template={template}, defaulting to inline"
-                            );
-                            ExecutionMode::Inline
-                        }
-                    };
-
-                    let normalized = template.trim_start_matches('/').to_string();
-                    action_templates.insert(normalized.clone());
-                    action_specs.push(ActionSpec {
-                        template: normalized,
-                        input_mode,
-                        execution_mode,
-                        max_payload_bytes: node.max_payload_bytes,
-                    });
-                }
-                "resource" => {
-                    let output_mode = node.output_mode.as_deref().unwrap_or("json");
-                    let paging_enabled = node
-                        .paging
-                        .as_ref()
-                        .and_then(|paging| paging.enabled)
-                        .unwrap_or(false);
-                    let paging_mode = node
-                        .paging
-                        .as_ref()
-                        .and_then(|paging| paging.mode.as_deref())
-                        .unwrap_or("snapshot");
-
-                    match output_mode {
-                        "jsonl" => {
-                            if !template.ends_with(".res.jsonl") {
-                                anyhow::bail!(
-                                    "snapshot jsonl resource template must end with .res.jsonl: {template}"
-                                );
-                            }
-                            if paging_enabled
-                                || node
-                                    .paging
-                                    .as_ref()
-                                    .and_then(|paging| paging.mode.as_deref())
-                                    .is_some()
-                            {
-                                anyhow::bail!(
-                                    "snapshot jsonl resource must not declare paging metadata: {template}"
-                                );
-                            }
-                            let max_materialized_bytes = node
-                                .snapshot
-                                .as_ref()
-                                .and_then(|snapshot| snapshot.max_materialized_bytes)
-                                .unwrap_or(DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES);
-                            if max_materialized_bytes == 0 {
-                                anyhow::bail!(
-                                    "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
-                                );
-                            }
-                            let prewarm = node
-                                .snapshot
-                                .as_ref()
-                                .and_then(|snapshot| snapshot.prewarm)
-                                .unwrap_or(true);
-                            let prewarm_timeout_ms = node
-                                .snapshot
-                                .as_ref()
-                                .and_then(|snapshot| snapshot.prewarm_timeout_ms)
-                                .unwrap_or(DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS);
-                            if prewarm_timeout_ms == 0 {
-                                anyhow::bail!(
-                                    "snapshot.prewarm_timeout_ms must be > 0 for resource template={template}"
-                                );
-                            }
-                            let read_through_timeout_ms = node
-                                .snapshot
-                                .as_ref()
-                                .and_then(|snapshot| snapshot.read_through_timeout_ms)
-                                .unwrap_or(DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS);
-                            if read_through_timeout_ms == 0 {
-                                anyhow::bail!(
-                                    "snapshot.read_through_timeout_ms must be > 0 for resource template={template}"
-                                );
-                            }
-                            let on_timeout = parse_snapshot_on_timeout_policy(
-                                node.snapshot
-                                    .as_ref()
-                                    .and_then(|snapshot| snapshot.on_timeout.as_deref()),
-                            );
-                            snapshot_specs.push(SnapshotSpec {
-                                template: template.trim_start_matches('/').to_string(),
-                                max_materialized_bytes,
-                                prewarm,
-                                prewarm_timeout_ms,
-                                read_through_timeout_ms,
-                                on_timeout,
-                            });
-                        }
-                        "json" => {
-                            if paging_enabled {
-                                if paging_mode != "live" {
-                                    anyhow::bail!(
-                                        "pageable resource must declare paging.mode=live in v0.1 for template={template}"
-                                    );
-                                }
-                                requires_paging_controls = true;
-                            }
-                        }
-                        other => {
-                            anyhow::bail!(
-                                "unsupported output_mode='{other}' for resource template={template}; expected json or jsonl"
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if requires_paging_controls {
-            for required in ["_paging/fetch_next.act", "_paging/close.act"] {
-                if !action_templates.contains(required) {
-                    anyhow::bail!(
-                        "manifest declares live pageable resources but missing required action template={required}"
-                    );
-                }
-            }
-        }
-
-        if action_specs.is_empty() {
-            eprintln!(
-                "AppFS adapter warning: no action definitions found in {}",
-                manifest_path.display()
-            );
-        }
-
-        Ok(ManifestContract {
-            action_specs,
-            snapshot_specs,
-            requires_paging_controls,
-        })
+pub(super) fn build_business_connector(
+    app_id: &str,
+    bridge_config: &AppfsBridgeConfig,
+) -> Result<Box<dyn AppConnectorV2>> {
+    let normalized_http_endpoint = bridge_config
+        .adapter_http_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let normalized_grpc_endpoint = bridge_config
+        .adapter_grpc_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if normalized_http_endpoint.is_some() && normalized_grpc_endpoint.is_some() {
+        anyhow::bail!(
+            "Only one bridge endpoint can be configured at a time: --adapter-http-endpoint or --adapter-grpc-endpoint"
+        );
     }
 
+    let connector: Box<dyn AppConnectorV2> = if let Some(endpoint) = normalized_grpc_endpoint {
+        eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
+        Box::new(
+            GrpcBridgeConnectorV2::new(
+                app_id.to_string(),
+                endpoint,
+                Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
+                bridge_config.runtime_options,
+            )
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to initialize gRPC bridge connector: {}: {}",
+                    err.code,
+                    err.message
+                )
+            })?,
+        )
+    } else if let Some(endpoint) = normalized_http_endpoint {
+        eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
+        Box::new(HttpBridgeConnectorV2::new(
+            app_id.to_string(),
+            endpoint,
+            Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
+            bridge_config.runtime_options,
+        ))
+    } else {
+        Box::new(DemoAppConnectorV2::new(app_id.to_string()))
+    };
+
+    let connector_info = connector
+        .connector_id()
+        .map_err(|err| anyhow::anyhow!("connector_id failed: {}: {}", err.code, err.message))?;
+    if connector_info.app_id != app_id {
+        anyhow::bail!(
+            "Connector app_id mismatch: connector={} runtime={}",
+            connector_info.app_id,
+            app_id
+        );
+    }
+    Ok(connector)
+}
+
+pub(super) fn parse_manifest_contract_json(
+    manifest_json: &str,
+    source: &str,
+) -> Result<ManifestContract> {
+    let manifest: ManifestDoc =
+        serde_json::from_str(manifest_json).with_context(|| format!("Failed to parse {source}"))?;
+
+    let mut action_specs = Vec::new();
+    let mut action_templates = HashSet::new();
+    let mut snapshot_specs = Vec::new();
+    let mut requires_paging_controls = false;
+
+    for (template, node) in manifest.nodes {
+        match node.kind.as_str() {
+            "action" => {
+                if !template.ends_with(".act") {
+                    continue;
+                }
+
+                let input_mode = match node.input_mode.as_deref() {
+                    Some("json") => InputMode::Json,
+                    Some(other) => {
+                        anyhow::bail!(
+                            "AppFS adapter requires input_mode=json for all action sinks, template={template}, found input_mode={other}"
+                        );
+                    }
+                    None => {
+                        anyhow::bail!(
+                            "AppFS adapter requires explicit input_mode=json for action template={template}"
+                        );
+                    }
+                };
+
+                let execution_mode = match node.execution_mode.as_deref() {
+                    Some("streaming") => ExecutionMode::Streaming,
+                    Some("inline") | None => ExecutionMode::Inline,
+                    Some(other) => {
+                        eprintln!(
+                            "AppFS adapter unknown execution_mode='{other}' for action template={template}, defaulting to inline"
+                        );
+                        ExecutionMode::Inline
+                    }
+                };
+
+                let normalized = template.trim_start_matches('/').to_string();
+                action_templates.insert(normalized.clone());
+                action_specs.push(ActionSpec {
+                    template: normalized,
+                    input_mode,
+                    execution_mode,
+                    max_payload_bytes: node.max_payload_bytes,
+                });
+            }
+            "resource" => {
+                let output_mode = node.output_mode.as_deref().unwrap_or("json");
+                let paging_enabled = node
+                    .paging
+                    .as_ref()
+                    .and_then(|paging| paging.enabled)
+                    .unwrap_or(false);
+                let paging_mode = node
+                    .paging
+                    .as_ref()
+                    .and_then(|paging| paging.mode.as_deref())
+                    .unwrap_or("snapshot");
+
+                match output_mode {
+                    "jsonl" => {
+                        if !template.ends_with(".res.jsonl") {
+                            anyhow::bail!(
+                                "snapshot jsonl resource template must end with .res.jsonl: {template}"
+                            );
+                        }
+                        if paging_enabled
+                            || node
+                                .paging
+                                .as_ref()
+                                .and_then(|paging| paging.mode.as_deref())
+                                .is_some()
+                        {
+                            anyhow::bail!(
+                                "snapshot jsonl resource must not declare paging metadata: {template}"
+                            );
+                        }
+                        let max_materialized_bytes = node
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.max_materialized_bytes)
+                            .unwrap_or(DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES);
+                        if max_materialized_bytes == 0 {
+                            anyhow::bail!(
+                                "snapshot.max_materialized_bytes must be > 0 for resource template={template}"
+                            );
+                        }
+                        let prewarm = node
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.prewarm)
+                            .unwrap_or(true);
+                        let prewarm_timeout_ms = node
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.prewarm_timeout_ms)
+                            .unwrap_or(DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS);
+                        if prewarm_timeout_ms == 0 {
+                            anyhow::bail!(
+                                "snapshot.prewarm_timeout_ms must be > 0 for resource template={template}"
+                            );
+                        }
+                        let read_through_timeout_ms = node
+                            .snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.read_through_timeout_ms)
+                            .unwrap_or(DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS);
+                        if read_through_timeout_ms == 0 {
+                            anyhow::bail!(
+                                "snapshot.read_through_timeout_ms must be > 0 for resource template={template}"
+                            );
+                        }
+                        let on_timeout = parse_snapshot_on_timeout_policy(
+                            node.snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.on_timeout.as_deref()),
+                        );
+                        snapshot_specs.push(SnapshotSpec {
+                            template: template.trim_start_matches('/').to_string(),
+                            max_materialized_bytes,
+                            prewarm,
+                            prewarm_timeout_ms,
+                            read_through_timeout_ms,
+                            on_timeout,
+                        });
+                    }
+                    "json" => {
+                        if paging_enabled {
+                            if paging_mode != "live" {
+                                anyhow::bail!(
+                                    "pageable resource must declare paging.mode=live in v0.1 for template={template}"
+                                );
+                            }
+                            requires_paging_controls = true;
+                        }
+                    }
+                    other => {
+                        anyhow::bail!(
+                            "unsupported output_mode='{other}' for resource template={template}; expected json or jsonl"
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if requires_paging_controls {
+        for required in ["_paging/fetch_next.act", "_paging/close.act"] {
+            if !action_templates.contains(required) {
+                anyhow::bail!(
+                    "manifest declares live pageable resources but missing required action template={required}"
+                );
+            }
+        }
+    }
+
+    if action_specs.is_empty() {
+        eprintln!("AppFS adapter warning: no action definitions found in {source}");
+    }
+
+    Ok(ManifestContract {
+        action_specs,
+        snapshot_specs,
+        requires_paging_controls,
+    })
+}
+
+impl AppfsAdapter {
     pub(super) fn save_cursor(&self) -> Result<()> {
         let tmp_path = self.cursor_path.with_extension("res.json.tmp");
         let bytes = serde_json::to_vec_pretty(&self.cursor)?;

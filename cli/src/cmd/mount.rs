@@ -1,4 +1,4 @@
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 use agentfs_sdk::FileSystem;
 use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
 #[cfg(unix)]
@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 use agentfs_sdk::{HostFS, OverlayFS};
 #[cfg(unix)]
 use std::{path::Path, process::Command};
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 use tokio::sync::Mutex;
 #[cfg(unix)]
 use turso::value::Value;
@@ -31,6 +31,8 @@ use std::{
     os::unix::fs::MetadataExt,
 };
 
+#[cfg(any(unix, target_os = "windows"))]
+use crate::cmd::appfs::{self, AppfsBridgeCliArgs, AppfsRuntimeCliArgs};
 #[cfg(any(unix, target_os = "windows"))]
 use crate::cmd::init::open_agentfs;
 #[cfg(target_os = "linux")]
@@ -63,11 +65,471 @@ pub struct MountArgs {
     pub gid: Option<u32>,
     /// The mount backend to use (fuse or nfs).
     pub backend: MountBackend,
+    /// Enable AppFS snapshot read-through for the given app ID.
+    pub appfs_app_id: Option<String>,
+    /// Session ID used for mount-side AppFS connector calls.
+    pub appfs_session: Option<String>,
+    /// Optional HTTP bridge endpoint for mount-side AppFS read-through.
+    pub adapter_http_endpoint: Option<String>,
+    /// HTTP bridge request timeout in milliseconds.
+    pub adapter_http_timeout_ms: u64,
+    /// Optional gRPC bridge endpoint for mount-side AppFS read-through.
+    pub adapter_grpc_endpoint: Option<String>,
+    /// gRPC bridge request timeout in milliseconds.
+    pub adapter_grpc_timeout_ms: u64,
+    /// Max retry count for bridge transport failures.
+    pub adapter_bridge_max_retries: u32,
+    /// Initial backoff in milliseconds for bridge retries.
+    pub adapter_bridge_initial_backoff_ms: u64,
+    /// Max backoff in milliseconds for bridge retries.
+    pub adapter_bridge_max_backoff_ms: u64,
+    /// Consecutive bridge transport failures required to open circuit breaker.
+    pub adapter_bridge_circuit_breaker_failures: u32,
+    /// Circuit breaker cooldown in milliseconds before retrying bridge calls.
+    pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
+}
+
+fn has_appfs_mount_config(args: &MountArgs) -> bool {
+    args.appfs_app_id.is_some()
+        || args.appfs_session.is_some()
+        || args.adapter_http_endpoint.is_some()
+        || args.adapter_grpc_endpoint.is_some()
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn appfs_mount_runtime_args(args: &MountArgs) -> Option<AppfsRuntimeCliArgs> {
+    args.appfs_app_id
+        .as_ref()
+        .map(|app_id| AppfsRuntimeCliArgs {
+            app_id: app_id.clone(),
+            session_id: args.appfs_session.clone(),
+            bridge: AppfsBridgeCliArgs {
+                adapter_http_endpoint: args.adapter_http_endpoint.clone(),
+                adapter_http_timeout_ms: args.adapter_http_timeout_ms,
+                adapter_grpc_endpoint: args.adapter_grpc_endpoint.clone(),
+                adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
+                adapter_bridge_max_retries: args.adapter_bridge_max_retries,
+                adapter_bridge_initial_backoff_ms: args.adapter_bridge_initial_backoff_ms,
+                adapter_bridge_max_backoff_ms: args.adapter_bridge_max_backoff_ms,
+                adapter_bridge_circuit_breaker_failures: args
+                    .adapter_bridge_circuit_breaker_failures,
+                adapter_bridge_circuit_breaker_cooldown_ms: args
+                    .adapter_bridge_circuit_breaker_cooldown_ms,
+            },
+        })
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn wrap_mount_fs_if_appfs_enabled(
+    fs: Arc<Mutex<dyn FileSystem + Send>>,
+    args: &MountArgs,
+) -> Arc<Mutex<dyn FileSystem + Send>> {
+    let Some(runtime_args) = appfs_mount_runtime_args(args) else {
+        return fs;
+    };
+    let bridge_config = appfs::build_appfs_bridge_config(runtime_args.bridge.clone());
+    appfs::mount_readthrough::wrap_mount_readthrough_filesystem(
+        fs,
+        appfs::mount_readthrough::MountSnapshotReadThroughConfig {
+            runtime: runtime_args,
+            bridge_config,
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+struct DaemonMutexFsAdapter {
+    inner: Arc<Mutex<dyn FileSystem + Send>>,
+}
+
+#[cfg(target_os = "linux")]
+#[async_trait::async_trait]
+impl FileSystem for DaemonMutexFsAdapter {
+    async fn lookup(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<Option<agentfs_sdk::Stats>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.lookup(parent_ino, name).await
+    }
+
+    async fn getattr(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<agentfs_sdk::Stats>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.getattr(ino).await
+    }
+
+    async fn readlink(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<String>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readlink(ino).await
+    }
+
+    async fn readdir(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<Vec<String>>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readdir(ino).await
+    }
+
+    async fn readdir_plus(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<Vec<agentfs_sdk::DirEntry>>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readdir_plus(ino).await
+    }
+
+    async fn chmod(
+        &self,
+        ino: i64,
+        mode: u32,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.chmod(ino, mode).await
+    }
+
+    async fn chown(
+        &self,
+        ino: i64,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.chown(ino, uid, gid).await
+    }
+
+    async fn utimens(
+        &self,
+        ino: i64,
+        atime: agentfs_sdk::TimeChange,
+        mtime: agentfs_sdk::TimeChange,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.utimens(ino, atime, mtime).await
+    }
+
+    async fn open(
+        &self,
+        ino: i64,
+        flags: i32,
+    ) -> std::result::Result<agentfs_sdk::BoxedFile, agentfs_sdk::error::Error> {
+        self.inner.lock().await.open(ino, flags).await
+    }
+
+    async fn mkdir(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .mkdir(parent_ino, name, mode, uid, gid)
+            .await
+    }
+
+    async fn create_file(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<(agentfs_sdk::Stats, agentfs_sdk::BoxedFile), agentfs_sdk::error::Error>
+    {
+        self.inner
+            .lock()
+            .await
+            .create_file(parent_ino, name, mode, uid, gid)
+            .await
+    }
+
+    async fn mknod(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        rdev: u64,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .mknod(parent_ino, name, mode, rdev, uid, gid)
+            .await
+    }
+
+    async fn symlink(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        target: &str,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .symlink(parent_ino, name, target, uid, gid)
+            .await
+    }
+
+    async fn unlink(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.unlink(parent_ino, name).await
+    }
+
+    async fn rmdir(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.rmdir(parent_ino, name).await
+    }
+
+    async fn link(
+        &self,
+        ino: i64,
+        newparent_ino: i64,
+        newname: &str,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .link(ino, newparent_ino, newname)
+            .await
+    }
+
+    async fn rename(
+        &self,
+        oldparent_ino: i64,
+        oldname: &str,
+        newparent_ino: i64,
+        newname: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .rename(oldparent_ino, oldname, newparent_ino, newname)
+            .await
+    }
+
+    async fn statfs(
+        &self,
+    ) -> std::result::Result<agentfs_sdk::FilesystemStats, agentfs_sdk::error::Error> {
+        self.inner.lock().await.statfs().await
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WinfspTokioFsAdapter {
+    inner: Arc<Mutex<dyn FileSystem + Send>>,
+}
+
+#[cfg(target_os = "windows")]
+#[async_trait::async_trait]
+impl FileSystem for WinfspTokioFsAdapter {
+    async fn lookup(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<Option<agentfs_sdk::Stats>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.lookup(parent_ino, name).await
+    }
+
+    async fn getattr(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<agentfs_sdk::Stats>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.getattr(ino).await
+    }
+
+    async fn readlink(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<String>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readlink(ino).await
+    }
+
+    async fn readdir(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<Vec<String>>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readdir(ino).await
+    }
+
+    async fn readdir_plus(
+        &self,
+        ino: i64,
+    ) -> std::result::Result<Option<Vec<agentfs_sdk::DirEntry>>, agentfs_sdk::error::Error> {
+        self.inner.lock().await.readdir_plus(ino).await
+    }
+
+    async fn chmod(
+        &self,
+        ino: i64,
+        mode: u32,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.chmod(ino, mode).await
+    }
+
+    async fn chown(
+        &self,
+        ino: i64,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.chown(ino, uid, gid).await
+    }
+
+    async fn utimens(
+        &self,
+        ino: i64,
+        atime: agentfs_sdk::TimeChange,
+        mtime: agentfs_sdk::TimeChange,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.utimens(ino, atime, mtime).await
+    }
+
+    async fn open(
+        &self,
+        ino: i64,
+        flags: i32,
+    ) -> std::result::Result<agentfs_sdk::BoxedFile, agentfs_sdk::error::Error> {
+        self.inner.lock().await.open(ino, flags).await
+    }
+
+    async fn mkdir(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .mkdir(parent_ino, name, mode, uid, gid)
+            .await
+    }
+
+    async fn create_file(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<(agentfs_sdk::Stats, agentfs_sdk::BoxedFile), agentfs_sdk::error::Error>
+    {
+        self.inner
+            .lock()
+            .await
+            .create_file(parent_ino, name, mode, uid, gid)
+            .await
+    }
+
+    async fn mknod(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        mode: u32,
+        rdev: u64,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .mknod(parent_ino, name, mode, rdev, uid, gid)
+            .await
+    }
+
+    async fn symlink(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        target: &str,
+        uid: u32,
+        gid: u32,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .symlink(parent_ino, name, target, uid, gid)
+            .await
+    }
+
+    async fn unlink(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.unlink(parent_ino, name).await
+    }
+
+    async fn rmdir(
+        &self,
+        parent_ino: i64,
+        name: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner.lock().await.rmdir(parent_ino, name).await
+    }
+
+    async fn link(
+        &self,
+        ino: i64,
+        newparent_ino: i64,
+        newname: &str,
+    ) -> std::result::Result<agentfs_sdk::Stats, agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .link(ino, newparent_ino, newname)
+            .await
+    }
+
+    async fn rename(
+        &self,
+        oldparent_ino: i64,
+        oldname: &str,
+        newparent_ino: i64,
+        newname: &str,
+    ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        self.inner
+            .lock()
+            .await
+            .rename(oldparent_ino, oldname, newparent_ino, newname)
+            .await
+    }
+
+    async fn statfs(
+        &self,
+    ) -> std::result::Result<agentfs_sdk::FilesystemStats, agentfs_sdk::error::Error> {
+        self.inner.lock().await.statfs().await
+    }
 }
 
 /// Mount the agent filesystem (Linux).
 #[cfg(target_os = "linux")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
+        anyhow::bail!(
+            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
+        );
+    }
+    if has_appfs_mount_config(&args) && !matches!(args.backend, MountBackend::Fuse) {
+        anyhow::bail!(
+            "AppFS snapshot read-through is currently supported only with --backend fuse on Linux."
+        );
+    }
     match args.backend {
         MountBackend::Fuse => mount_fuse(args),
         MountBackend::Nfs => {
@@ -84,6 +546,11 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (macOS).
 #[cfg(target_os = "macos")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
+        anyhow::bail!(
+            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
+        );
+    }
     match args.backend {
         MountBackend::Fuse => {
             anyhow::bail!(
@@ -107,6 +574,11 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (Windows).
 #[cfg(target_os = "windows")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
+        anyhow::bail!(
+            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
+        );
+    }
     match args.backend {
         MountBackend::Fuse => {
             anyhow::bail!(
@@ -159,8 +631,11 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    // Wrap filesystem in parking_lot::Mutex for WinFsp
-    let fs: Arc<Mutex<dyn agentfs_sdk::FileSystem + Send>> = Arc::new(Mutex::new(agentfs.fs));
+    let fs: Arc<tokio::sync::Mutex<dyn agentfs_sdk::FileSystem + Send>> =
+        Arc::new(tokio::sync::Mutex::new(agentfs.fs));
+    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+    let fs: Arc<Mutex<dyn agentfs_sdk::FileSystem + Send>> =
+        Arc::new(Mutex::new(WinfspTokioFsAdapter { inner: fs }));
 
     let mount_opts = MountOpts {
         mountpoint: mountpoint.clone(),
@@ -283,6 +758,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
                 Ok(Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>)
             }
         })?;
+        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
 
         let mount_opts = MountOpts {
             mountpoint: mountpoint.clone(),
@@ -330,7 +806,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
         };
 
         // Check for overlay configuration
-        let fs: Arc<dyn FileSystem> = rt.block_on(async {
+        let fs: Arc<Mutex<dyn FileSystem + Send>> = rt.block_on(async {
             // Query base_path in a separate scope so connection is released
             let base_path: Option<String> = {
                 let conn = agentfs.get_connection().await?;
@@ -360,14 +836,19 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
                 let hostfs = hostfs.with_fuse_mountpoint(mountpoint_ino);
                 let overlay = OverlayFS::new(Arc::new(hostfs), agentfs.fs);
                 overlay.load().await?; // Load persisted whiteouts and origin mappings
-                Ok::<Arc<dyn FileSystem>, anyhow::Error>(Arc::new(overlay))
+                Ok::<Arc<Mutex<dyn FileSystem + Send>>, anyhow::Error>(Arc::new(Mutex::new(
+                    overlay,
+                )))
             } else {
                 // Plain AgentFS
-                Ok(Arc::new(agentfs.fs) as Arc<dyn FileSystem>)
+                Ok(Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>)
             }
         })?;
+        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+        let fs_adapter = DaemonMutexFsAdapter { inner: fs };
+        let fs_arc: Arc<dyn FileSystem> = Arc::new(fs_adapter);
 
-        crate::fuse::mount(fs, fuse_opts, rt)
+        crate::fuse::mount(fs_arc, fuse_opts, rt)
     };
 
     crate::daemon::daemonize(
@@ -488,6 +969,7 @@ async fn mount_nfs_backend(args: MountArgs) -> Result<()> {
         // Plain AgentFS
         Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>
     };
+    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
 
     if args.foreground {
         // Use the unified mount API for foreground mode

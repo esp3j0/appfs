@@ -23,6 +23,7 @@
    - `fetch_snapshot_chunk`
    - `fetch_live_page`
    - `submit_action`
+   - 对已声明 snapshot `*.res.jsonl` 的普通文件读取 cold miss 自动 read-through 扩容
 3. connector 能力面保留并暴露 `health(ctx)`（用于 bridge/connector 可用性与认证状态表达）。
 4. HTTP bridge 与 gRPC bridge 同步升级到 V2 协议。
 5. CI gate 与 CT2 证据升级，避免“假 bridge 覆盖”。
@@ -51,6 +52,11 @@
 1. 不再把 snapshot 扩容主逻辑留在 runtime 内部静态 stub。
 2. runtime 负责缓存生命周期、事件语义、恢复逻辑；connector 负责上游数据获取与映射。
 3. 三种 transport 的语义必须一致，不能“HTTP 一套 / gRPC 一套 / in-process 一套”。
+4. `/_snapshot/refresh.act` 保留为显式控制面，不再作为 snapshot 数据面的唯一触发入口。
+5. 已声明 snapshot `*.res.jsonl` 的普通读取 cold miss 现在由 mount 侧自动扩容，当前挂载后端覆盖：
+   - Linux `FUSE`
+   - macOS `NFS`
+   - Windows `WinFsp`
 
 ### 3.1 数据一致性约束（新增硬门禁）
 

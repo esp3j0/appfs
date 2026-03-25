@@ -269,7 +269,7 @@ extract_runtime_evidence_for_case() {
             fi
             ;;
         ct2-003)
-            log="$APPFS_V2_EVIDENCE_DIR/ct2-003.adapter.log"
+            log="$APPFS_V2_EVIDENCE_DIR/ct2-003.mount.log"
             if [ -f "$log" ] && grep -F -q "[cache.expand] fetch_snapshot_chunk resource=/chats/chat-001/messages.res.jsonl" "$log"; then
                 record_v2_evidence "connector.fetch_snapshot_chunk" "resource=/chats/chat-001/messages.res.jsonl"
             fi

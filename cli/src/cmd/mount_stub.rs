@@ -25,6 +25,28 @@ pub struct MountArgs {
     pub gid: Option<u32>,
     /// The mount backend to use (fuse or nfs).
     pub backend: MountBackend,
+    /// Enable AppFS snapshot read-through for the given app ID.
+    pub appfs_app_id: Option<String>,
+    /// Session ID used for mount-side AppFS connector calls.
+    pub appfs_session: Option<String>,
+    /// Optional HTTP bridge endpoint for mount-side AppFS read-through.
+    pub adapter_http_endpoint: Option<String>,
+    /// HTTP bridge request timeout in milliseconds.
+    pub adapter_http_timeout_ms: u64,
+    /// Optional gRPC bridge endpoint for mount-side AppFS read-through.
+    pub adapter_grpc_endpoint: Option<String>,
+    /// gRPC bridge request timeout in milliseconds.
+    pub adapter_grpc_timeout_ms: u64,
+    /// Max retry count for bridge transport failures.
+    pub adapter_bridge_max_retries: u32,
+    /// Initial backoff in milliseconds for bridge retries.
+    pub adapter_bridge_initial_backoff_ms: u64,
+    /// Max backoff in milliseconds for bridge retries.
+    pub adapter_bridge_max_backoff_ms: u64,
+    /// Consecutive bridge transport failures required to open circuit breaker.
+    pub adapter_bridge_circuit_breaker_failures: u32,
+    /// Circuit breaker cooldown in milliseconds before retrying bridge calls.
+    pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
 }
 
 /// List all currently mounted agentfs filesystems

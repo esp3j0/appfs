@@ -258,6 +258,74 @@ pub enum Command {
         /// Backend to use for mounting
         #[arg(long, default_value_t = MountBackend::default())]
         backend: MountBackend,
+
+        /// Enable AppFS snapshot read-through for the given app ID (Linux + FUSE only)
+        #[arg(long)]
+        appfs_app_id: Option<String>,
+
+        /// Session ID used for mount-side AppFS connector calls
+        #[arg(long)]
+        appfs_session: Option<String>,
+
+        /// Optional HTTP bridge endpoint for mount-side AppFS read-through
+        #[arg(
+            long,
+            env = "APPFS_ADAPTER_HTTP_ENDPOINT",
+            conflicts_with = "adapter_grpc_endpoint"
+        )]
+        adapter_http_endpoint: Option<String>,
+
+        /// HTTP bridge request timeout in milliseconds
+        #[arg(long, default_value_t = 5000, env = "APPFS_ADAPTER_HTTP_TIMEOUT_MS")]
+        adapter_http_timeout_ms: u64,
+
+        /// Optional gRPC bridge endpoint for mount-side AppFS read-through
+        #[arg(
+            long,
+            env = "APPFS_ADAPTER_GRPC_ENDPOINT",
+            conflicts_with = "adapter_http_endpoint"
+        )]
+        adapter_grpc_endpoint: Option<String>,
+
+        /// gRPC bridge request timeout in milliseconds
+        #[arg(long, default_value_t = 5000, env = "APPFS_ADAPTER_GRPC_TIMEOUT_MS")]
+        adapter_grpc_timeout_ms: u64,
+
+        /// Max retry count for bridge transport failures (per request)
+        #[arg(long, default_value_t = 2, env = "APPFS_ADAPTER_BRIDGE_MAX_RETRIES")]
+        adapter_bridge_max_retries: u32,
+
+        /// Initial backoff in milliseconds for bridge retries
+        #[arg(
+            long,
+            default_value_t = 100,
+            env = "APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS"
+        )]
+        adapter_bridge_initial_backoff_ms: u64,
+
+        /// Max backoff in milliseconds for bridge retries
+        #[arg(
+            long,
+            default_value_t = 1000,
+            env = "APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS"
+        )]
+        adapter_bridge_max_backoff_ms: u64,
+
+        /// Consecutive bridge transport failures required to open circuit breaker
+        #[arg(
+            long,
+            default_value_t = 5,
+            env = "APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES"
+        )]
+        adapter_bridge_circuit_breaker_failures: u32,
+
+        /// Circuit breaker cooldown in milliseconds before retrying bridge calls
+        #[arg(
+            long,
+            default_value_t = 3000,
+            env = "APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS"
+        )]
+        adapter_bridge_circuit_breaker_cooldown_ms: u64,
     },
     /// Show differences between base filesystem and delta (overlay mode only)
     Diff {

@@ -11,260 +11,110 @@ REPO_DIR="$(CDPATH= cd -- "$CLI_DIR/.." && pwd)"
 AGENTFS_BIN="${AGENTFS_BIN:-$CLI_DIR/target/debug/agentfs}"
 
 TMP_ROOT=""
-ADAPTER_PID=""
-ADAPTER_LOG=""
-
-APP_DIR=""
-SNAPSHOT_FILE=""
-REFRESH_ACT=""
-EVENTS=""
-JOURNAL=""
+MOUNT_PID=""
+MOUNT_LOG=""
+MOUNTPOINT=""
+AGENT_ID=""
 
 cleanup() {
-    stop_adapter
+    stop_mount_process "${MOUNT_PID:-}" "${MOUNTPOINT:-}"
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi
 }
 trap cleanup EXIT INT TERM
 
-stop_adapter() {
-    stop_adapter_process "${ADAPTER_PID:-}" "${AGENTFS_BIN:-}" "${TMP_ROOT:-}"
-    ADAPTER_PID=""
-}
-
-wait_writable() {
-    path="$1"
-    timeout="${2:-10}"
-    i=0
-    while [ "$i" -lt "$timeout" ]; do
-        if [ -w "$path" ]; then
-            return 0
-        fi
-        i=$((i + 1))
-        sleep 1
-    done
-    return 1
-}
-
-wait_token_event() {
-    token="$1"
-    file="$2"
-    timeout="${3:-20}"
-    i=0
-    while [ "$i" -lt "$timeout" ]; do
-        count="$(grep -c "$token" "$file" 2>/dev/null || true)"
-        [ -n "$count" ] || count=0
-        if [ "$count" -ge 1 ]; then
-            return 0
-        fi
-        i=$((i + 1))
-        sleep 1
-    done
-    return 1
-}
-
-ensure_agentfs_bin() {
-    if command -v cargo >/dev/null 2>&1; then
-        say "Building Linux agentfs binary for CT2 v2 tests..."
-        if (cd "$CLI_DIR" && cargo build --quiet); then
-            if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
-                AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-                return 0
-            fi
-            say "Linux build command succeeded but target/debug/agentfs is missing; trying Windows fallback binary..."
-        else
-            say "Linux build unavailable; trying Windows fallback binary..."
-        fi
-    fi
-
-    if command -v cargo.exe >/dev/null 2>&1; then
-        say "Building Windows agentfs binary for CT2 v2 tests..."
-        if (cd "$CLI_DIR" && cargo.exe build --quiet); then
-            if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-                AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-                return 0
-            fi
-            say "Windows build command succeeded but target/debug/agentfs.exe is missing; falling back to existing binaries..."
-        else
-            say "Windows build unavailable; falling back to existing binaries..."
-        fi
-    fi
-
-    if [ -f "$CLI_DIR/target/debug/agentfs" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs"
-        return 0
-    fi
-
-    if [ -f "$CLI_DIR/target/debug/agentfs.exe" ]; then
-        AGENTFS_BIN="$CLI_DIR/target/debug/agentfs.exe"
-        return 0
-    fi
-
-    fail "missing cargo/cargo.exe; set AGENTFS_BIN to an existing binary"
-}
-
-reload_fixture_app() {
+prepare_fixture() {
     rm -rf "$TMP_ROOT/aiim"
     cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
-    APP_DIR="$TMP_ROOT/aiim"
-    SNAPSHOT_FILE="$APP_DIR/chats/chat-001/messages.res.jsonl"
-    REFRESH_ACT="$APP_DIR/_snapshot/refresh.act"
-    EVENTS="$APP_DIR/_stream/events.evt.jsonl"
-    JOURNAL="$APP_DIR/_stream/snapshot-expand.state.res.json"
 }
 
-start_adapter() {
-    expand_delay_ms="${1:-0}"
-    publish_delay_ms="${2:-0}"
-    ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-    ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0 "$expand_delay_ms" "$publish_delay_ms" "")"
+journal_json() {
+    "$AGENTFS_BIN" fs "$AGENT_ID" cat "/aiim/_stream/snapshot-expand.state.res.json" 2>/dev/null || true
 }
 
 journal_temp_artifact() {
-    python3 - "$JOURNAL" <<'PY'
-import json
-import os
-import sys
-
-journal = sys.argv[1]
-if not os.path.exists(journal):
-    print("")
-    raise SystemExit(0)
-
-with open(journal, "r", encoding="utf-8") as f:
-    doc = json.load(f)
-entry = (doc.get("resources") or {}).get("chats/chat-001/messages.res.jsonl") or {}
-print(entry.get("temp_artifact") or "")
-PY
+    json_payload="$(journal_json)"
+    [ -n "$json_payload" ] || {
+        printf '\n'
+        return 0
+    }
+    printf '%s\n' "$json_payload" | python3 -c 'import json,sys; doc=json.loads(sys.stdin.read()); entry=(doc.get("resources") or {}).get("chats/chat-001/messages.res.jsonl") or {}; print(entry.get("temp_artifact") or "")'
 }
 
-wait_journal_publishing() {
-    timeout="${1:-20}"
+assert_journal_entry_cleared() {
+    json_payload="$(journal_json)"
+    [ -n "$json_payload" ] || return 0
+    printf '%s\n' "$json_payload" | python3 -c 'import json,sys; doc=json.loads(sys.stdin.read()); resources=doc.get("resources"); raise SystemExit(1 if not isinstance(resources, dict) or "chats/chat-001/messages.res.jsonl" in resources else 0)'
+}
+
+start_mount() {
+    publish_delay_ms="${1:-}"
+    reuse_existing="${2:-0}"
+    MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
+    MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "$AGENT_ID" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "" "$publish_delay_ms" "" "$reuse_existing")"
+}
+
+wait_mount_log() {
+    pattern="$1"
+    timeout="${2:-20}"
     i=0
     while [ "$i" -lt "$timeout" ]; do
-        if python3 - "$JOURNAL" <<'PY'
-import json
-import os
-import sys
-
-journal = sys.argv[1]
-if not os.path.exists(journal):
-    raise SystemExit(1)
-with open(journal, "r", encoding="utf-8") as f:
-    doc = json.load(f)
-entry = (doc.get("resources") or {}).get("chats/chat-001/messages.res.jsonl")
-if not entry:
-    raise SystemExit(1)
-if entry.get("status") != "publishing":
-    raise SystemExit(1)
-if not entry.get("temp_artifact"):
-    raise SystemExit(1)
-raise SystemExit(0)
-PY
-        then
+        if grep -F -q "$pattern" "$MOUNT_LOG" 2>/dev/null; then
             return 0
         fi
         i=$((i + 1))
         sleep 1
     done
     return 1
-}
-
-wait_recovery_event() {
-    timeout="${1:-20}"
-    i=0
-    while [ "$i" -lt "$timeout" ]; do
-        if grep -q "\"type\":\"cache.recovery\"" "$EVENTS" 2>/dev/null; then
-            if grep "\"type\":\"cache.recovery\"" "$EVENTS" 2>/dev/null | grep -q "\"path\":\"/chats/chat-001/messages.res.jsonl\""; then
-                return 0
-            fi
-        fi
-        i=$((i + 1))
-        sleep 1
-    done
-    return 1
-}
-
-assert_journal_entry_cleared() {
-    python3 - "$JOURNAL" <<'PY'
-import json
-import os
-import sys
-
-journal = sys.argv[1]
-target = "chats/chat-001/messages.res.jsonl"
-
-if not os.path.exists(journal):
-    raise SystemExit("journal file missing after recovery")
-
-with open(journal, "r", encoding="utf-8") as f:
-    doc = json.load(f)
-
-resources = doc.get("resources")
-if not isinstance(resources, dict):
-    raise SystemExit("journal resources must be an object")
-
-if target in resources:
-    raise SystemExit("journal entry still present after recovery")
-PY
 }
 
 banner "AppFS v2 CT2-006 Journal Recovery for Incomplete Expand"
 require_cmd python3
-ensure_agentfs_bin
+ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
 TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-006.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-v2-006-$$"
+AGENT_ID="ct2-v2-006-$$"
 
-reload_fixture_app
-assert_file "$SNAPSHOT_FILE"
-assert_file "$REFRESH_ACT"
-assert_file "$EVENTS"
+prepare_fixture
+start_mount 8000 0
 
+SNAPSHOT_FILE="$MOUNTPOINT/aiim/chats/chat-001/messages.res.jsonl"
+[ -f "$SNAPSHOT_FILE" ] || fail "snapshot file missing before crash simulation"
 rm -f "$SNAPSHOT_FILE"
 pass "removed $SNAPSHOT_FILE to force cold snapshot miss"
 
-start_adapter 0 5000
-pass "adapter started with delayed publish window for crash simulation"
+cat "$SNAPSHOT_FILE" >"$TMP_ROOT/inflight.out" &
+cat_pid=$!
+wait_mount_log "[cache] mount read-through resource=/chats/chat-001/messages.res.jsonl trigger=lookup_miss" 20 || fail "mount did not enter snapshot expand path before kill"
+sleep 2
 
-wait_writable "$REFRESH_ACT" 10 || fail "snapshot refresh sink remained non-writable: $REFRESH_ACT"
-token_crash="ct2-006-crash-$$"
-printf '{"resource_path":"/chats/chat-001/messages.res.jsonl","client_token":"%s"}\n' "$token_crash" >> "$REFRESH_ACT" || fail "failed to submit refresh for crash simulation"
+stop_mount_process "${MOUNT_PID:-}" "${MOUNTPOINT:-}"
+MOUNT_PID=""
+wait "$cat_pid" 2>/dev/null || true
+pass "mount killed during publish window"
 
-wait_journal_publishing 20 || fail "journal did not enter publishing state before kill"
+json_payload="$(journal_json)"
+[ -n "$json_payload" ] || fail "journal missing after crash"
+printf '%s\n' "$json_payload" | python3 -c 'import json,sys; doc=json.loads(sys.stdin.read()); entry=(doc.get("resources") or {}).get("chats/chat-001/messages.res.jsonl"); raise SystemExit(0 if entry and entry.get("status")=="publishing" else 1)' || fail "journal did not persist publishing state across crash"
 temp_artifact_rel="$(journal_temp_artifact)"
-[ -n "$temp_artifact_rel" ] || fail "journal missing temp_artifact path"
-temp_artifact_abs="$APP_DIR/${temp_artifact_rel#/}"
-[ -f "$temp_artifact_abs" ] || fail "expected pending temp artifact to exist before kill"
-pass "journal captured publishing phase and pending temp artifact"
+[ -n "$temp_artifact_rel" ] || fail "journal missing temp_artifact path after crash"
+"$AGENTFS_BIN" fs "$AGENT_ID" cat "$temp_artifact_rel" >/dev/null 2>&1 || fail "expected pending temp artifact to exist after crash"
+pass "crash left publishing journal state and pending temp artifact"
 
-stop_adapter
-pass "adapter killed during publish window"
+start_mount "" 1
+SNAPSHOT_FILE="$MOUNTPOINT/aiim/chats/chat-001/messages.res.jsonl"
 
-[ ! -f "$SNAPSHOT_FILE" ] || fail "incomplete expansion must not expose final snapshot file"
-[ -f "$temp_artifact_abs" ] || fail "expected temp artifact to remain after crash"
-pass "crash leaves only temp artifact and no published half-product"
-
-start_adapter 0 0
-pass "adapter restarted for recovery scan"
-
-wait_recovery_event 20 || fail "missing cache.recovery evidence after restart"
-grep -F -q "[recovery] snapshot expand incomplete resource=/chats/chat-001/messages.res.jsonl" "$ADAPTER_LOG" || fail "missing recovery log anchor"
-[ ! -f "$temp_artifact_abs" ] || fail "recovery should clean pending temp artifact"
-assert_journal_entry_cleared || fail "recovery should clear journal entry for target resource"
-pass "restart recovery cleaned incomplete expansion, cleared journal entry, and emitted recovery evidence"
-
-token_recover="ct2-006-recover-$$"
-printf '{"resource_path":"/chats/chat-001/messages.res.jsonl","client_token":"%s"}\n' "$token_recover" >> "$REFRESH_ACT" || fail "failed to submit refresh after recovery"
-wait_token_event "$token_recover" "$EVENTS" 20 || fail "recovery follow-up request timeout"
-
-event_line="$(grep "$token_recover" "$EVENTS" 2>/dev/null | grep "\"type\":\"action.completed\"" | tail -n 1 || true)"
-[ -n "$event_line" ] || fail "missing action.completed after recovery"
-
-assert_file "$SNAPSHOT_FILE"
+full_content="$(cat "$SNAPSHOT_FILE")" || fail "ordinary read after recovery should succeed"
+[ -n "$full_content" ] || fail "ordinary read after recovery returned empty content"
 line_count="$(wc -l < "$SNAPSHOT_FILE" | tr -d ' ')"
-[ "$line_count" -eq 100 ] || fail "recovered expansion should materialize full 100-line snapshot, got $line_count"
-pass "post-recovery request materializes full snapshot correctly"
+[ "$line_count" -eq 100 ] || fail "recovered snapshot should materialize 100 JSONL lines, got $line_count"
+grep -F -q "[recovery] mount snapshot expand incomplete resource=/chats/chat-001/messages.res.jsonl" "$MOUNT_LOG" || fail "missing recovery log anchor"
+"$AGENTFS_BIN" fs "$AGENT_ID" cat "$temp_artifact_rel" >/dev/null 2>&1 && fail "recovery should clean pending temp artifact"
+assert_journal_entry_cleared || fail "recovery should clear journal entry for target resource"
+pass "restart recovery cleaned incomplete expansion and cleared journal entry"
+pass "post-recovery ordinary read materializes full snapshot"
 
 say "CT2-006 done"

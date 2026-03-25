@@ -345,10 +345,23 @@ fi
 find "$APPFS_LIVE_MOUNTPOINT" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 
 say "Initializing test agent: $APPFS_LIVE_AGENT_ID"
-"$AGENTFS_BIN" init "$APPFS_LIVE_AGENT_ID" --force >/dev/null
+"$AGENTFS_BIN" init "$APPFS_LIVE_AGENT_ID" --force --base "$APPFS_FIXTURE_DIR" >/dev/null
 
 say "Starting foreground mount process..."
-"$AGENTFS_BIN" mount "$APPFS_LIVE_AGENT_ID" "$APPFS_LIVE_MOUNTPOINT" --backend fuse --foreground >"$APPFS_MOUNT_LOG" 2>&1 &
+set -- "$AGENTFS_BIN" mount "$APPFS_LIVE_AGENT_ID" "$APPFS_LIVE_MOUNTPOINT" --backend fuse --foreground --appfs-app-id "$APPFS_APP_ID"
+if [ -n "$APPFS_ADAPTER_HTTP_ENDPOINT" ]; then
+    set -- "$@" --adapter-http-endpoint "$APPFS_ADAPTER_HTTP_ENDPOINT" --adapter-http-timeout-ms "$APPFS_ADAPTER_HTTP_TIMEOUT_MS"
+fi
+if [ -n "$APPFS_ADAPTER_GRPC_ENDPOINT" ]; then
+    set -- "$@" --adapter-grpc-endpoint "$APPFS_ADAPTER_GRPC_ENDPOINT" --adapter-grpc-timeout-ms "$APPFS_ADAPTER_GRPC_TIMEOUT_MS"
+fi
+set -- "$@" \
+    --adapter-bridge-max-retries "$APPFS_ADAPTER_BRIDGE_MAX_RETRIES" \
+    --adapter-bridge-initial-backoff-ms "$APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS" \
+    --adapter-bridge-max-backoff-ms "$APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS" \
+    --adapter-bridge-circuit-breaker-failures "$APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES" \
+    --adapter-bridge-circuit-breaker-cooldown-ms "$APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS"
+"$@" >"$APPFS_MOUNT_LOG" 2>&1 &
 MOUNT_PID=$!
 
 waited=0
@@ -364,8 +377,6 @@ if ! mountpoint -q "$APPFS_LIVE_MOUNTPOINT" 2>/dev/null; then
     fail "mount did not become ready within ${APPFS_MOUNT_WAIT_SEC}s"
 fi
 
-say "Copying AppFS fixture into mounted filesystem..."
-cp -a "$APPFS_FIXTURE_DIR"/. "$APPFS_LIVE_MOUNTPOINT"/
 APPFS_TEST_ACTION_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/contacts/zhangsan/send_message.act"
 APPFS_STREAMING_ACTION_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/files/file-001/download.act"
 APPFS_PAGEABLE_RESOURCE_LIVE="$APPFS_LIVE_MOUNTPOINT/$APPFS_APP_ID/feed/recommendations.res.json"

@@ -53,6 +53,7 @@ runtime 负责：
 4. live handle 生命周期、runtime handle 到 upstream cursor 的持久化映射。
 5. 事件流、重放、cursor 原子性。
 6. AppFS 错误面与 CT2 语义。
+7. 对已声明 snapshot `*.res.jsonl` 的普通文件读取 cold miss 触发 read-through 扩容；`/_snapshot/refresh.act` 仅作为显式控制面（prefetch / revalidate / force rematerialize）。
 
 connector 负责：
 
@@ -66,6 +67,16 @@ connector 负责：
 
 1. runtime core 中不得保留“主路径业务数据 snapshot stub”作为成功路径。
 2. transport adapter 中不得补业务逻辑，只能做协议封装、重试、超时、错误映射与序列化。
+3. 不得把 `/_snapshot/refresh.act` 作为 snapshot 数据面的唯一触发入口。
+
+### 3.2.1 本轮 shipping 范围
+
+1. `snapshot read-through on ordinary read` 由 mount-native interceptor 承载，当前已接入：
+   - `Linux + FUSE`
+   - `macOS + NFS`
+   - `Windows + WinFsp`
+2. `serve appfs` 继续负责 action/event/control plane，不引入 mount 与 serve 之间的新 IPC。
+3. 三平台共享同一套 snapshot expand / journal / recovery 语义，不允许再为 `NFS`、`WinFsp` 单独保留降级分支。
 
 ### 3.3 统一错误码口径
 

@@ -169,11 +169,12 @@ ensure_agentfs_bin() {
     cli_dir="${1:-${CLI_DIR:-}}"
     [ -n "$cli_dir" ] || fail "CLI_DIR is required for ensure_agentfs_bin"
 
-    if [ -n "${AGENTFS_BIN:-}" ] && [ -f "$AGENTFS_BIN" ]; then
+    build_before_run="${APPFS_V3_BUILD_BEFORE_RUN:-${APPFS_V2_BUILD_BEFORE_RUN:-1}}"
+
+    if [ -n "${AGENTFS_BIN:-}" ] && [ -f "$AGENTFS_BIN" ] && [ "$build_before_run" != "1" ]; then
         return 0
     fi
 
-    build_before_run="${APPFS_V2_BUILD_BEFORE_RUN:-1}"
     cargo_cmd="$(resolve_cargo_cmd)"
 
     if [ "$build_before_run" = "1" ]; then
@@ -307,6 +308,117 @@ start_appfs_v2_adapter() {
     fi
 
     printf '%s\n' "$adapter_pid"
+}
+
+fuse_unmount_cmd() {
+    if command -v fusermount3 >/dev/null 2>&1; then
+        printf '%s\n' "fusermount3"
+        return 0
+    fi
+    if command -v fusermount >/dev/null 2>&1; then
+        printf '%s\n' "fusermount"
+        return 0
+    fi
+    printf '%s\n' ""
+}
+
+stop_mount_process() {
+    pid="${1:-}"
+    mountpoint="${2:-}"
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+
+    if [ -n "$mountpoint" ] && command -v mountpoint >/dev/null 2>&1; then
+        if mountpoint -q "$mountpoint" 2>/dev/null; then
+            unmount_cmd="$(fuse_unmount_cmd)"
+            if [ -n "$unmount_cmd" ]; then
+                "$unmount_cmd" -u "$mountpoint" >/dev/null 2>&1 || "$unmount_cmd" -uz "$mountpoint" >/dev/null 2>&1 || true
+            else
+                umount -l "$mountpoint" >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
+}
+
+start_appfs_v2_mount() {
+    mount_log="$1"
+    bin_path="$2"
+    agent_id="$3"
+    fixture_root="$4"
+    mountpoint="$5"
+    app_id="$6"
+    expand_delay_ms="${7:-}"
+    publish_delay_ms="${8:-}"
+    force_expand="${9:-}"
+    reuse_existing="${10:-0}"
+
+    wait_bridge_endpoint_ready
+    command -v mountpoint >/dev/null 2>&1 || fail "missing command: mountpoint"
+
+    mkdir -p "$mountpoint"
+    if mountpoint -q "$mountpoint" 2>/dev/null; then
+        stop_mount_process "" "$mountpoint"
+    fi
+    find "$mountpoint" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    if [ "$reuse_existing" != "1" ]; then
+        "$bin_path" init "$agent_id" --force --base "$fixture_root" >/dev/null
+    fi
+
+    bridge_args=""
+    if [ -n "${APPFS_ADAPTER_HTTP_ENDPOINT:-}" ]; then
+        bridge_args="$bridge_args --adapter-http-endpoint ${APPFS_ADAPTER_HTTP_ENDPOINT} --adapter-http-timeout-ms ${APPFS_ADAPTER_HTTP_TIMEOUT_MS:-5000}"
+    fi
+    if [ -n "${APPFS_ADAPTER_GRPC_ENDPOINT:-}" ]; then
+        bridge_args="$bridge_args --adapter-grpc-endpoint ${APPFS_ADAPTER_GRPC_ENDPOINT} --adapter-grpc-timeout-ms ${APPFS_ADAPTER_GRPC_TIMEOUT_MS:-5000}"
+    fi
+    if [ -n "${APPFS_ADAPTER_BRIDGE_MAX_RETRIES:-}" ]; then
+        bridge_args="$bridge_args --adapter-bridge-max-retries ${APPFS_ADAPTER_BRIDGE_MAX_RETRIES}"
+    fi
+    if [ -n "${APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS:-}" ]; then
+        bridge_args="$bridge_args --adapter-bridge-initial-backoff-ms ${APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS}"
+    fi
+    if [ -n "${APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS:-}" ]; then
+        bridge_args="$bridge_args --adapter-bridge-max-backoff-ms ${APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS}"
+    fi
+    if [ -n "${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES:-}" ]; then
+        bridge_args="$bridge_args --adapter-bridge-circuit-breaker-failures ${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_FAILURES}"
+    fi
+    if [ -n "${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS:-}" ]; then
+        bridge_args="$bridge_args --adapter-bridge-circuit-breaker-cooldown-ms ${APPFS_ADAPTER_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS}"
+    fi
+
+    env_args=""
+    if [ -n "$expand_delay_ms" ]; then
+        env_args="$env_args APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$expand_delay_ms"
+    fi
+    if [ -n "$publish_delay_ms" ]; then
+        env_args="$env_args APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$publish_delay_ms"
+    fi
+    if [ -n "$force_expand" ]; then
+        env_args="$env_args APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$force_expand"
+    fi
+
+    # shellcheck disable=SC2086
+    env $env_args "$bin_path" mount "$agent_id" "$mountpoint" --backend fuse --foreground --appfs-app-id "$app_id" $bridge_args >"$mount_log" 2>&1 &
+    mount_pid=$!
+
+    timeout="${APPFS_ADAPTER_BRIDGE_WAIT_SEC:-20}"
+    i=0
+    while [ "$i" -lt "$timeout" ]; do
+        if mountpoint -q "$mountpoint" 2>/dev/null; then
+            printf '%s\n' "$mount_pid"
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+
+    tail -n 120 "$mount_log" 2>/dev/null || true
+    fail "appfs mount did not become ready: $mountpoint"
 }
 
 banner() {

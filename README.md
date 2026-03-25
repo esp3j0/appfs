@@ -67,7 +67,11 @@ Source of truth: `examples/appfs/aiim/_meta/manifest.res.json`.
 
 ## Runtime Quick Start (HTTP Bridge)
 
-This quick start runs the `v0.3` shipping runtime path: `agentfs serve appfs` routes through `AppConnectorV2` (V3 release semantics), with the reference/demo connector exposed by the Python HTTP bridge.
+This quick start runs the current `v0.3` shipping path:
+
+1. `agentfs mount` exposes the app tree from a `--base` fixture and performs snapshot cold-read auto-expand on ordinary file reads.
+2. `agentfs serve appfs` owns the action/event/control plane.
+3. Both mount and runtime route connector calls through `AppConnectorV2`, with the reference/demo connector exposed by the Python HTTP bridge.
 
 Prerequisites:
 
@@ -77,46 +81,43 @@ Prerequisites:
 4. Windows: WinFsp installed before running `agentfs mount`.
 5. Linux: FUSE mount support available and a writable mount path prepared.
 
-The runtime demo has five moving parts:
+The runtime demo has four moving parts:
 
-1. AgentFS mount
-2. AIIM fixture copied into the mounted tree
-3. HTTP bridge connector
+1. AgentFS overlay initialized with `examples/appfs` as `--base`
+2. HTTP bridge connector
+3. `agentfs mount` with AppFS read-through enabled
 4. `agentfs serve appfs` backend runtime
-5. A separate terminal that appends `.act` lines and tails `_stream/events.evt.jsonl`
 
-If step 4 is missing, `.act` lines will not be consumed. Mount + bridge alone are not enough.
+The AIIM fixture is no longer copied into the mountpoint. It is exposed directly from the `--base` tree. Snapshot resources materialize on first ordinary read; `.act` processing still requires `serve appfs`.
 
 ### Windows (PowerShell, 5 Steps)
 
-1. Mount AgentFS (Terminal A).
+1. Initialize AgentFS overlay on top of the demo fixture (Terminal A).
 
 ```powershell
 cd C:\Users\esp3j\rep\agentfs\cli
-cargo run -- init win-real
-cargo run -- mount .agentfs\win-real.db C:\mnt\win-real --foreground
+cargo run -- init win-real --force --base ..\examples\appfs
 ```
 
-2. Place AIIM fixture into the mountpoint (Terminal B).
-
-```powershell
-cd C:\Users\esp3j\rep\agentfs
-Copy-Item -Recurse -Force .\examples\appfs\aiim C:\mnt\win-real\aiim
-```
-
-3. Start HTTP bridge (Terminal C).
+2. Start HTTP bridge (Terminal B).
 
 ```powershell
 cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
 uv run python bridge_server.py
 ```
 
+3. Mount AgentFS with AppFS read-through enabled (Terminal C).
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- mount .agentfs\win-real.db C:\mnt\win-real --backend winfsp --foreground --appfs-app-id aiim --adapter-http-endpoint http://127.0.0.1:8080
+```
+
 4. Start AppFS backend runtime (Terminal D).
 
 ```powershell
 cd C:\Users\esp3j\rep\agentfs\cli
-$env:APPFS_ADAPTER_HTTP_ENDPOINT = "http://127.0.0.1:8080"
-cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim
+cargo run -- serve appfs --root C:\mnt\win-real --app-id aiim --adapter-http-endpoint http://127.0.0.1:8080
 ```
 
 Expected startup signal:
@@ -135,7 +136,7 @@ Get-Content C:\mnt\win-real\aiim\_stream\events.evt.jsonl -Wait
 # trigger action (append ActionLineV2 JSONL, one JSON object per line)
 Add-Content C:\mnt\win-real\aiim\contacts\zhangsan\send_message.act '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}'
 
-# snapshot resource is directly searchable
+# snapshot cold miss expands on ordinary read
 Get-Content C:\mnt\win-real\aiim\chats\chat-001\messages.res.jsonl | Select-String "hello"
 
 # live resource keeps paging
@@ -143,7 +144,7 @@ Get-Content C:\mnt\win-real\aiim\feed\recommendations.res.json -Raw
 Add-Content C:\mnt\win-real\aiim\_paging\fetch_next.act '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}'
 Add-Content C:\mnt\win-real\aiim\_paging\close.act '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}'
 
-# explicit snapshot refresh (cache/materialization checkpoint)
+# explicit snapshot refresh is still available as control plane
 Add-Content C:\mnt\win-real\aiim\_snapshot\refresh.act '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}'
 
 # read resource
@@ -152,34 +153,33 @@ Get-Content C:\mnt\win-real\aiim\contacts\zhangsan\profile.res.json -Raw
 
 ### Linux (bash, 5 Steps)
 
-1. Mount AgentFS (Terminal A).
+1. Initialize AgentFS overlay on top of the demo fixture (Terminal A).
 
 ```bash
 cd /path/to/agentfs/cli
-cargo run -- init linux-real
-mkdir -p /tmp/appfs-real
-cargo run -- mount .agentfs/linux-real.db /tmp/appfs-real --foreground
+cargo run -- init linux-real --force --base ../examples/appfs
 ```
 
-2. Place AIIM fixture into the mountpoint (Terminal B).
-
-```bash
-cd /path/to/agentfs
-cp -R ./examples/appfs/aiim /tmp/appfs-real/aiim
-```
-
-3. Start HTTP bridge (Terminal C).
+2. Start HTTP bridge (Terminal B).
 
 ```bash
 cd /path/to/agentfs/examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
+3. Mount AgentFS with AppFS read-through enabled (Terminal C).
+
+```bash
+cd /path/to/agentfs/cli
+mkdir -p /tmp/appfs-real
+cargo run -- mount .agentfs/linux-real.db /tmp/appfs-real --backend fuse --foreground --appfs-app-id aiim --adapter-http-endpoint http://127.0.0.1:8080
+```
+
 4. Start AppFS backend runtime (Terminal D).
 
 ```bash
 cd /path/to/agentfs/cli
-APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 cargo run -- serve appfs --root /tmp/appfs-real --app-id aiim
+cargo run -- serve appfs --root /tmp/appfs-real --app-id aiim --adapter-http-endpoint http://127.0.0.1:8080
 ```
 
 Expected startup signal:
@@ -198,7 +198,7 @@ tail -f /tmp/appfs-real/aiim/_stream/events.evt.jsonl
 # trigger action (append ActionLineV2 JSONL)
 echo '{"version":2,"client_token":"msg-001","payload":{"text":"hello"}}' >> /tmp/appfs-real/aiim/contacts/zhangsan/send_message.act
 
-# snapshot resource is directly searchable
+# snapshot cold miss expands on ordinary read
 cat /tmp/appfs-real/aiim/chats/chat-001/messages.res.jsonl | rg "hello"
 
 # live resource keeps paging
@@ -206,7 +206,7 @@ cat /tmp/appfs-real/aiim/feed/recommendations.res.json
 echo '{"version":2,"client_token":"page-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/fetch_next.act
 echo '{"version":2,"client_token":"page-close-001","payload":{"handle_id":"ph_live_7f2c"}}' >> /tmp/appfs-real/aiim/_paging/close.act
 
-# explicit snapshot refresh (cache/materialization checkpoint)
+# explicit snapshot refresh is still available as control plane
 echo '{"version":2,"client_token":"refresh-001","payload":{"resource_path":"/chats/chat-001/messages.res.jsonl"}}' >> /tmp/appfs-real/aiim/_snapshot/refresh.act
 
 # read resource
@@ -216,58 +216,65 @@ cat /tmp/appfs-real/aiim/contacts/zhangsan/profile.res.json
 Notes:
 
 1. `.act` sink semantics are append-only JSONL. Submit with `>>` (or PowerShell `Add-Content`) and write one ActionLineV2 JSON object per line.
-2. `serve appfs` must be running before `.act` lines will be consumed. The mount and the bridge do not process action files by themselves.
-3. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
-4. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
-5. Runtime also has compatibility recovery for shell-expanded multiline JSON fragments; it may merge adjacent lines back into one JSON request. Preferred client format is still single-line JSON with escaped `\\n`.
+2. The app tree comes from `--base`; the demo no longer requires manually copying `examples/appfs/aiim` into the mountpoint.
+3. Snapshot `*.res.jsonl` cold misses now expand on ordinary reads (`cat`, `Get-Content`, `head`, `sed`) when mount-side AppFS is enabled.
+4. `serve appfs` must be running before `.act` lines will be consumed. The mount and the bridge do not process action files by themselves.
+5. `/_snapshot/refresh.act` remains available for explicit prefetch, forced rematerialization, and revalidation.
+6. For real apps, replace `../examples/appfs` with your own app fixture/root that already contains the app directory and `_meta/manifest.res.json`.
+7. `>` overwrite/truncate on `.act` is treated as illegal mutation and skipped by runtime (with diagnostic logs).
+8. Runtime delivery is `at-least-once` for observed lines. Use `client_token`/`request_id` for idempotent dedupe in app logic.
+9. Runtime also has compatibility recovery for shell-expanded multiline JSON fragments; it may merge adjacent lines back into one JSON request. Preferred client format is still single-line JSON with escaped `\\n`.
 
 ## Architecture
 
-### v0.3 Backend + Connector Call Chain
+### Current Runtime Topology
 
 ```mermaid
 flowchart TD
-    A["Agent shell / PowerShell / bash"] --> B["AgentFS mount (Windows: WinFsp, Linux: FUSE)"]
-    B --> C["AppFS tree (_meta, _stream, _paging, _snapshot, domain paths)"]
-    C --> D["agentfs serve appfs (v0.3 runtime)"]
+    A["Agent shell / PowerShell / bash"] --> B["AgentFS mount backend (Linux: FUSE, macOS: NFS, Windows: WinFsp)"]
+    B --> C["AppFS-aware mount wrapper"]
+    C --> D["Overlay/base tree + AppFS tree (_meta, _stream, _paging, _snapshot, domain paths)"]
+    A --> E["agentfs serve appfs (v0.3 runtime)"]
+    E --> D
 
-    D --> E["Action Dispatcher (ActionLineV2 parse + validation)"]
-    D --> F["Snapshot Cache Manager (prewarm, read-through, stale handling)"]
-    D --> G["Journal + Recovery"]
-    D --> H["Event Engine + Paging"]
+    C --> F["Connector transport"]
+    E --> F
 
-    D --> I["Connector transport"]
-    I --> J["In-process adapter"]
-    I --> K["HTTP bridge adapter"]
-    I --> L["gRPC bridge adapter"]
+    F --> G["In-process connector"]
+    F --> H["HTTP bridge connector"]
+    F --> I["gRPC bridge connector"]
 
-    K --> M["HTTP bridge service"]
-    L --> N["gRPC bridge service"]
-    J --> O["Real app backend or reference demo backend"]
-    M --> O
-    N --> O
-
-    H --> C
-    F --> C
-    G --> C
+    H --> J["HTTP bridge service"]
+    I --> K["gRPC bridge service"]
+    G --> L["Real app backend or reference demo backend"]
+    J --> L
+    K --> L
 ```
 
-### What `serve appfs` Does in v0.3
+### Responsibilities Split
 
-`cargo run -- serve appfs --root ... --app-id ...` starts the AppFS backend runtime. In the current implementation it is a long-running process with a poll/event loop, but its role is no longer a thin v0.1 sidecar.
+The current architecture is intentionally split between `mount` and `serve appfs`.
 
-In v0.3 it is responsible for:
+`agentfs mount ... --appfs-app-id ...` is responsible for:
 
-1. loading manifest, action specs, snapshot specs, paging controls, and runtime policy;
+1. exposing the app tree from the configured `--base` fixture/root;
+2. loading manifest/snapshot declarations needed for ordinary-read interception;
+3. performing snapshot cold-miss auto-expand on `lookup/open` for declared `*.res.jsonl`;
+4. writing materialized snapshot JSONL, journal state, and recovery artifacts back into the mounted tree.
+
+`cargo run -- serve appfs --root ... --app-id ...` is responsible for:
+
+1. loading manifest, action specs, paging controls, and runtime policy;
 2. selecting and initializing the connector transport (in-process / HTTP bridge / gRPC bridge);
 3. enforcing ActionLineV2 validation and submit-time reject behavior;
-4. driving snapshot prewarm, read-through expansion, timeout fallback, journal recovery, and paging;
-5. writing events, replay artifacts, cursors, and materialized resource files back into the mounted tree.
+4. driving action submit, event emission, live paging, startup prewarm, explicit `/_snapshot/refresh.act`, and runtime recovery;
+5. writing events, replay artifacts, and cursors back into the mounted tree.
 
 Put differently:
 
-1. **v0.1** `serve appfs`: primarily a sidecar/reference runtime around action sinks and bridge dispatch.
-2. **v0.3** `serve appfs`: the backend runtime that owns AppFS protocol semantics, while the connector focuses on upstream app I/O and mapping.
+1. ordinary file reads go through the mount path;
+2. action/event/control plane goes through `serve appfs`;
+3. both sides share the same connector contract surface.
 
 ## v0.3 Release Status
 

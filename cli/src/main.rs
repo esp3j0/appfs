@@ -159,6 +159,17 @@ fn main() {
             uid,
             gid,
             backend,
+            appfs_app_id,
+            appfs_session,
+            adapter_http_endpoint,
+            adapter_http_timeout_ms,
+            adapter_grpc_endpoint,
+            adapter_grpc_timeout_ms,
+            adapter_bridge_max_retries,
+            adapter_bridge_initial_backoff_ms,
+            adapter_bridge_max_backoff_ms,
+            adapter_bridge_circuit_breaker_failures,
+            adapter_bridge_circuit_breaker_cooldown_ms,
         } => match (id_or_path, mountpoint) {
             (Some(id_or_path), Some(mountpoint)) => {
                 if let Err(e) = cmd::mount(cmd::MountArgs {
@@ -171,6 +182,17 @@ fn main() {
                     uid,
                     gid,
                     backend,
+                    appfs_app_id,
+                    appfs_session,
+                    adapter_http_endpoint,
+                    adapter_http_timeout_ms,
+                    adapter_grpc_endpoint,
+                    adapter_grpc_timeout_ms,
+                    adapter_bridge_max_retries,
+                    adapter_bridge_initial_backoff_ms,
+                    adapter_bridge_max_backoff_ms,
+                    adapter_bridge_circuit_breaker_failures,
+                    adapter_bridge_circuit_breaker_cooldown_ms,
                 }) {
                     eprintln!("Error: {}", e);
                     // Print error chain for debugging
