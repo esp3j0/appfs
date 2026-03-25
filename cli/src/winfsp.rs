@@ -37,6 +37,14 @@ const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
 // Windows create options flags
 const FILE_DIRECTORY_FILE: u32 = 0x00000001;
 const FILE_DELETE_ON_CLOSE: u32 = 0x00001000;
+const FILE_READ_DATA: u32 = 0x00000001;
+const FILE_WRITE_DATA: u32 = 0x00000002;
+const FILE_APPEND_DATA: u32 = 0x00000004;
+const GENERIC_READ_ACCESS: u32 = 0x80000000;
+const GENERIC_WRITE_ACCESS: u32 = 0x40000000;
+const OPEN_RDONLY: i32 = 0x0000;
+const OPEN_WRONLY: i32 = 0x0001;
+const OPEN_RDWR: i32 = 0x0002;
 
 // Reparse tag/constants for symbolic links
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
@@ -174,6 +182,23 @@ fn volume_capacity(bytes_used: u64) -> (u64, u64) {
     let total_size = MIN_TOTAL_SIZE.max(bytes_used.saturating_add(HEADROOM_BYTES));
     let free_size = total_size.saturating_sub(bytes_used);
     (total_size, free_size)
+}
+
+fn granted_access_to_open_flags(granted_access: u32) -> i32 {
+    let wants_read =
+        granted_access == 0 || (granted_access & (FILE_READ_DATA | GENERIC_READ_ACCESS)) != 0;
+    let wants_write =
+        (granted_access & (FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE_ACCESS)) != 0;
+
+    if wants_write {
+        if wants_read {
+            OPEN_RDWR
+        } else {
+            OPEN_WRONLY
+        }
+    } else {
+        OPEN_RDONLY
+    }
 }
 
 /// Tracks an open file or directory handle
@@ -582,7 +607,8 @@ impl FileSystemContext for AgentFSWinFsp {
                     // For files, open the file handle
                     let fs = self.fs.clone();
                     let ino = stats.ino;
-                    let file = self.block_on(async move { fs.lock().open(ino, 0).await });
+                    let open_flags = granted_access_to_open_flags(granted_access);
+                    let file = self.block_on(async move { fs.lock().open(ino, open_flags).await });
 
                     match file {
                         Ok(file) => {
@@ -615,7 +641,7 @@ impl FileSystemContext for AgentFSWinFsp {
         &self,
         file_name: &U16CStr,
         create_options: u32,
-        _granted_access: u32,
+        granted_access: u32,
         _file_attributes: u32,
         _security_descriptor: Option<&[c_void]>,
         _allocation_size: u64,
@@ -691,7 +717,8 @@ impl FileSystemContext for AgentFSWinFsp {
                 } else {
                     let fs = self.fs.clone();
                     let ino = stats.ino;
-                    let file = self.block_on(async move { fs.lock().open(ino, 0).await });
+                    let open_flags = granted_access_to_open_flags(granted_access);
+                    let file = self.block_on(async move { fs.lock().open(ino, open_flags).await });
 
                     match file {
                         Ok(file) => {
@@ -798,7 +825,9 @@ impl FileSystemContext for AgentFSWinFsp {
                             // For files, open the newly created file
                             let fs = self.fs.clone();
                             let ino = stats.ino;
-                            let file = self.block_on(async move { fs.lock().open(ino, 0).await });
+                            let open_flags = granted_access_to_open_flags(granted_access);
+                            let file =
+                                self.block_on(async move { fs.lock().open(ino, open_flags).await });
 
                             match file {
                                 Ok(file) => {

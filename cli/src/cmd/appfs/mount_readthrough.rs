@@ -26,6 +26,8 @@ use super::{
 const ROOT_INO: i64 = 1;
 const OPEN_READ_ONLY: i32 = 0;
 const OPEN_READ_WRITE: i32 = 2;
+const OPEN_ACCESS_MODE_MASK: i32 = 0x0003;
+const OPEN_WRITE_ONLY: i32 = 1;
 
 #[cfg(target_os = "windows")]
 const RAW_IO_ERROR: i32 = 1117;
@@ -129,6 +131,11 @@ fn should_expand_on_open(
         None => true,
         Some(stats) => stats.size == 0,
     }
+}
+
+fn open_requests_read(flags: i32) -> bool {
+    let access_mode = flags & OPEN_ACCESS_MODE_MASK;
+    access_mode != OPEN_WRITE_ONLY
 }
 
 fn should_skip_existing_expand(
@@ -937,34 +944,40 @@ impl FileSystem for MountSnapshotReadThroughFs {
         flags: i32,
     ) -> std::result::Result<BoxedFile, agentfs_sdk::error::Error> {
         let mut target_ino = ino;
-        if let Some(rel_path) = self.cached_path_for_ino(ino).await {
-            if let Some((resource_app_id, resource_rel)) = self
-                .maybe_snapshot_resource_from_fs_path(&rel_path)
-                .await
-                .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
-            {
-                let should_force_expand = snapshot_force_expand_on_refresh();
-                let has_journal = self
-                    .journal_contains(&resource_app_id, &resource_rel)
+        if open_requests_read(flags) {
+            if let Some(rel_path) = self.cached_path_for_ino(ino).await {
+                if let Some((resource_app_id, resource_rel)) = self
+                    .maybe_snapshot_resource_from_fs_path(&rel_path)
                     .await
-                    .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                let current_stats = self
-                    .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
-                    .await
-                    .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                if should_expand_on_open(current_stats.as_ref(), has_journal, should_force_expand) {
-                    self.ensure_snapshot_materialized(&resource_app_id, &resource_rel, "open")
+                    .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
+                {
+                    let should_force_expand = snapshot_force_expand_on_refresh();
+                    let has_journal = self
+                        .journal_contains(&resource_app_id, &resource_rel)
                         .await
                         .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                    if let Some(stats) = self
+                    let current_stats = self
                         .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
                         .await
-                        .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
-                    {
-                        target_ino = stats.ino;
-                        self.cache_path(target_ino, rel_path).await;
-                    } else {
-                        return Err(FsError::NotFound.into());
+                        .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+                    if should_expand_on_open(
+                        current_stats.as_ref(),
+                        has_journal,
+                        should_force_expand,
+                    ) {
+                        self.ensure_snapshot_materialized(&resource_app_id, &resource_rel, "open")
+                            .await
+                            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+                        if let Some(stats) = self
+                            .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
+                            .await
+                            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
+                        {
+                            target_ino = stats.ino;
+                            self.cache_path(target_ino, rel_path).await;
+                        } else {
+                            return Err(FsError::NotFound.into());
+                        }
                     }
                 }
             }
@@ -1115,7 +1128,10 @@ impl FileSystem for MountSnapshotReadThroughFs {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_expand_on_open, should_skip_existing_expand};
+    use super::{
+        open_requests_read, should_expand_on_open, should_skip_existing_expand, OPEN_READ_ONLY,
+        OPEN_READ_WRITE, OPEN_WRITE_ONLY,
+    };
     use agentfs_sdk::{Stats, DEFAULT_FILE_MODE};
 
     fn file_stats(size: u64) -> Stats {
@@ -1168,6 +1184,13 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn write_only_open_does_not_count_as_read_intent() {
+        assert!(open_requests_read(OPEN_READ_ONLY));
+        assert!(open_requests_read(OPEN_READ_WRITE));
+        assert!(!open_requests_read(OPEN_WRITE_ONLY));
     }
 }
 
