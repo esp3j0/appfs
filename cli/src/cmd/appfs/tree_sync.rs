@@ -543,6 +543,14 @@ fn remove_empty_dir_with_retry(path: &Path) -> Result<()> {
 
 fn remove_file_with_retry(path: &Path) -> Result<()> {
     const MAX_ATTEMPTS: usize = 6;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("path has no file name: {}", path.display()))?
+        .to_string();
     for attempt in 0..MAX_ATTEMPTS {
         match fs::remove_file(path) {
             Ok(()) => {}
@@ -557,7 +565,27 @@ fn remove_file_with_retry(path: &Path) -> Result<()> {
             }
         }
 
-        if !path.exists() {
+        let still_present = match fs::read_dir(parent) {
+            Ok(entries) => entries.filter_map(|entry| entry.ok()).any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name == file_name)
+                    .unwrap_or(false)
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "Failed to inspect parent directory {} while deleting {}",
+                        parent.display(),
+                        path.display()
+                    )
+                })
+            }
+        };
+
+        if !still_present {
             return Ok(());
         }
 
