@@ -14,6 +14,7 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppStructureSyncStateDoc {
@@ -339,8 +340,7 @@ impl AppTreeSyncService {
                 continue;
             }
             if full.is_dir() {
-                fs::remove_dir(&full)
-                    .with_context(|| format!("Failed to remove directory {}", full.display()))?;
+                remove_empty_dir_with_retry(&full)?;
             } else {
                 fs::remove_file(&full)
                     .with_context(|| format!("Failed to remove file {}", full.display()))?;
@@ -504,6 +504,42 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
     Ok(())
+}
+
+fn remove_empty_dir_with_retry(path: &Path) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 6;
+    for attempt in 0..MAX_ATTEMPTS {
+        match fs::remove_dir(path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                let remaining_entries = match fs::read_dir(path) {
+                    Ok(entries) => entries
+                        .filter_map(|entry| entry.ok())
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                    Err(_) => Vec::new(),
+                };
+                let should_retry = remaining_entries.is_empty() && attempt + 1 < MAX_ATTEMPTS;
+                if should_retry {
+                    std::thread::sleep(Duration::from_millis(15 * (attempt + 1) as u64));
+                    continue;
+                }
+                let detail = if remaining_entries.is_empty() {
+                    "empty directory could not be removed".to_string()
+                } else {
+                    format!(
+                        "directory still contains entries: {}",
+                        remaining_entries.join(", ")
+                    )
+                };
+                return Err(err).with_context(|| {
+                    format!("Failed to remove directory {} ({detail})", path.display())
+                });
+            }
+        }
+    }
+    unreachable!("remove_empty_dir_with_retry should return within retry loop");
 }
 
 fn is_runtime_protected_path(rel: &str) -> bool {
