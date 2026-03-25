@@ -76,12 +76,9 @@ impl SupervisorControlPlane {
     pub(super) fn prepare_action_sinks(&mut self) -> Result<()> {
         let control_dir = self.root.join(CONTROL_APP_ID);
         let stream_dir = control_dir.join("_stream");
-        fs::create_dir_all(&self.replay_dir).with_context(|| {
-            format!(
-                "Failed to create AppFS control replay dir {}",
-                self.replay_dir.display()
-            )
-        })?;
+        ensure_dir_exists(&control_dir, "AppFS control dir")?;
+        ensure_dir_exists(&stream_dir, "AppFS control stream dir")?;
+        ensure_dir_exists(&self.replay_dir, "AppFS control replay dir")?;
         if !self.events_path.exists() {
             fs::write(&self.events_path, b"").with_context(|| {
                 format!(
@@ -121,12 +118,6 @@ impl SupervisorControlPlane {
                 })?;
             }
         }
-        fs::create_dir_all(&stream_dir).with_context(|| {
-            format!(
-                "Failed to create AppFS control stream dir {}",
-                stream_dir.display()
-            )
-        })?;
         Ok(())
     }
 
@@ -464,4 +455,16 @@ fn write_json_file(path: &Path, value: &JsonValue) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn ensure_dir_exists(path: &Path, label: &str) -> Result<()> {
+    fs::create_dir(path)
+        .or_else(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })
+        .with_context(|| format!("Failed to create {} {}", label, path.display()))
 }
