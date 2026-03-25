@@ -8,7 +8,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 
 /// Mount timeout for WinFsp.
@@ -129,20 +129,34 @@ pub fn unmount_winfsp(host_ptr: *mut ()) -> Result<()> {
 /// On Windows, WinFsp mount is synchronous, so we just verify the mount point
 /// is accessible after a short delay.
 fn wait_for_mount(path: &Path, _timeout: Duration) -> bool {
-    // WinFsp mount is synchronous - just do a basic check
-    // Give it a moment to settle
-    std::thread::sleep(Duration::from_millis(100));
-
-    // Try to list the directory to verify the mount is working
-    match std::fs::read_dir(path) {
-        Ok(_) => {
-            tracing::debug!("WinFsp mount verified - directory is accessible");
-            true
+    let deadline = Instant::now() + _timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    tracing::debug!("WinFsp mount verified - mountpoint exists");
+                    return true;
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "WinFsp mountpoint exists but is not a directory: {}",
+                        path.display()
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "WinFsp mountpoint exists but metadata is not ready yet: {}",
+                        err
+                    );
+                }
+            }
         }
-        Err(e) => {
-            tracing::warn!("WinFsp mount verification failed: {}", e);
-            // Still return true if the path exists - the filesystem might just be empty
-            path.exists()
-        }
+        std::thread::sleep(Duration::from_millis(100));
     }
+    tracing::warn!(
+        "WinFsp mount verification timed out waiting for {}",
+        path.display()
+    );
+    false
 }

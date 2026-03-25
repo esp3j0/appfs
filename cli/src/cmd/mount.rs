@@ -618,6 +618,28 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
             args.mountpoint.display()
         );
     }
+    let mount_parent = args
+        .mountpoint
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "WinFsp mountpoint must include an existing parent directory: {}",
+                args.mountpoint.display()
+            )
+        })?;
+    if !mount_parent.exists() {
+        anyhow::bail!(
+            "WinFsp mountpoint parent does not exist: {}",
+            mount_parent.display()
+        );
+    }
+    if !mount_parent.is_dir() {
+        anyhow::bail!(
+            "WinFsp mountpoint parent is not a directory: {}",
+            mount_parent.display()
+        );
+    }
 
     // Don't use canonicalize - it adds the \\?\ prefix which WinFsp doesn't accept,
     // and it would fail anyway if the path doesn't exist.

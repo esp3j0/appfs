@@ -167,6 +167,15 @@ fn fill_file_info(stats: &Stats, file_info: &mut FileInfo) {
     file_info.ea_size = 0;
 }
 
+fn volume_capacity(bytes_used: u64) -> (u64, u64) {
+    const MIN_TOTAL_SIZE: u64 = 1024 * 1024 * 1024;
+    const HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
+
+    let total_size = MIN_TOTAL_SIZE.max(bytes_used.saturating_add(HEADROOM_BYTES));
+    let free_size = total_size.saturating_sub(bytes_used);
+    (total_size, free_size)
+}
+
 /// Tracks an open file or directory handle
 struct OpenFile {
     /// The file handle (None for directories)
@@ -1441,8 +1450,9 @@ impl FileSystemContext for AgentFSWinFsp {
 
         match stats {
             Ok(stats) => {
-                out_volume_info.total_size = 1024 * 1024 * 1024; // 1GB
-                out_volume_info.free_size = 1024 * 1024 * 1024 - stats.bytes_used;
+                let (total_size, free_size) = volume_capacity(stats.bytes_used);
+                out_volume_info.total_size = total_size;
+                out_volume_info.free_size = free_size;
                 Ok(())
             }
             Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
@@ -1647,7 +1657,7 @@ pub fn unmount(_mountpoint: &std::path::Path, _lazy: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_truncate_size;
+    use super::{resolve_truncate_size, volume_capacity};
 
     #[test]
     fn allocation_growth_does_not_change_logical_size() {
@@ -1663,5 +1673,20 @@ mod tests {
     fn eof_size_request_always_applies() {
         assert_eq!(resolve_truncate_size(2, 512, false), Some(512));
         assert_eq!(resolve_truncate_size(512, 2, false), Some(2));
+    }
+
+    #[test]
+    fn volume_capacity_keeps_minimum_headroom() {
+        let (total, free) = volume_capacity(1234);
+        assert_eq!(total, 1024 * 1024 * 1024);
+        assert_eq!(free, total - 1234);
+    }
+
+    #[test]
+    fn volume_capacity_saturates_when_usage_exceeds_minimum() {
+        let bytes_used = 2 * 1024 * 1024 * 1024;
+        let (total, free) = volume_capacity(bytes_used);
+        assert_eq!(total, bytes_used + 64 * 1024 * 1024);
+        assert_eq!(free, 64 * 1024 * 1024);
     }
 }
