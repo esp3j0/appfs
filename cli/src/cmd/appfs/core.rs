@@ -1182,6 +1182,7 @@ impl AppfsAdapter {
 mod tests {
     use super::{map_adapter_error_v1_to_connector_error_v2, LegacyAdapterConnectorV2};
     use super::{AppfsAdapter, AppfsBridgeConfig};
+    use crate::cmd::appfs::{ACTION_CURSORS_FILENAME, SNAPSHOT_EXPAND_JOURNAL_FILENAME};
     use agentfs_sdk::{
         AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
         AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2,
@@ -1339,6 +1340,16 @@ mod tests {
             "{\n  \"min_seq\": 0,\n  \"max_seq\": 0,\n  \"retention_hint_sec\": 86400\n}\n",
         )
         .expect("reset cursor");
+        let _ = fs::remove_file(app_dir.join("_stream").join(ACTION_CURSORS_FILENAME));
+        let _ = fs::remove_file(app_dir.join("_stream").join("inflight.jobs.res.json"));
+        let _ = fs::remove_file(
+            app_dir
+                .join("_stream")
+                .join(SNAPSHOT_EXPAND_JOURNAL_FILENAME),
+        );
+        let replay_dir = app_dir.join("_stream").join("from-seq");
+        let _ = fs::remove_dir_all(&replay_dir);
+        fs::create_dir_all(&replay_dir).expect("reset replay dir");
         fs::write(
             app_dir
                 .join("contacts")

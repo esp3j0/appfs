@@ -3,11 +3,15 @@ use agentfs_sdk::FileSystem;
 use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
 #[cfg(unix)]
 use anyhow::Context;
+#[cfg(target_os = "windows")]
+use anyhow::Context;
 use anyhow::Result;
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 #[cfg(unix)]
 use agentfs_sdk::{HostFS, OverlayFS};
+#[cfg(target_os = "windows")]
+use std::path::Path;
 #[cfg(unix)]
 use std::{path::Path, process::Command};
 #[cfg(any(unix, target_os = "windows"))]
@@ -630,6 +634,7 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
+    hydrate_windows_overlay_base(&agentfs).await?;
 
     let fs: Arc<tokio::sync::Mutex<dyn agentfs_sdk::FileSystem + Send>> =
         Arc::new(tokio::sync::Mutex::new(agentfs.fs));
@@ -661,6 +666,156 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
 
     // MountHandle will be dropped automatically and unmount
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn hydrate_windows_overlay_base(agentfs: &agentfs_sdk::AgentFS) -> Result<()> {
+    let Some(base_path) = agentfs.is_overlay_enabled().await? else {
+        return Ok(());
+    };
+
+    let whiteouts = agentfs.get_whiteouts().await?;
+    let base_root = PathBuf::from(&base_path);
+    if !base_root.exists() {
+        anyhow::bail!(
+            "Overlay base directory does not exist: {}",
+            base_root.display()
+        );
+    }
+
+    eprintln!(
+        "Hydrating overlay base into WinFsp delta view from: {}",
+        base_root.display()
+    );
+
+    let mut pending_dirs = vec![base_root.clone()];
+    while let Some(dir) = pending_dirs.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("Failed to read base directory {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("Failed to enumerate {}", dir.display()))?;
+            let host_path = entry.path();
+            let rel = host_path.strip_prefix(&base_root).with_context(|| {
+                format!(
+                    "Failed to compute base-relative path for {} under {}",
+                    host_path.display(),
+                    base_root.display()
+                )
+            })?;
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+
+            let rel_slash = rel.to_string_lossy().replace('\\', "/");
+            let fs_path = format!("/{}", rel_slash);
+            if path_is_whiteouted(&fs_path, &whiteouts) {
+                continue;
+            }
+
+            let metadata = std::fs::symlink_metadata(&host_path)
+                .with_context(|| format!("Failed to stat {}", host_path.display()))?;
+            let file_type = metadata.file_type();
+
+            if file_type.is_dir() {
+                ensure_agentfs_parent_dirs(agentfs, &fs_path).await?;
+                match agentfs.fs.stat(&fs_path).await? {
+                    Some(stats) if !stats.is_directory() => {
+                        anyhow::bail!(
+                            "Cannot hydrate directory {} because a non-directory already exists in delta",
+                            fs_path
+                        );
+                    }
+                    None => {
+                        agentfs.fs.mkdir(&fs_path, 0, 0).await?;
+                    }
+                    _ => {}
+                }
+                pending_dirs.push(host_path);
+                continue;
+            }
+
+            ensure_agentfs_parent_dirs(agentfs, &fs_path).await?;
+            if let Some(existing) = agentfs.fs.stat(&fs_path).await? {
+                if file_type.is_file() && existing.is_file() {
+                    continue;
+                }
+                if file_type.is_symlink() && existing.is_symlink() {
+                    continue;
+                }
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                let target = std::fs::read_link(&host_path)
+                    .with_context(|| format!("Failed to read symlink {}", host_path.display()))?;
+                let target = target.to_string_lossy().replace('\\', "/");
+                agentfs.fs.symlink(&target, &fs_path, 0, 0).await?;
+                continue;
+            }
+
+            if file_type.is_file() {
+                let bytes = std::fs::read(&host_path)
+                    .with_context(|| format!("Failed to read file {}", host_path.display()))?;
+                let mode = if metadata.permissions().readonly() {
+                    0o444
+                } else {
+                    0o644
+                };
+                let (_, file) = agentfs.fs.create_file(&fs_path, mode, 0, 0).await?;
+                if !bytes.is_empty() {
+                    file.pwrite(0, &bytes).await?;
+                }
+                file.fsync().await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn ensure_agentfs_parent_dirs(agentfs: &agentfs_sdk::AgentFS, fs_path: &str) -> Result<()> {
+    let path = Path::new(fs_path);
+    let mut current = PathBuf::new();
+    let mut components = path.components().peekable();
+
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            break;
+        }
+        current.push(component.as_os_str());
+        let dir_path = current.to_string_lossy().replace('\\', "/");
+        if dir_path.is_empty() || dir_path == "/" {
+            continue;
+        }
+        match agentfs.fs.stat(&dir_path).await? {
+            Some(stats) if !stats.is_directory() => {
+                anyhow::bail!("Parent path exists but is not a directory: {}", dir_path);
+            }
+            None => {
+                agentfs.fs.mkdir(&dir_path, 0, 0).await?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn path_is_whiteouted(path: &str, whiteouts: &HashSet<String>) -> bool {
+    let mut current = path.trim_end_matches('/');
+    loop {
+        if whiteouts.contains(current) {
+            return true;
+        }
+        if current.is_empty() || current == "/" {
+            return false;
+        }
+        current = current
+            .rsplit_once('/')
+            .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+            .unwrap_or("/");
+    }
 }
 
 /// Mount the agent filesystem using FUSE (Linux only).
@@ -1356,6 +1511,116 @@ pub fn list_mounts<W: std::io::Write>(out: &mut W) {
 #[cfg(target_os = "windows")]
 pub fn prune_mounts(_force: bool) -> Result<()> {
     anyhow::bail!("Mount pruning is only available on Linux")
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_overlay_tests {
+    use super::hydrate_windows_overlay_base;
+    use agentfs_sdk::{agentfs_dir, AgentFS, AgentFSOptions};
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("create destination dir");
+        for entry in fs::read_dir(src).expect("read source dir") {
+            let entry = entry.expect("dir entry");
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir_recursive(&src_path, &dst_path);
+            } else {
+                fs::copy(&src_path, &dst_path).expect("copy file");
+            }
+        }
+    }
+
+    fn cleanup_agent(id: &str) {
+        for suffix in [".db", ".db-shm", ".db-wal"] {
+            let _ = fs::remove_file(agentfs_dir().join(format!("{id}{suffix}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn winfsp_overlay_hydration_materializes_base_tree_without_overwriting_delta() {
+        let fixture_root = TempDir::new().expect("fixture tempdir");
+        let app_dir = fixture_root.path().join("aiim");
+        let source_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
+        copy_dir_recursive(&source_fixture, &app_dir);
+
+        let id = format!("winfsp-hydrate-{}", uuid::Uuid::new_v4().simple());
+        let agent = AgentFS::open(AgentFSOptions::with_id(&id).with_base(fixture_root.path()))
+            .await
+            .expect("open overlay agent");
+
+        agent.fs.mkdir("/aiim", 0, 0).await.expect("seed app dir");
+        agent
+            .fs
+            .mkdir("/aiim/_meta", 0, 0)
+            .await
+            .expect("seed meta dir");
+        let (_, file) = agent
+            .fs
+            .create_file("/aiim/custom.txt", 0o644, 0, 0)
+            .await
+            .expect("seed delta file");
+        file.pwrite(0, b"delta-only")
+            .await
+            .expect("write delta file");
+        file.fsync().await.expect("fsync delta file");
+
+        let (_, manifest_override) = agent
+            .fs
+            .create_file("/aiim/_meta/manifest.res.json", 0o644, 0, 0)
+            .await
+            .expect("create override manifest");
+        manifest_override
+            .pwrite(0, b"{\"override\":true}\n")
+            .await
+            .expect("write override manifest");
+        manifest_override
+            .fsync()
+            .await
+            .expect("fsync override manifest");
+
+        hydrate_windows_overlay_base(&agent)
+            .await
+            .expect("hydrate overlay base");
+
+        assert!(
+            agent
+                .fs
+                .stat("/aiim/chats/chat-001/messages.res.jsonl")
+                .await
+                .expect("stat hydrated snapshot")
+                .is_some(),
+            "base snapshot should be materialized into delta"
+        );
+        let manifest = agent
+            .fs
+            .read_file("/aiim/_meta/manifest.res.json")
+            .await
+            .expect("read manifest")
+            .expect("manifest bytes");
+        assert_eq!(
+            std::str::from_utf8(&manifest).expect("manifest utf8"),
+            "{\"override\":true}\n",
+            "existing delta file should not be overwritten by hydration"
+        );
+        let delta_only = agent
+            .fs
+            .read_file("/aiim/custom.txt")
+            .await
+            .expect("read delta file")
+            .expect("delta file bytes");
+        assert_eq!(
+            std::str::from_utf8(&delta_only).expect("delta utf8"),
+            "delta-only"
+        );
+
+        drop(agent);
+        cleanup_agent(&id);
+    }
 }
 
 /// Print schema version mismatch error and exit.
