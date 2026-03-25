@@ -25,6 +25,13 @@ struct AppStructureSyncStateDoc {
     owned_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StructureSyncOutcome {
+    pub(super) changed: bool,
+    pub(super) revision: Option<String>,
+    pub(super) active_scope: Option<String>,
+}
+
 pub(super) fn ensure_app_structure_initialized(
     root: &Path,
     app_id: &str,
@@ -57,6 +64,23 @@ pub(super) fn ensure_app_structure_initialized(
     );
     service.sync_initial(&mut *connector)?;
     Ok(())
+}
+
+pub(super) fn refresh_app_structure(
+    root: &Path,
+    app_id: &str,
+    session_id: &str,
+    connector: &mut dyn AppConnectorV3,
+    reason: AppStructureSyncReasonV3,
+    target_scope: Option<String>,
+    trigger_action_path: Option<String>,
+) -> Result<StructureSyncOutcome> {
+    let mut service = AppTreeSyncService::new(
+        root.to_path_buf(),
+        app_id.to_string(),
+        session_id.to_string(),
+    );
+    service.refresh(connector, reason, target_scope, trigger_action_path)
 }
 
 struct AppTreeSyncService {
@@ -103,7 +127,7 @@ impl AppTreeSyncService {
         reason: AppStructureSyncReasonV3,
         target_scope: Option<String>,
         trigger_action_path: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<StructureSyncOutcome> {
         let state = self.load_state()?;
         let ctx = self.context("structure-refresh");
         let response = connector.refresh_app_structure(
@@ -118,10 +142,26 @@ impl AppTreeSyncService {
         )?;
 
         match response.result {
-            AppStructureSyncResultV3::Unchanged { .. } => {}
-            AppStructureSyncResultV3::Snapshot { snapshot } => self.apply_snapshot(snapshot)?,
+            AppStructureSyncResultV3::Unchanged {
+                revision,
+                active_scope,
+                ..
+            } => Ok(StructureSyncOutcome {
+                changed: false,
+                revision: Some(revision),
+                active_scope,
+            }),
+            AppStructureSyncResultV3::Snapshot { snapshot } => {
+                let revision = snapshot.revision.clone();
+                let active_scope = snapshot.active_scope.clone();
+                self.apply_snapshot(snapshot)?;
+                Ok(StructureSyncOutcome {
+                    changed: true,
+                    revision: Some(revision),
+                    active_scope,
+                })
+            }
         }
-        Ok(())
     }
 
     fn apply_snapshot(&mut self, snapshot: AppStructureSnapshotV3) -> Result<()> {

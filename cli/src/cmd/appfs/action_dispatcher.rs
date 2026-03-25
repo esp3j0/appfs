@@ -27,10 +27,22 @@ pub(super) struct SnapshotRefreshRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct EnterScopeRequest {
+    pub(super) target_scope: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StructureRefreshRequest {
+    pub(super) target_scope: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) enum DispatchRoute {
     PagingFetchNext(PagingRequest),
     PagingClose(PagingRequest),
     SnapshotRefresh(SnapshotRefreshRequest),
+    EnterScope(EnterScopeRequest),
+    StructureRefresh(StructureRefreshRequest),
     BusinessSubmit,
 }
 
@@ -39,6 +51,8 @@ pub(super) enum DispatchRouteParseError {
     PagingFetchNext,
     PagingClose,
     SnapshotRefresh,
+    EnterScope,
+    StructureRefresh,
 }
 
 pub(super) fn normalize_actionline_v2_payload(
@@ -69,6 +83,16 @@ pub(super) fn route_action(
         return parse_snapshot_refresh_request(payload)
             .map(DispatchRoute::SnapshotRefresh)
             .map_err(|_| DispatchRouteParseError::SnapshotRefresh);
+    }
+    if normalized_path == "/_app/enter_scope.act" {
+        return parse_enter_scope_request(payload)
+            .map(DispatchRoute::EnterScope)
+            .map_err(|_| DispatchRouteParseError::EnterScope);
+    }
+    if normalized_path == "/_app/refresh_structure.act" {
+        return parse_structure_refresh_request(payload)
+            .map(DispatchRoute::StructureRefresh)
+            .map_err(|_| DispatchRouteParseError::StructureRefresh);
     }
 
     Ok(DispatchRoute::BusinessSubmit)
@@ -193,4 +217,32 @@ pub(super) fn parse_snapshot_refresh_request(
     Ok(SnapshotRefreshRequest {
         resource_path: resource_path.trim().to_string(),
     })
+}
+
+pub(super) fn parse_enter_scope_request(
+    payload: &str,
+) -> std::result::Result<EnterScopeRequest, &'static str> {
+    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
+    let target_scope = json
+        .get("target_scope")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(ERR_INVALID_ARGUMENT)?;
+    Ok(EnterScopeRequest {
+        target_scope: target_scope.to_string(),
+    })
+}
+
+pub(super) fn parse_structure_refresh_request(
+    payload: &str,
+) -> std::result::Result<StructureRefreshRequest, &'static str> {
+    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
+    let target_scope = json
+        .get("target_scope")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    Ok(StructureRefreshRequest { target_scope })
 }

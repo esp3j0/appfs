@@ -294,6 +294,14 @@ impl DemoAppConnectorV2 {
                 scope: None,
             },
             AppStructureNodeV3 {
+                path: "_app".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
                 path: "_paging/fetch_next.act".to_string(),
                 kind: AppStructureNodeKindV3::ActionFile,
                 manifest_entry: Some(Self::action_manifest("_paging/fetch_next.act", "inline")),
@@ -305,6 +313,25 @@ impl DemoAppConnectorV2 {
                 path: "_paging/close.act".to_string(),
                 kind: AppStructureNodeKindV3::ActionFile,
                 manifest_entry: Some(Self::action_manifest("_paging/close.act", "inline")),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "_app/enter_scope.act".to_string(),
+                kind: AppStructureNodeKindV3::ActionFile,
+                manifest_entry: Some(Self::action_manifest("_app/enter_scope.act", "inline")),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "_app/refresh_structure.act".to_string(),
+                kind: AppStructureNodeKindV3::ActionFile,
+                manifest_entry: Some(Self::action_manifest(
+                    "_app/refresh_structure.act",
+                    "inline",
+                )),
                 seed_content: None,
                 mutable: true,
                 scope: None,
@@ -400,6 +427,7 @@ impl DemoAppConnectorV2 {
                 "feed".to_string(),
                 "chats".to_string(),
                 "_paging".to_string(),
+                "_app".to_string(),
             ],
             nodes: Self::base_structure_nodes(Some(&active_scope)),
         })

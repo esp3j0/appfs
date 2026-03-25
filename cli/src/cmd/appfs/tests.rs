@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use super::action_dispatcher::{
-    parse_action_line_v2, parse_paging_request, parse_snapshot_refresh_request,
+    parse_action_line_v2, parse_enter_scope_request, parse_paging_request,
+    parse_snapshot_refresh_request, parse_structure_refresh_request,
     validate_submit_payload as validate_payload,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
@@ -263,6 +264,23 @@ fn parse_snapshot_refresh_requires_resource_path() {
     )
     .is_ok());
     assert!(parse_snapshot_refresh_request(r#"{"path":"bad"}"#).is_err());
+}
+
+#[test]
+fn parse_enter_scope_requires_target_scope() {
+    let req = parse_enter_scope_request(r#"{"target_scope":"chat-long"}"#).expect("expected scope");
+    assert_eq!(req.target_scope, "chat-long");
+    assert!(parse_enter_scope_request(r#"{}"#).is_err());
+}
+
+#[test]
+fn parse_structure_refresh_allows_optional_target_scope() {
+    let req = parse_structure_refresh_request(r#"{}"#).expect("expected default refresh");
+    assert_eq!(req.target_scope, None);
+
+    let req = parse_structure_refresh_request(r#"{"target_scope":"chat-long"}"#)
+        .expect("expected refresh with target scope");
+    assert_eq!(req.target_scope.as_deref(), Some("chat-long"));
 }
 
 #[test]

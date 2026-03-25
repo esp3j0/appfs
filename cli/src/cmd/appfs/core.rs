@@ -1,7 +1,7 @@
 use agentfs_sdk::{
     connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnectorV2, AppConnectorV3,
-    AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
-    DemoAppConnectorV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
+    AppStructureSyncReasonV3, AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2,
+    ConnectorTransportV2, DemoAppConnectorV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
     FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2,
     SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
 };
@@ -26,7 +26,7 @@ use super::shared::{
     is_transient_action_sink_busy, parse_snapshot_on_timeout_policy, template_specificity,
     MultilineRecoveryOutcome,
 };
-use super::tree_sync::ensure_app_structure_initialized;
+use super::tree_sync::{ensure_app_structure_initialized, refresh_app_structure};
 use super::{
     ActionCursorDoc, ActionCursorState, ActionSpec, AppfsAdapter, AppfsBridgeConfig, CursorState,
     ExecutionMode, InputMode, ManifestContract, ManifestDoc, ProcessOutcome, SnapshotSpec,
@@ -341,6 +341,7 @@ impl AppfsAdapter {
             }
         }
         let business_connector = build_business_connector(&app_id, &bridge_config)?;
+        let structure_connector = build_structure_connector(&app_id, &bridge_config)?;
         let connector_info = business_connector
             .connector_id()
             .map_err(|err| anyhow::anyhow!("connector_id failed: {}: {}", err.code, err.message))?;
@@ -377,6 +378,7 @@ impl AppfsAdapter {
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
             business_connector,
+            structure_connector,
         };
         adapter.initialize_snapshot_states();
         adapter.recover_snapshot_expand_journal()?;
@@ -694,6 +696,22 @@ impl AppfsAdapter {
                     client_token,
                 );
             }
+            Ok(action_dispatcher::DispatchRoute::EnterScope(request)) => {
+                return self.handle_enter_scope(
+                    &normalized_path,
+                    &request_id,
+                    &request.target_scope,
+                    client_token,
+                );
+            }
+            Ok(action_dispatcher::DispatchRoute::StructureRefresh(request)) => {
+                return self.handle_refresh_structure(
+                    &normalized_path,
+                    &request_id,
+                    request.target_scope.as_deref(),
+                    client_token,
+                );
+            }
             Ok(action_dispatcher::DispatchRoute::BusinessSubmit) => {}
             Err(action_dispatcher::DispatchRouteParseError::PagingFetchNext) => {
                 eprintln!(
@@ -712,6 +730,20 @@ impl AppfsAdapter {
             Err(action_dispatcher::DispatchRouteParseError::SnapshotRefresh) => {
                 eprintln!(
                     "AppFS adapter rejected malformed snapshot refresh payload at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
+            Err(action_dispatcher::DispatchRouteParseError::EnterScope) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed enter_scope payload at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
+            Err(action_dispatcher::DispatchRouteParseError::StructureRefresh) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed structure refresh payload at submit-time: {}",
                     normalized_path
                 );
                 return Ok(ProcessOutcome::Consumed);
@@ -1196,6 +1228,153 @@ impl AppfsAdapter {
         Ok(out)
     }
 
+    pub(super) fn reload_manifest_contract(&mut self) -> Result<()> {
+        let manifest_path = self.app_dir.join("_meta").join("manifest.res.json");
+        let manifest_contract = Self::load_manifest_contract(&manifest_path)?;
+        if manifest_contract.requires_paging_controls {
+            let fetch_path = self.app_dir.join("_paging").join("fetch_next.act");
+            let close_path = self.app_dir.join("_paging").join("close.act");
+            if !fetch_path.exists() || !close_path.exists() {
+                anyhow::bail!(
+                    "live pageable resources require paging control files to exist: {} and {}",
+                    fetch_path.display(),
+                    close_path.display()
+                );
+            }
+        }
+
+        self.action_specs = manifest_contract.action_specs;
+        self.snapshot_specs = manifest_contract.snapshot_specs;
+        self.snapshot_states.clear();
+        self.initialize_snapshot_states();
+        self.prepare_action_sinks()?;
+        Ok(())
+    }
+
+    pub(super) fn handle_enter_scope(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        target_scope: &str,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let Some(connector) = self.structure_connector.as_deref_mut() else {
+            self.emit_failed_with_retryable(
+                action_path,
+                request_id,
+                connector_error_codes_v2::NOT_SUPPORTED,
+                "structure sync is not supported for the configured connector transport",
+                false,
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        };
+
+        let root = self
+            .app_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("app directory has no parent root"))?;
+        match refresh_app_structure(
+            root,
+            &self.app_id,
+            &self.session_id,
+            connector,
+            AppStructureSyncReasonV3::EnterScope,
+            Some(target_scope.to_string()),
+            Some(action_path.to_string()),
+        ) {
+            Ok(outcome) => {
+                self.reload_manifest_contract()?;
+                self.emit_event(
+                    action_path,
+                    request_id,
+                    "action.completed",
+                    Some(serde_json::json!({
+                        "refreshed": outcome.changed,
+                        "active_scope": outcome.active_scope,
+                        "revision": outcome.revision,
+                    })),
+                    None,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(err) => {
+                self.emit_failed_with_retryable(
+                    action_path,
+                    request_id,
+                    "STRUCTURE_SYNC_FAILED",
+                    &format!("structure enter_scope failed: {err}"),
+                    true,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+        }
+    }
+
+    pub(super) fn handle_refresh_structure(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        target_scope: Option<&str>,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let Some(connector) = self.structure_connector.as_deref_mut() else {
+            self.emit_failed_with_retryable(
+                action_path,
+                request_id,
+                connector_error_codes_v2::NOT_SUPPORTED,
+                "structure sync is not supported for the configured connector transport",
+                false,
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        };
+
+        let root = self
+            .app_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("app directory has no parent root"))?;
+        match refresh_app_structure(
+            root,
+            &self.app_id,
+            &self.session_id,
+            connector,
+            AppStructureSyncReasonV3::Refresh,
+            target_scope.map(ToOwned::to_owned),
+            Some(action_path.to_string()),
+        ) {
+            Ok(outcome) => {
+                self.reload_manifest_contract()?;
+                self.emit_event(
+                    action_path,
+                    request_id,
+                    "action.completed",
+                    Some(serde_json::json!({
+                        "refreshed": outcome.changed,
+                        "active_scope": outcome.active_scope,
+                        "revision": outcome.revision,
+                    })),
+                    None,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(err) => {
+                self.emit_failed_with_retryable(
+                    action_path,
+                    request_id,
+                    "STRUCTURE_SYNC_FAILED",
+                    &format!("structure refresh failed: {err}"),
+                    true,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+        }
+    }
+
     fn new_request_id() -> String {
         let uuid = Uuid::new_v4().simple().to_string();
         format!("req-{}", &uuid[..8])
@@ -1394,6 +1573,19 @@ mod tests {
         (temp, adapter)
     }
 
+    fn structured_adapter() -> (TempDir, AppfsAdapter) {
+        let temp = TempDir::new().expect("tempdir");
+        let adapter = AppfsAdapter::new(
+            temp.path().to_path_buf(),
+            "aiim".to_string(),
+            "sess-test".to_string(),
+            bridge_config(),
+        )
+        .expect("structured adapter");
+
+        (temp, adapter)
+    }
+
     fn append_text(path: &Path, text: &str) {
         let mut file = OpenOptions::new()
             .create(true)
@@ -1411,6 +1603,101 @@ mod tests {
             .filter(|line| line.contains(token))
             .map(|line| serde_json::from_str(line).expect("event json"))
             .collect()
+    }
+
+    #[test]
+    fn structured_bootstrap_exposes_app_control_actions() {
+        let (_temp, adapter) = structured_adapter();
+
+        assert!(adapter.app_dir.join("_app/enter_scope.act").exists());
+        assert!(adapter.app_dir.join("_app/refresh_structure.act").exists());
+        assert!(adapter
+            .action_specs
+            .iter()
+            .any(|spec| spec.template == "_app/enter_scope.act"));
+        assert!(adapter
+            .action_specs
+            .iter()
+            .any(|spec| spec.template == "_app/refresh_structure.act"));
+        assert!(adapter
+            .snapshot_specs
+            .iter()
+            .any(|spec| spec.template == "chats/chat-001/messages.res.jsonl"));
+    }
+
+    #[test]
+    fn enter_scope_action_refreshes_structure_and_reloads_manifest() {
+        let (_temp, mut adapter) = structured_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/enter_scope.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        append_text(
+            &action_path,
+            "{\"target_scope\":\"chat-long\",\"client_token\":\"scope-001\"}\n",
+        );
+        adapter.poll_once().expect("poll enter scope");
+
+        assert!(adapter.app_dir.join("chats/chat-long").exists());
+        assert!(!adapter.app_dir.join("chats/chat-001").exists());
+        assert!(adapter
+            .snapshot_specs
+            .iter()
+            .any(|spec| spec.template == "chats/chat-long/messages.res.jsonl"));
+        assert!(!adapter
+            .snapshot_specs
+            .iter()
+            .any(|spec| spec.template == "chats/chat-001/messages.res.jsonl"));
+
+        let events = token_events(&events_path, "scope-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+        let content = events[0]
+            .get("content")
+            .expect("enter_scope completion content");
+        assert_eq!(
+            content.get("active_scope").and_then(|value| value.as_str()),
+            Some("chat-long")
+        );
+        assert_eq!(
+            content.get("refreshed").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn refresh_structure_action_reports_unchanged_revision_when_scope_is_same() {
+        let (_temp, mut adapter) = structured_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/refresh_structure.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        append_text(&action_path, "{\"client_token\":\"refresh-001\"}\n");
+        adapter.poll_once().expect("poll refresh structure");
+
+        let events = token_events(&events_path, "refresh-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+        let content = events[0]
+            .get("content")
+            .expect("refresh completion content");
+        assert_eq!(
+            content.get("active_scope").and_then(|value| value.as_str()),
+            Some("chat-001")
+        );
+        assert_eq!(
+            content.get("refreshed").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert!(adapter.app_dir.join("chats/chat-001").exists());
     }
 
     #[test]

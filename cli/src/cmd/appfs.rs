@@ -1,4 +1,4 @@
-use agentfs_sdk::AppConnectorV2;
+use agentfs_sdk::{AppConnectorV2, AppConnectorV3};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -368,4 +368,5 @@ struct AppfsAdapter {
     streaming_jobs: Vec<StreamingJob>,
     actionline_v2_strict: bool,
     business_connector: Box<dyn AppConnectorV2>,
+    structure_connector: Option<Box<dyn AppConnectorV3>>,
 }
