@@ -307,9 +307,12 @@ impl AppTreeSyncService {
                 write_json_file(&full, &content)?;
             }
             AppStructureNodeKindV3::SnapshotResource => {
-                // Do not materialize snapshot bodies here.
-                // Snapshot data remains owned by snapshot read-through and refresh paths.
                 ensure_parent_dir(&full)?;
+                if !full.exists() {
+                    fs::write(&full, b"").with_context(|| {
+                        format!("Failed to create snapshot placeholder {}", full.display())
+                    })?;
+                }
             }
         }
         Ok(())
@@ -336,9 +339,11 @@ impl AppTreeSyncService {
                 continue;
             }
             if full.is_dir() {
-                let _ = fs::remove_dir_all(&full);
+                fs::remove_dir_all(&full)
+                    .with_context(|| format!("Failed to remove directory {}", full.display()))?;
             } else {
-                let _ = fs::remove_file(&full);
+                fs::remove_file(&full)
+                    .with_context(|| format!("Failed to remove file {}", full.display()))?;
             }
         }
         Ok(())
@@ -542,6 +547,10 @@ mod tests {
             .path()
             .join("aiim/contacts/zhangsan/send_message.act")
             .exists());
+        assert!(temp
+            .path()
+            .join("aiim/chats/chat-001/messages.res.jsonl")
+            .exists());
     }
 
     #[test]
@@ -571,6 +580,14 @@ mod tests {
 
         assert!(!temp.path().join("aiim/chats/chat-001").exists());
         assert!(temp.path().join("aiim/chats/chat-long").exists());
+        assert!(!temp
+            .path()
+            .join("aiim/chats/chat-001/messages.res.jsonl")
+            .exists());
+        assert!(temp
+            .path()
+            .join("aiim/chats/chat-long/messages.res.jsonl")
+            .exists());
         assert!(temp.path().join("aiim/_stream/custom-runtime.log").exists());
     }
 
@@ -602,6 +619,10 @@ mod tests {
             .to_string()
             .contains("unknown structure scope: missing-scope"));
         assert!(temp.path().join("aiim/chats/chat-001").exists());
+        assert!(temp
+            .path()
+            .join("aiim/chats/chat-001/messages.res.jsonl")
+            .exists());
         assert!(!temp.path().join("aiim/chats/chat-long").exists());
         assert!(temp.path().join("aiim/_stream/custom-runtime.log").exists());
     }
