@@ -53,7 +53,8 @@ const ALLOWED_SEGMENT_CHARS: &str =
 #[derive(Debug, Clone)]
 pub struct AppfsServeArgs {
     pub root: PathBuf,
-    pub app_id: String,
+    pub app_id: Option<String>,
+    pub app_ids: Vec<String>,
     pub session_id: Option<String>,
     pub poll_ms: u64,
     pub adapter_http_endpoint: Option<String>,
@@ -101,6 +102,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let AppfsServeArgs {
         root,
         app_id,
+        app_ids,
         session_id,
         poll_ms,
         adapter_http_endpoint,
@@ -114,7 +116,23 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_circuit_breaker_cooldown_ms,
     } = args;
 
-    let session_id = normalize_appfs_session_id(session_id);
+    let runtime_args = build_runtime_cli_args(
+        app_id,
+        app_ids,
+        session_id,
+        AppfsBridgeCliArgs {
+            adapter_http_endpoint: adapter_http_endpoint.clone(),
+            adapter_http_timeout_ms,
+            adapter_grpc_endpoint: adapter_grpc_endpoint.clone(),
+            adapter_grpc_timeout_ms,
+            adapter_bridge_max_retries,
+            adapter_bridge_initial_backoff_ms,
+            adapter_bridge_max_backoff_ms,
+            adapter_bridge_circuit_breaker_failures,
+            adapter_bridge_circuit_breaker_cooldown_ms,
+        },
+        Some("aiim"),
+    )?;
     let bridge_config = build_appfs_bridge_config(AppfsBridgeCliArgs {
         adapter_http_endpoint,
         adapter_http_timeout_ms,
@@ -127,14 +145,9 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_circuit_breaker_cooldown_ms,
     });
 
-    let mut adapter = AppfsAdapter::new(root, app_id, session_id, bridge_config)?;
-    adapter.prepare_action_sinks()?;
-
-    eprintln!(
-        "AppFS adapter started for {} (session={})",
-        adapter.app_dir.display(),
-        adapter.session_id
-    );
+    let mut supervisor = AppfsRuntimeSupervisor::new(root, runtime_args, bridge_config)?;
+    supervisor.prepare_action_sinks()?;
+    supervisor.log_started();
     eprintln!("Press Ctrl+C to stop.");
 
     let mut interval = tokio::time::interval(Duration::from_millis(poll_ms.max(MIN_POLL_MS)));
@@ -145,12 +158,75 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
                 return Ok(());
             }
             _ = interval.tick() => {
-                if let Err(err) = adapter.poll_once() {
+                if let Err(err) = supervisor.poll_once() {
                     eprintln!("AppFS adapter poll error: {err:#}");
                 }
             }
         }
     }
+}
+
+pub(crate) fn normalize_appfs_app_ids(
+    primary_app_id: Option<String>,
+    extra_app_ids: Vec<String>,
+    default_app_id: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut seen = HashMap::new();
+    let mut ordered = Vec::new();
+
+    fn push_unique_app_id(
+        seen: &mut HashMap<String, ()>,
+        ordered: &mut Vec<String>,
+        raw: String,
+    ) -> Result<()> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("app id cannot be empty");
+        }
+        if seen.insert(trimmed.to_string(), ()).is_none() {
+            ordered.push(trimmed.to_string());
+        }
+        Ok(())
+    }
+
+    if let Some(primary) = primary_app_id {
+        push_unique_app_id(&mut seen, &mut ordered, primary)?;
+    }
+    for app_id in extra_app_ids {
+        push_unique_app_id(&mut seen, &mut ordered, app_id)?;
+    }
+
+    if ordered.is_empty() {
+        if let Some(default_app_id) = default_app_id {
+            push_unique_app_id(&mut seen, &mut ordered, default_app_id.to_string())?;
+        }
+    }
+
+    Ok(ordered)
+}
+
+pub(crate) fn build_runtime_cli_args(
+    primary_app_id: Option<String>,
+    extra_app_ids: Vec<String>,
+    session_id: Option<String>,
+    bridge: AppfsBridgeCliArgs,
+    default_app_id: Option<&str>,
+) -> Result<Vec<AppfsRuntimeCliArgs>> {
+    let app_ids = normalize_appfs_app_ids(primary_app_id, extra_app_ids, default_app_id)?;
+    if app_ids.len() > 1 && session_id.is_some() {
+        anyhow::bail!(
+            "multi-app AppFS runtime does not accept a single shared --session-id; omit it and runtime will generate isolated per-app sessions"
+        );
+    }
+
+    Ok(app_ids
+        .into_iter()
+        .map(|app_id| AppfsRuntimeCliArgs {
+            app_id,
+            session_id: session_id.clone(),
+            bridge: bridge.clone(),
+        })
+        .collect())
 }
 
 pub(crate) fn normalize_appfs_session_id(session_id: Option<String>) -> String {
@@ -174,6 +250,55 @@ pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridge
         adapter_grpc_endpoint: args.adapter_grpc_endpoint,
         adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
         runtime_options: bridge_runtime_options,
+    }
+}
+
+struct AppfsRuntimeSupervisor {
+    adapters: Vec<AppfsAdapter>,
+}
+
+impl AppfsRuntimeSupervisor {
+    fn new(
+        root: PathBuf,
+        runtime_args: Vec<AppfsRuntimeCliArgs>,
+        bridge_config: AppfsBridgeConfig,
+    ) -> Result<Self> {
+        let mut adapters = Vec::with_capacity(runtime_args.len());
+        for runtime in runtime_args {
+            let session_id = normalize_appfs_session_id(runtime.session_id.clone());
+            adapters.push(AppfsAdapter::new(
+                root.clone(),
+                runtime.app_id,
+                session_id,
+                bridge_config.clone(),
+            )?);
+        }
+        Ok(Self { adapters })
+    }
+
+    fn prepare_action_sinks(&mut self) -> Result<()> {
+        for adapter in &mut self.adapters {
+            adapter.prepare_action_sinks()?;
+        }
+        Ok(())
+    }
+
+    fn poll_once(&mut self) -> Result<()> {
+        for adapter in &mut self.adapters {
+            adapter.poll_once()?;
+        }
+        Ok(())
+    }
+
+    fn log_started(&self) {
+        for adapter in &self.adapters {
+            eprintln!(
+                "AppFS adapter started for {} (app_id={} session={})",
+                adapter.app_dir.display(),
+                adapter.app_id,
+                adapter.session_id
+            );
+        }
     }
 }
 
@@ -369,4 +494,126 @@ struct AppfsAdapter {
     actionline_v2_strict: bool,
     business_connector: Box<dyn AppConnectorV2>,
     structure_connector: Option<Box<dyn AppConnectorV3>>,
+}
+
+#[cfg(test)]
+mod supervisor_tests {
+    use super::{
+        build_appfs_bridge_config, build_runtime_cli_args, normalize_appfs_app_ids,
+        AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
+    };
+    use serde_json::Value as JsonValue;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn bridge_args() -> AppfsBridgeCliArgs {
+        AppfsBridgeCliArgs {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1_000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        }
+    }
+
+    fn append_text(path: &std::path::Path, text: &str) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open append");
+        file.write_all(text.as_bytes()).expect("append text");
+        file.flush().expect("flush append");
+    }
+
+    fn token_events(events_path: &std::path::Path, token: &str) -> Vec<JsonValue> {
+        let content = fs::read_to_string(events_path).expect("read events");
+        content
+            .lines()
+            .filter(|line| line.contains(token))
+            .map(|line| serde_json::from_str(line).expect("event json"))
+            .collect()
+    }
+
+    #[test]
+    fn normalize_app_ids_defaults_and_deduplicates() {
+        let app_ids = normalize_appfs_app_ids(
+            Some("aiim".to_string()),
+            vec![" notion ".into(), "aiim".into()],
+            Some("default"),
+        )
+        .expect("normalize app ids");
+        assert_eq!(app_ids, vec!["aiim".to_string(), "notion".to_string()]);
+
+        let defaulted =
+            normalize_appfs_app_ids(None, Vec::new(), Some("aiim")).expect("default app id");
+        assert_eq!(defaulted, vec!["aiim".to_string()]);
+    }
+
+    #[test]
+    fn multi_app_runtime_rejects_single_shared_session_id() {
+        let err = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            vec!["notion".to_string()],
+            Some("sess-shared".to_string()),
+            bridge_args(),
+            None,
+        )
+        .expect_err("multi-app shared session must be rejected");
+        assert!(err.to_string().contains("single shared --session-id"));
+    }
+
+    #[test]
+    fn supervisor_isolates_structure_refresh_per_app() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime_args = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            vec!["notion".to_string()],
+            None,
+            bridge_args(),
+            None,
+        )
+        .expect("build runtime args");
+        let mut supervisor = AppfsRuntimeSupervisor::new(
+            temp.path().to_path_buf(),
+            runtime_args,
+            build_appfs_bridge_config(bridge_args()),
+        )
+        .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        let aiim_action = temp.path().join("aiim/_app/enter_scope.act");
+        append_text(
+            &aiim_action,
+            "{\"target_scope\":\"chat-long\",\"client_token\":\"multi-001\"}\n",
+        );
+
+        supervisor.poll_once().expect("poll once");
+
+        assert!(temp.path().join("aiim/chats/chat-long").exists());
+        assert!(!temp.path().join("aiim/chats/chat-001").exists());
+        assert!(temp.path().join("notion/chats/chat-001").exists());
+        assert!(!temp.path().join("notion/chats/chat-long").exists());
+
+        let aiim_events = token_events(
+            &temp.path().join("aiim/_stream/events.evt.jsonl"),
+            "multi-001",
+        );
+        assert_eq!(aiim_events.len(), 1);
+        assert_eq!(
+            aiim_events[0].get("type").and_then(|value| value.as_str()),
+            Some("action.completed")
+        );
+
+        let notion_events = token_events(
+            &temp.path().join("notion/_stream/events.evt.jsonl"),
+            "multi-001",
+        );
+        assert!(notion_events.is_empty());
+    }
 }

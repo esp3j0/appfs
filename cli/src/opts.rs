@@ -263,6 +263,10 @@ pub enum Command {
         #[arg(long)]
         appfs_app_id: Option<String>,
 
+        /// Additional AppFS app IDs to expose through mount-side read-through (repeatable)
+        #[arg(long = "appfs-app")]
+        appfs_app_ids: Vec<String>,
+
         /// Session ID used for mount-side AppFS connector calls
         #[arg(long)]
         appfs_session: Option<String>,
@@ -483,8 +487,12 @@ pub enum ServeCommand {
         root: PathBuf,
 
         /// App ID under the root
-        #[arg(long, default_value = "aiim")]
-        app_id: String,
+        #[arg(long)]
+        app_id: Option<String>,
+
+        /// Additional App IDs under the same root (repeatable)
+        #[arg(long = "app")]
+        app_ids: Vec<String>,
 
         /// Session ID used in emitted events (auto-generated when omitted)
         #[arg(long)]

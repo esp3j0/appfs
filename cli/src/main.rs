@@ -160,6 +160,7 @@ fn main() {
             gid,
             backend,
             appfs_app_id,
+            appfs_app_ids,
             appfs_session,
             adapter_http_endpoint,
             adapter_http_timeout_ms,
@@ -183,6 +184,7 @@ fn main() {
                     gid,
                     backend,
                     appfs_app_id,
+                    appfs_app_ids,
                     appfs_session,
                     adapter_http_endpoint,
                     adapter_http_timeout_ms,
@@ -337,6 +339,7 @@ fn main() {
             ServeCommand::Appfs {
                 root,
                 app_id,
+                app_ids,
                 session_id,
                 poll_ms,
                 adapter_http_endpoint,
@@ -354,6 +357,7 @@ fn main() {
                     cmd::appfs::AppfsServeArgs {
                         root,
                         app_id,
+                        app_ids,
                         session_id,
                         poll_ms,
                         adapter_http_endpoint,

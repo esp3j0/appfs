@@ -71,6 +71,8 @@ pub struct MountArgs {
     pub backend: MountBackend,
     /// Enable AppFS snapshot read-through for the given app ID.
     pub appfs_app_id: Option<String>,
+    /// Additional AppFS app IDs for mount-side read-through.
+    pub appfs_app_ids: Vec<String>,
     /// Session ID used for mount-side AppFS connector calls.
     pub appfs_session: Option<String>,
     /// Optional HTTP bridge endpoint for mount-side AppFS read-through.
@@ -95,50 +97,61 @@ pub struct MountArgs {
 
 fn has_appfs_mount_config(args: &MountArgs) -> bool {
     args.appfs_app_id.is_some()
+        || !args.appfs_app_ids.is_empty()
         || args.appfs_session.is_some()
         || args.adapter_http_endpoint.is_some()
         || args.adapter_grpc_endpoint.is_some()
 }
 
 #[cfg(any(unix, target_os = "windows"))]
-fn appfs_mount_runtime_args(args: &MountArgs) -> Option<AppfsRuntimeCliArgs> {
-    args.appfs_app_id
-        .as_ref()
-        .map(|app_id| AppfsRuntimeCliArgs {
-            app_id: app_id.clone(),
-            session_id: args.appfs_session.clone(),
-            bridge: AppfsBridgeCliArgs {
-                adapter_http_endpoint: args.adapter_http_endpoint.clone(),
-                adapter_http_timeout_ms: args.adapter_http_timeout_ms,
-                adapter_grpc_endpoint: args.adapter_grpc_endpoint.clone(),
-                adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
-                adapter_bridge_max_retries: args.adapter_bridge_max_retries,
-                adapter_bridge_initial_backoff_ms: args.adapter_bridge_initial_backoff_ms,
-                adapter_bridge_max_backoff_ms: args.adapter_bridge_max_backoff_ms,
-                adapter_bridge_circuit_breaker_failures: args
-                    .adapter_bridge_circuit_breaker_failures,
-                adapter_bridge_circuit_breaker_cooldown_ms: args
-                    .adapter_bridge_circuit_breaker_cooldown_ms,
-            },
-        })
+fn appfs_mount_runtime_args(args: &MountArgs) -> Result<Vec<AppfsRuntimeCliArgs>> {
+    appfs::build_runtime_cli_args(
+        args.appfs_app_id.clone(),
+        args.appfs_app_ids.clone(),
+        args.appfs_session.clone(),
+        AppfsBridgeCliArgs {
+            adapter_http_endpoint: args.adapter_http_endpoint.clone(),
+            adapter_http_timeout_ms: args.adapter_http_timeout_ms,
+            adapter_grpc_endpoint: args.adapter_grpc_endpoint.clone(),
+            adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
+            adapter_bridge_max_retries: args.adapter_bridge_max_retries,
+            adapter_bridge_initial_backoff_ms: args.adapter_bridge_initial_backoff_ms,
+            adapter_bridge_max_backoff_ms: args.adapter_bridge_max_backoff_ms,
+            adapter_bridge_circuit_breaker_failures: args.adapter_bridge_circuit_breaker_failures,
+            adapter_bridge_circuit_breaker_cooldown_ms: args
+                .adapter_bridge_circuit_breaker_cooldown_ms,
+        },
+        None,
+    )
 }
 
 #[cfg(any(unix, target_os = "windows"))]
 fn wrap_mount_fs_if_appfs_enabled(
     fs: Arc<Mutex<dyn FileSystem + Send>>,
     args: &MountArgs,
-) -> Arc<Mutex<dyn FileSystem + Send>> {
-    let Some(runtime_args) = appfs_mount_runtime_args(args) else {
-        return fs;
-    };
-    let bridge_config = appfs::build_appfs_bridge_config(runtime_args.bridge.clone());
-    appfs::mount_readthrough::wrap_mount_readthrough_filesystem(
+) -> Result<Arc<Mutex<dyn FileSystem + Send>>> {
+    let runtime_args = appfs_mount_runtime_args(args)?;
+    if runtime_args.is_empty() {
+        return Ok(fs);
+    }
+    let bridge_config = appfs::build_appfs_bridge_config(AppfsBridgeCliArgs {
+        adapter_http_endpoint: args.adapter_http_endpoint.clone(),
+        adapter_http_timeout_ms: args.adapter_http_timeout_ms,
+        adapter_grpc_endpoint: args.adapter_grpc_endpoint.clone(),
+        adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
+        adapter_bridge_max_retries: args.adapter_bridge_max_retries,
+        adapter_bridge_initial_backoff_ms: args.adapter_bridge_initial_backoff_ms,
+        adapter_bridge_max_backoff_ms: args.adapter_bridge_max_backoff_ms,
+        adapter_bridge_circuit_breaker_failures: args.adapter_bridge_circuit_breaker_failures,
+        adapter_bridge_circuit_breaker_cooldown_ms: args.adapter_bridge_circuit_breaker_cooldown_ms,
+    });
+    Ok(appfs::mount_readthrough::wrap_mount_readthrough_filesystem(
         fs,
         appfs::mount_readthrough::MountSnapshotReadThroughConfig {
-            runtime: runtime_args,
+            runtimes: runtime_args,
             bridge_config,
         },
-    )
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -660,7 +673,7 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
 
     let fs: Arc<tokio::sync::Mutex<dyn agentfs_sdk::FileSystem + Send>> =
         Arc::new(tokio::sync::Mutex::new(agentfs.fs));
-    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args)?;
     let fs: Arc<Mutex<dyn agentfs_sdk::FileSystem + Send>> =
         Arc::new(Mutex::new(WinfspTokioFsAdapter { inner: fs }));
 
@@ -935,7 +948,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
                 Ok(Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>)
             }
         })?;
-        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args)?;
 
         let mount_opts = MountOpts {
             mountpoint: mountpoint.clone(),
@@ -1021,7 +1034,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
                 Ok(Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>)
             }
         })?;
-        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+        let fs = wrap_mount_fs_if_appfs_enabled(fs, &args)?;
         let fs_adapter = DaemonMutexFsAdapter { inner: fs };
         let fs_arc: Arc<dyn FileSystem> = Arc::new(fs_adapter);
 
@@ -1146,7 +1159,7 @@ async fn mount_nfs_backend(args: MountArgs) -> Result<()> {
         // Plain AgentFS
         Arc::new(Mutex::new(agentfs.fs)) as Arc<Mutex<dyn FileSystem + Send>>
     };
-    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args);
+    let fs = wrap_mount_fs_if_appfs_enabled(fs, &args)?;
 
     if args.foreground {
         // Use the unified mount API for foreground mode
