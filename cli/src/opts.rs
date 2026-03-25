@@ -267,6 +267,10 @@ pub enum Command {
         #[arg(long = "appfs-app")]
         appfs_app_ids: Vec<String>,
 
+        /// Load AppFS app routing from /_appfs/apps.registry.json instead of CLI bootstrap flags
+        #[arg(long)]
+        managed_appfs: bool,
+
         /// Session ID used for mount-side AppFS connector calls
         #[arg(long)]
         appfs_session: Option<String>,
@@ -485,6 +489,10 @@ pub enum ServeCommand {
         /// AppFS root directory
         #[arg(long, default_value = "/app", add = ArgValueCompleter::new(PathCompleter::dir()))]
         root: PathBuf,
+
+        /// Load runtime app/backend/session config from /_appfs/apps.registry.json
+        #[arg(long)]
+        managed: bool,
 
         /// App ID under the root
         #[arg(long)]

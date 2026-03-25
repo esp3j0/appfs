@@ -2,9 +2,9 @@ use agentfs_sdk::{AppConnectorV2, AppConnectorV3};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::{collections::HashMap, fs};
 use uuid::Uuid;
 
 mod action_dispatcher;
@@ -19,6 +19,7 @@ mod journal;
 pub(crate) mod mount_readthrough;
 mod paging;
 mod recovery;
+pub(crate) mod registry;
 mod shared;
 mod snapshot_cache;
 #[cfg(test)]
@@ -53,6 +54,7 @@ const ALLOWED_SEGMENT_CHARS: &str =
 #[derive(Debug, Clone)]
 pub struct AppfsServeArgs {
     pub root: PathBuf,
+    pub managed: bool,
     pub app_id: Option<String>,
     pub app_ids: Vec<String>,
     pub session_id: Option<String>,
@@ -81,6 +83,13 @@ pub(crate) struct AppfsBridgeCliArgs {
     pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedAppfsRuntimeCliArgs {
+    pub app_id: String,
+    pub session_id: String,
+    pub bridge: AppfsBridgeCliArgs,
+}
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct AppfsRuntimeCliArgs {
@@ -101,6 +110,7 @@ pub(crate) struct AppfsBridgeConfig {
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let AppfsServeArgs {
         root,
+        managed,
         app_id,
         app_ids,
         session_id,
@@ -116,24 +126,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_circuit_breaker_cooldown_ms,
     } = args;
 
-    let runtime_args = build_runtime_cli_args(
-        app_id,
-        app_ids,
-        session_id,
-        AppfsBridgeCliArgs {
-            adapter_http_endpoint: adapter_http_endpoint.clone(),
-            adapter_http_timeout_ms,
-            adapter_grpc_endpoint: adapter_grpc_endpoint.clone(),
-            adapter_grpc_timeout_ms,
-            adapter_bridge_max_retries,
-            adapter_bridge_initial_backoff_ms,
-            adapter_bridge_max_backoff_ms,
-            adapter_bridge_circuit_breaker_failures,
-            adapter_bridge_circuit_breaker_cooldown_ms,
-        },
-        Some("aiim"),
-    )?;
-    let bridge_config = build_appfs_bridge_config(AppfsBridgeCliArgs {
+    let bridge_args = AppfsBridgeCliArgs {
         adapter_http_endpoint,
         adapter_http_timeout_ms,
         adapter_grpc_endpoint,
@@ -143,10 +136,36 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         adapter_bridge_max_backoff_ms,
         adapter_bridge_circuit_breaker_failures,
         adapter_bridge_circuit_breaker_cooldown_ms,
-    });
-
-    let mut supervisor = AppfsRuntimeSupervisor::new(root, runtime_args, bridge_config)?;
+    };
+    let (runtime_args, existing_registry) = if managed {
+        if app_id.is_some()
+            || !app_ids.is_empty()
+            || session_id.is_some()
+            || bridge_args.adapter_http_endpoint.is_some()
+            || bridge_args.adapter_grpc_endpoint.is_some()
+        {
+            anyhow::bail!(
+                "--managed does not accept explicit --app-id/--app/--session-id/adapter endpoint bootstrap flags; load them from the persisted AppFS registry instead"
+            );
+        }
+        let existing = registry::read_app_registry(&root)?.ok_or_else(|| {
+            anyhow::anyhow!("managed AppFS registry not found under {}", root.display())
+        })?;
+        let runtime_args = registry::runtime_args_from_registry(&existing)?;
+        if runtime_args.is_empty() {
+            anyhow::bail!("managed AppFS registry does not contain any registered apps");
+        }
+        (runtime_args, Some(existing))
+    } else {
+        (
+            build_runtime_cli_args(app_id, app_ids, session_id, bridge_args, Some("aiim"))?,
+            None,
+        )
+    };
+    let resolved_runtime_args = resolve_runtime_cli_args(runtime_args);
+    let mut supervisor = AppfsRuntimeSupervisor::new(root, resolved_runtime_args)?;
     supervisor.prepare_action_sinks()?;
+    supervisor.persist_registry(existing_registry.as_ref())?;
     supervisor.log_started();
     eprintln!("Press Ctrl+C to stop.");
 
@@ -236,6 +255,19 @@ pub(crate) fn normalize_appfs_session_id(session_id: Option<String>) -> String {
     })
 }
 
+pub(crate) fn resolve_runtime_cli_args(
+    runtime_args: Vec<AppfsRuntimeCliArgs>,
+) -> Vec<ResolvedAppfsRuntimeCliArgs> {
+    runtime_args
+        .into_iter()
+        .map(|runtime| ResolvedAppfsRuntimeCliArgs {
+            app_id: runtime.app_id,
+            session_id: normalize_appfs_session_id(runtime.session_id),
+            bridge: runtime.bridge,
+        })
+        .collect()
+}
+
 pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridgeConfig {
     let bridge_runtime_options = BridgeRuntimeOptions::from_cli(
         args.adapter_bridge_max_retries,
@@ -254,26 +286,27 @@ pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridge
 }
 
 struct AppfsRuntimeSupervisor {
+    root: PathBuf,
+    runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
     adapters: Vec<AppfsAdapter>,
 }
 
 impl AppfsRuntimeSupervisor {
-    fn new(
-        root: PathBuf,
-        runtime_args: Vec<AppfsRuntimeCliArgs>,
-        bridge_config: AppfsBridgeConfig,
-    ) -> Result<Self> {
+    fn new(root: PathBuf, runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>) -> Result<Self> {
         let mut adapters = Vec::with_capacity(runtime_args.len());
-        for runtime in runtime_args {
-            let session_id = normalize_appfs_session_id(runtime.session_id.clone());
+        for runtime in &runtime_args {
             adapters.push(AppfsAdapter::new(
                 root.clone(),
-                runtime.app_id,
-                session_id,
-                bridge_config.clone(),
+                runtime.app_id.clone(),
+                runtime.session_id.clone(),
+                build_appfs_bridge_config(runtime.bridge.clone()),
             )?);
         }
-        Ok(Self { adapters })
+        Ok(Self {
+            root,
+            runtime_args,
+            adapters,
+        })
     }
 
     fn prepare_action_sinks(&mut self) -> Result<()> {
@@ -299,6 +332,31 @@ impl AppfsRuntimeSupervisor {
                 adapter.session_id
             );
         }
+    }
+
+    fn persist_registry(&self, existing: Option<&registry::AppfsAppsRegistryDoc>) -> Result<()> {
+        let active_scopes = self
+            .adapters
+            .iter()
+            .map(|adapter| {
+                let state_path = adapter
+                    .app_dir
+                    .join("_meta")
+                    .join(APP_STRUCTURE_SYNC_STATE_FILENAME);
+                let active_scope = fs::read_to_string(&state_path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<JsonValue>(&content).ok())
+                    .and_then(|value| {
+                        value
+                            .get("active_scope")
+                            .and_then(|scope| scope.as_str())
+                            .map(ToString::to_string)
+                    });
+                (adapter.app_id.clone(), active_scope)
+            })
+            .collect::<HashMap<_, _>>();
+        let doc = registry::build_app_registry_doc(&self.runtime_args, &active_scopes, existing);
+        registry::write_app_registry(&self.root, &doc)
     }
 }
 
@@ -499,10 +557,10 @@ struct AppfsAdapter {
 #[cfg(test)]
 mod supervisor_tests {
     use super::{
-        build_appfs_bridge_config, build_runtime_cli_args, normalize_appfs_app_ids,
+        build_runtime_cli_args, normalize_appfs_app_ids, registry, resolve_runtime_cli_args,
         AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
     };
-    use serde_json::Value as JsonValue;
+    use serde_json::{json, Value as JsonValue};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use tempfile::TempDir;
@@ -581,8 +639,7 @@ mod supervisor_tests {
         .expect("build runtime args");
         let mut supervisor = AppfsRuntimeSupervisor::new(
             temp.path().to_path_buf(),
-            runtime_args,
-            build_appfs_bridge_config(bridge_args()),
+            resolve_runtime_cli_args(runtime_args),
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -615,5 +672,97 @@ mod supervisor_tests {
             "multi-001",
         );
         assert!(notion_events.is_empty());
+    }
+
+    #[test]
+    fn supervisor_persists_registry_for_bootstrap_apps() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime_args = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            Vec::new(),
+            Some("sess-aiim".to_string()),
+            bridge_args(),
+            None,
+        )
+        .expect("build runtime args");
+        let mut supervisor = AppfsRuntimeSupervisor::new(
+            temp.path().to_path_buf(),
+            resolve_runtime_cli_args(runtime_args),
+        )
+        .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        supervisor.persist_registry(None).expect("persist registry");
+
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read registry")
+            .expect("registry exists");
+        assert_eq!(stored.apps.len(), 1);
+        assert_eq!(stored.apps[0].app_id, "aiim");
+        assert_eq!(stored.apps[0].session_id, "sess-aiim");
+    }
+
+    #[test]
+    fn supervisor_preserves_existing_registry_registration_time() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime_args = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            Vec::new(),
+            Some("sess-aiim".to_string()),
+            bridge_args(),
+            None,
+        )
+        .expect("build runtime args");
+        let mut supervisor = AppfsRuntimeSupervisor::new(
+            temp.path().to_path_buf(),
+            resolve_runtime_cli_args(runtime_args),
+        )
+        .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        let existing = registry::AppfsAppsRegistryDoc {
+            version: registry::APPFS_REGISTRY_VERSION,
+            apps: vec![registry::AppfsRegisteredAppDoc {
+                app_id: "aiim".to_string(),
+                transport: registry::AppfsRegistryTransportDoc {
+                    kind: registry::AppfsRegistryTransportKind::InProcess,
+                    endpoint: None,
+                    http_timeout_ms: 5000,
+                    grpc_timeout_ms: 5000,
+                    bridge_max_retries: 2,
+                    bridge_initial_backoff_ms: 100,
+                    bridge_max_backoff_ms: 1000,
+                    bridge_circuit_breaker_failures: 5,
+                    bridge_circuit_breaker_cooldown_ms: 3000,
+                },
+                session_id: "sess-old".to_string(),
+                registered_at: "2026-03-25T00:00:00Z".to_string(),
+                active_scope: Some("chat-001".to_string()),
+            }],
+        };
+        registry::write_app_registry(temp.path(), &existing).expect("seed registry");
+
+        let sync_state_path = temp
+            .path()
+            .join("aiim")
+            .join("_meta")
+            .join(super::APP_STRUCTURE_SYNC_STATE_FILENAME);
+        fs::write(
+            &sync_state_path,
+            serde_json::to_vec(&json!({
+                "active_scope": "chat-long"
+            }))
+            .expect("sync state json"),
+        )
+        .expect("write sync state");
+
+        supervisor
+            .persist_registry(Some(&existing))
+            .expect("persist registry");
+
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read registry")
+            .expect("registry exists");
+        assert_eq!(stored.apps[0].registered_at, "2026-03-25T00:00:00Z");
+        assert_eq!(stored.apps[0].active_scope.as_deref(), Some("chat-long"));
     }
 }

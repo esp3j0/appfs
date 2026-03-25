@@ -69,6 +69,8 @@ pub struct MountArgs {
     pub appfs_app_id: Option<String>,
     /// Additional AppFS app IDs for mount-side read-through.
     pub appfs_app_ids: Vec<String>,
+    /// Load AppFS app routing from the persisted managed registry.
+    pub managed_appfs: bool,
     /// Session ID used for mount-side AppFS connector calls.
     pub appfs_session: Option<String>,
     /// Optional HTTP bridge endpoint for mount-side AppFS read-through.
@@ -92,7 +94,8 @@ pub struct MountArgs {
 }
 
 fn has_appfs_mount_config(args: &MountArgs) -> bool {
-    args.appfs_app_id.is_some()
+    args.managed_appfs
+        || args.appfs_app_id.is_some()
         || !args.appfs_app_ids.is_empty()
         || args.appfs_session.is_some()
         || args.adapter_http_endpoint.is_some()
@@ -101,6 +104,9 @@ fn has_appfs_mount_config(args: &MountArgs) -> bool {
 
 #[cfg(any(unix, target_os = "windows"))]
 fn appfs_mount_runtime_args(args: &MountArgs) -> Result<Vec<AppfsRuntimeCliArgs>> {
+    if args.managed_appfs {
+        return Ok(Vec::new());
+    }
     appfs::build_runtime_cli_args(
         args.appfs_app_id.clone(),
         args.appfs_app_ids.clone(),
@@ -126,28 +132,48 @@ fn wrap_mount_fs_if_appfs_enabled(
     fs: Arc<Mutex<dyn FileSystem + Send>>,
     args: &MountArgs,
 ) -> Result<Arc<Mutex<dyn FileSystem + Send>>> {
-    let runtime_args = appfs_mount_runtime_args(args)?;
-    if runtime_args.is_empty() {
+    if !has_appfs_mount_config(args) {
         return Ok(fs);
     }
-    let bridge_config = appfs::build_appfs_bridge_config(AppfsBridgeCliArgs {
-        adapter_http_endpoint: args.adapter_http_endpoint.clone(),
-        adapter_http_timeout_ms: args.adapter_http_timeout_ms,
-        adapter_grpc_endpoint: args.adapter_grpc_endpoint.clone(),
-        adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
-        adapter_bridge_max_retries: args.adapter_bridge_max_retries,
-        adapter_bridge_initial_backoff_ms: args.adapter_bridge_initial_backoff_ms,
-        adapter_bridge_max_backoff_ms: args.adapter_bridge_max_backoff_ms,
-        adapter_bridge_circuit_breaker_failures: args.adapter_bridge_circuit_breaker_failures,
-        adapter_bridge_circuit_breaker_cooldown_ms: args.adapter_bridge_circuit_breaker_cooldown_ms,
-    });
+    let runtime_args = appfs_mount_runtime_args(args)?;
+    if runtime_args.is_empty() && !args.managed_appfs {
+        return Ok(fs);
+    }
     Ok(appfs::mount_readthrough::wrap_mount_readthrough_filesystem(
         fs,
         appfs::mount_readthrough::MountSnapshotReadThroughConfig {
             runtimes: runtime_args,
-            bridge_config,
+            managed: args.managed_appfs,
         },
     ))
+}
+
+fn validate_appfs_mount_mode(args: &MountArgs) -> Result<()> {
+    if args.managed_appfs
+        && (args.appfs_app_id.is_some()
+            || !args.appfs_app_ids.is_empty()
+            || args.appfs_session.is_some()
+            || args.adapter_http_endpoint.is_some()
+            || args.adapter_grpc_endpoint.is_some())
+    {
+        anyhow::bail!(
+            "--managed-appfs cannot be combined with explicit --appfs-app-id/--appfs-app/--appfs-session/adapter endpoint flags"
+        );
+    }
+
+    if !args.managed_appfs
+        && (args.appfs_session.is_some()
+            || args.adapter_http_endpoint.is_some()
+            || args.adapter_grpc_endpoint.is_some()
+            || !args.appfs_app_ids.is_empty())
+        && args.appfs_app_id.is_none()
+    {
+        anyhow::bail!(
+            "AppFS mount-side read-through requires --appfs-app-id when explicit AppFS bridge options are provided."
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -533,11 +559,7 @@ impl FileSystem for WinfspTokioFsAdapter {
 /// Mount the agent filesystem (Linux).
 #[cfg(target_os = "linux")]
 pub fn mount(args: MountArgs) -> Result<()> {
-    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
-        anyhow::bail!(
-            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
-        );
-    }
+    validate_appfs_mount_mode(&args)?;
     if has_appfs_mount_config(&args) && !matches!(args.backend, MountBackend::Fuse) {
         anyhow::bail!(
             "AppFS snapshot read-through is currently supported only with --backend fuse on Linux."
@@ -559,11 +581,7 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (macOS).
 #[cfg(target_os = "macos")]
 pub fn mount(args: MountArgs) -> Result<()> {
-    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
-        anyhow::bail!(
-            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
-        );
-    }
+    validate_appfs_mount_mode(&args)?;
     match args.backend {
         MountBackend::Fuse => {
             anyhow::bail!(
@@ -587,11 +605,7 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (Windows).
 #[cfg(target_os = "windows")]
 pub fn mount(args: MountArgs) -> Result<()> {
-    if has_appfs_mount_config(&args) && args.appfs_app_id.is_none() {
-        anyhow::bail!(
-            "AppFS mount-side read-through requires --appfs-app-id when any AppFS bridge option is provided."
-        );
-    }
+    validate_appfs_mount_mode(&args)?;
     match args.backend {
         MountBackend::Fuse => {
             anyhow::bail!(
@@ -1394,6 +1408,69 @@ pub fn prune_mounts(force: bool) -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn prune_mounts(_force: bool) -> Result<()> {
     anyhow::bail!("Mount pruning is only available on Linux")
+}
+
+#[cfg(test)]
+mod appfs_mount_mode_tests {
+    use super::{validate_appfs_mount_mode, MountArgs, MountBackend};
+    use std::path::PathBuf;
+
+    fn base_args() -> MountArgs {
+        MountArgs {
+            id_or_path: "agent".to_string(),
+            mountpoint: PathBuf::from("/tmp/mount"),
+            auto_unmount: false,
+            allow_root: false,
+            allow_other: false,
+            foreground: false,
+            uid: None,
+            gid: None,
+            backend: MountBackend::default(),
+            appfs_app_id: None,
+            appfs_app_ids: Vec::new(),
+            managed_appfs: false,
+            appfs_session: None,
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3000,
+        }
+    }
+
+    #[test]
+    fn validate_mount_mode_rejects_managed_plus_explicit_appfs_flags() {
+        let mut args = base_args();
+        args.managed_appfs = true;
+        args.appfs_app_id = Some("aiim".to_string());
+
+        let err = validate_appfs_mount_mode(&args).expect_err("managed+explicit must fail");
+        assert!(err
+            .to_string()
+            .contains("--managed-appfs cannot be combined"));
+    }
+
+    #[test]
+    fn validate_mount_mode_rejects_explicit_bridge_without_primary_app() {
+        let mut args = base_args();
+        args.adapter_http_endpoint = Some("http://127.0.0.1:8080".to_string());
+
+        let err = validate_appfs_mount_mode(&args).expect_err("bridge without app id must fail");
+        assert!(err
+            .to_string()
+            .contains("requires --appfs-app-id when explicit AppFS bridge options are provided"));
+    }
+
+    #[test]
+    fn validate_mount_mode_accepts_managed_registry_only() {
+        let mut args = base_args();
+        args.managed_appfs = true;
+        validate_appfs_mount_mode(&args).expect("managed-only config should be accepted");
+    }
 }
 
 /// List all currently mounted agentfs filesystems (Windows stub).

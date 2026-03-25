@@ -29,6 +29,8 @@ pub struct MountArgs {
     pub appfs_app_id: Option<String>,
     /// Additional AppFS app IDs for mount-side read-through.
     pub appfs_app_ids: Vec<String>,
+    /// Load AppFS app routing from the persisted managed registry.
+    pub managed_appfs: bool,
     /// Session ID used for mount-side AppFS connector calls.
     pub appfs_session: Option<String>,
     /// Optional HTTP bridge endpoint for mount-side AppFS read-through.

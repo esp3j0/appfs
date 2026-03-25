@@ -14,13 +14,13 @@ use tokio::sync::Mutex;
 
 use super::core::{build_business_connector, parse_manifest_contract_json};
 use super::journal::{SnapshotExpandJournalDoc, SnapshotExpandJournalEntry};
+use super::registry;
 use super::shared::{
     action_template_matches, decode_jsonl_line, deterministic_shorten_segment,
     snapshot_expand_delay_ms, snapshot_force_expand_on_refresh, snapshot_publish_delay_ms,
 };
 use super::{
-    AppfsBridgeConfig, AppfsRuntimeCliArgs, SnapshotOnTimeoutPolicy, SnapshotSpec,
-    SNAPSHOT_EXPAND_JOURNAL_FILENAME,
+    AppfsRuntimeCliArgs, SnapshotOnTimeoutPolicy, SnapshotSpec, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
 const ROOT_INO: i64 = 1;
@@ -42,7 +42,7 @@ type DynFs = Arc<Mutex<dyn FileSystem + Send>>;
 #[derive(Clone)]
 pub(crate) struct MountSnapshotReadThroughConfig {
     pub runtimes: Vec<AppfsRuntimeCliArgs>,
-    pub bridge_config: AppfsBridgeConfig,
+    pub managed: bool,
 }
 
 pub(crate) fn wrap_mount_readthrough_filesystem(
@@ -55,7 +55,8 @@ pub(crate) fn wrap_mount_readthrough_filesystem(
 struct MountSnapshotReadThroughFs {
     inner: DynFs,
     config: MountSnapshotReadThroughConfig,
-    runtime_configs: HashMap<String, AppfsRuntimeCliArgs>,
+    runtime_configs: Mutex<HashMap<String, AppfsRuntimeCliArgs>>,
+    registry_fingerprint: Mutex<Option<Vec<u8>>>,
     path_cache: Mutex<HashMap<i64, String>>,
     runtimes: Mutex<HashMap<String, MountSnapshotRuntime>>,
     expand_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -129,7 +130,8 @@ impl MountSnapshotReadThroughFs {
         Self {
             inner,
             config,
-            runtime_configs,
+            runtime_configs: Mutex::new(runtime_configs),
+            registry_fingerprint: Mutex::new(None),
             path_cache: Mutex::new(path_cache),
             runtimes: Mutex::new(HashMap::new()),
             expand_locks: Mutex::new(HashMap::new()),
@@ -154,7 +156,8 @@ impl MountSnapshotReadThroughFs {
     }
 
     async fn runtime_loaded(&self, app_id: &str) -> Result<bool> {
-        let Some(runtime_config) = self.runtime_configs.get(app_id).cloned() else {
+        self.refresh_registry_snapshot().await?;
+        let Some(runtime_config) = self.runtime_configs.lock().await.get(app_id).cloned() else {
             return Ok(false);
         };
 
@@ -173,7 +176,8 @@ impl MountSnapshotReadThroughFs {
         let manifest_contract =
             parse_manifest_contract_json(&manifest_json, &format!("/{}", manifest_rel))?;
         let session_id = super::normalize_appfs_session_id(runtime_config.session_id.clone());
-        let business_connector = build_business_connector(app_id, &self.config.bridge_config)?;
+        let bridge_config = super::build_appfs_bridge_config(runtime_config.bridge.clone());
+        let business_connector = build_business_connector(app_id, &bridge_config)?;
         let journal_path = format!("{app_id}/_stream/{}", SNAPSHOT_EXPAND_JOURNAL_FILENAME);
         let snapshot_expand_journal = match self.read_file_if_exists(&journal_path).await? {
             Some(bytes) => {
@@ -196,6 +200,35 @@ impl MountSnapshotReadThroughFs {
         };
         guard.insert(app_id.to_string(), runtime);
         Ok(true)
+    }
+
+    async fn refresh_registry_snapshot(&self) -> Result<()> {
+        if !self.config.managed {
+            return Ok(());
+        }
+        let Some(bytes) = self
+            .read_file_if_exists(registry::APPFS_REGISTRY_REL_PATH)
+            .await?
+        else {
+            return Ok(());
+        };
+        {
+            let fingerprint = self.registry_fingerprint.lock().await;
+            if fingerprint.as_deref() == Some(bytes.as_slice()) {
+                return Ok(());
+            }
+        }
+        let doc = registry::parse_app_registry_bytes(&bytes)
+            .context("failed to load managed AppFS registry for mount read-through")?;
+        let runtime_args = registry::runtime_args_from_registry(&doc)?;
+        let runtime_configs = runtime_args
+            .into_iter()
+            .map(|runtime| (runtime.app_id.clone(), runtime))
+            .collect::<HashMap<_, _>>();
+        *self.runtime_configs.lock().await = runtime_configs;
+        *self.registry_fingerprint.lock().await = Some(bytes);
+        self.runtimes.lock().await.clear();
+        Ok(())
     }
 
     async fn recover_incomplete_expands(
