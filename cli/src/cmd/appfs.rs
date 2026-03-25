@@ -23,6 +23,7 @@ mod shared;
 mod snapshot_cache;
 #[cfg(test)]
 mod tests;
+mod tree_sync;
 
 use bridge_resilience::BridgeRuntimeOptions;
 use journal::SnapshotExpandJournalEntry;
@@ -42,6 +43,7 @@ const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_V2_SNAPSHOT_COALESCE_WINDOW_MS
 const SNAPSHOT_PUBLISH_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS";
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
 const SNAPSHOT_EXPAND_JOURNAL_FILENAME: &str = "snapshot-expand.state.res.json";
+const APP_STRUCTURE_SYNC_STATE_FILENAME: &str = "app-structure-sync.state.res.json";
 
 const MAX_SEGMENT_BYTES: usize = 255;
 

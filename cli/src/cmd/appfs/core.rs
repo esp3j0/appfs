@@ -1,6 +1,6 @@
 use agentfs_sdk::{
-    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnectorV2, AuthStatusV2,
-    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
+    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnectorV2, AppConnectorV3,
+    AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
     DemoAppConnectorV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
     FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2,
     SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
@@ -26,6 +26,7 @@ use super::shared::{
     is_transient_action_sink_busy, parse_snapshot_on_timeout_policy, template_specificity,
     MultilineRecoveryOutcome,
 };
+use super::tree_sync::ensure_app_structure_initialized;
 use super::{
     ActionCursorDoc, ActionCursorState, ActionSpec, AppfsAdapter, AppfsBridgeConfig, CursorState,
     ExecutionMode, InputMode, ManifestContract, ManifestDoc, ProcessOutcome, SnapshotSpec,
@@ -283,6 +284,7 @@ impl AppfsAdapter {
         session_id: String,
         bridge_config: AppfsBridgeConfig,
     ) -> Result<Self> {
+        ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
         let app_dir = root.join(&app_id);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
         let events_path = app_dir.join("_stream").join("events.evt.jsonl");
@@ -876,6 +878,28 @@ pub(super) fn build_business_connector(
         );
     }
     Ok(connector)
+}
+
+pub(super) fn build_structure_connector(
+    app_id: &str,
+    bridge_config: &AppfsBridgeConfig,
+) -> Result<Option<Box<dyn AppConnectorV3>>> {
+    let normalized_http_endpoint = bridge_config
+        .adapter_http_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let normalized_grpc_endpoint = bridge_config
+        .adapter_grpc_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if normalized_http_endpoint.is_some() || normalized_grpc_endpoint.is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some(Box::new(DemoAppConnectorV2::new(app_id.to_string()))))
 }
 
 pub(super) fn parse_manifest_contract_json(

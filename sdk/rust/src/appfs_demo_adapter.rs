@@ -1,12 +1,15 @@
 use crate::{
     ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1, AdapterControlOutcomeV1,
     AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AuthStatusV2,
-    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
-    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
-    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, RequestContextV1,
-    SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
-    SubmitActionRequestV2, SubmitActionResponseV2,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AppConnectorV3,
+    AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3, AppStructureSyncReasonV3,
+    AppStructureSyncResultV3, AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2,
+    ConnectorTransportV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
+    FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, GetAppStructureRequestV3,
+    GetAppStructureResponseV3, HealthStatusV2, LiveModeV2, LivePageInfoV2,
+    RefreshAppStructureRequestV3, RefreshAppStructureResponseV3, RequestContextV1, SnapshotMetaV2,
+    SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+    SubmitActionResponseV2,
 };
 use serde_json::{json, Value as JsonValue};
 use std::time::Duration;
@@ -189,6 +192,217 @@ impl DemoAppConnectorV2 {
                 }),
             })
             .collect()
+    }
+
+    fn action_manifest(template: &str, execution_mode: &str) -> JsonValue {
+        json!({
+            "template": template,
+            "kind": "action",
+            "input_mode": "json",
+            "execution_mode": execution_mode,
+        })
+    }
+
+    fn snapshot_manifest(template: &str, max_materialized_bytes: usize) -> JsonValue {
+        json!({
+            "template": template,
+            "kind": "resource",
+            "output_mode": "jsonl",
+            "snapshot": {
+                "max_materialized_bytes": max_materialized_bytes,
+                "prewarm": true,
+                "prewarm_timeout_ms": 5000,
+                "read_through_timeout_ms": 10000,
+                "on_timeout": "return_stale"
+            }
+        })
+    }
+
+    fn live_manifest(template: &str) -> JsonValue {
+        json!({
+            "template": template,
+            "kind": "resource",
+            "output_mode": "json",
+            "paging": {
+                "enabled": true,
+                "mode": "live"
+            }
+        })
+    }
+
+    fn base_structure_nodes(scope: Option<&str>) -> Vec<AppStructureNodeV3> {
+        let mut nodes = vec![
+            AppStructureNodeV3 {
+                path: "_meta".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "contacts".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "contacts/zhangsan".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "contacts/zhangsan/send_message.act".to_string(),
+                kind: AppStructureNodeKindV3::ActionFile,
+                manifest_entry: Some(Self::action_manifest(
+                    "contacts/{contact_id}/send_message.act",
+                    "inline",
+                )),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "feed".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "feed/recommendations.res.json".to_string(),
+                kind: AppStructureNodeKindV3::LiveResource,
+                manifest_entry: Some(Self::live_manifest("feed/recommendations.res.json")),
+                seed_content: Some(
+                    json!({"items":[],"page":{"handle_id":"","page_no":0,"has_more":true,"mode":"live"}}),
+                ),
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "_paging".to_string(),
+                kind: AppStructureNodeKindV3::Directory,
+                manifest_entry: None,
+                seed_content: None,
+                mutable: false,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "_paging/fetch_next.act".to_string(),
+                kind: AppStructureNodeKindV3::ActionFile,
+                manifest_entry: Some(Self::action_manifest("_paging/fetch_next.act", "inline")),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            },
+            AppStructureNodeV3 {
+                path: "_paging/close.act".to_string(),
+                kind: AppStructureNodeKindV3::ActionFile,
+                manifest_entry: Some(Self::action_manifest("_paging/close.act", "inline")),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            },
+        ];
+
+        match scope {
+            Some("chat-long") => {
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats".to_string(),
+                    kind: AppStructureNodeKindV3::Directory,
+                    manifest_entry: None,
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-long".to_string()),
+                });
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats/chat-long".to_string(),
+                    kind: AppStructureNodeKindV3::Directory,
+                    manifest_entry: None,
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-long".to_string()),
+                });
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats/chat-long/messages.res.jsonl".to_string(),
+                    kind: AppStructureNodeKindV3::SnapshotResource,
+                    manifest_entry: Some(Self::snapshot_manifest(
+                        "chats/chat-long/messages.res.jsonl",
+                        1024,
+                    )),
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-long".to_string()),
+                });
+            }
+            _ => {
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats".to_string(),
+                    kind: AppStructureNodeKindV3::Directory,
+                    manifest_entry: None,
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-001".to_string()),
+                });
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats/chat-001".to_string(),
+                    kind: AppStructureNodeKindV3::Directory,
+                    manifest_entry: None,
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-001".to_string()),
+                });
+                nodes.push(AppStructureNodeV3 {
+                    path: "chats/chat-001/messages.res.jsonl".to_string(),
+                    kind: AppStructureNodeKindV3::SnapshotResource,
+                    manifest_entry: Some(Self::snapshot_manifest(
+                        "chats/chat-001/messages.res.jsonl",
+                        10 * 1024 * 1024,
+                    )),
+                    seed_content: None,
+                    mutable: false,
+                    scope: Some("chat-001".to_string()),
+                });
+            }
+        }
+
+        nodes
+    }
+
+    fn structure_snapshot(
+        &self,
+        scope: Option<&str>,
+    ) -> std::result::Result<AppStructureSnapshotV3, ConnectorErrorV2> {
+        let active_scope = match scope {
+            None | Some("chat-001") => "chat-001".to_string(),
+            Some("chat-long") => "chat-long".to_string(),
+            Some(other) => {
+                return Err(Self::err(
+                    "STRUCTURE_SCOPE_INVALID",
+                    format!("unknown structure scope: {other}"),
+                    false,
+                ));
+            }
+        };
+        Ok(AppStructureSnapshotV3 {
+            app_id: self.app_id.clone(),
+            revision: format!("demo-structure-{active_scope}"),
+            active_scope: Some(active_scope.clone()),
+            ownership_prefixes: vec![
+                "_meta".to_string(),
+                "contacts".to_string(),
+                "feed".to_string(),
+                "chats".to_string(),
+                "_paging".to_string(),
+            ],
+            nodes: Self::base_structure_nodes(Some(&active_scope)),
+        })
     }
 }
 
@@ -553,14 +767,69 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
     }
 }
 
+impl AppConnectorV3 for DemoAppConnectorV2 {
+    fn get_app_structure(
+        &mut self,
+        request: GetAppStructureRequestV3,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<GetAppStructureResponseV3, ConnectorErrorV2> {
+        let snapshot = self.structure_snapshot(None)?;
+        if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
+            return Ok(GetAppStructureResponseV3 {
+                result: AppStructureSyncResultV3::Unchanged {
+                    app_id: request.app_id,
+                    revision: snapshot.revision,
+                    active_scope: snapshot.active_scope,
+                },
+            });
+        }
+
+        Ok(GetAppStructureResponseV3 {
+            result: AppStructureSyncResultV3::Snapshot { snapshot },
+        })
+    }
+
+    fn refresh_app_structure(
+        &mut self,
+        request: RefreshAppStructureRequestV3,
+        _ctx: &ConnectorContextV2,
+    ) -> std::result::Result<RefreshAppStructureResponseV3, ConnectorErrorV2> {
+        if matches!(request.reason, AppStructureSyncReasonV3::EnterScope)
+            && request.target_scope.is_none()
+        {
+            return Err(Self::err(
+                "STRUCTURE_SCOPE_INVALID",
+                "target_scope is required for enter_scope refresh",
+                false,
+            ));
+        }
+        let snapshot = self.structure_snapshot(request.target_scope.as_deref())?;
+        if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
+            return Ok(RefreshAppStructureResponseV3 {
+                result: AppStructureSyncResultV3::Unchanged {
+                    app_id: request.app_id,
+                    revision: snapshot.revision,
+                    active_scope: snapshot.active_scope,
+                },
+            });
+        }
+
+        Ok(RefreshAppStructureResponseV3 {
+            result: AppStructureSyncResultV3::Snapshot { snapshot },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DemoAppAdapterV1, DemoAppConnectorV2};
     use crate::{
         ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
         AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-        AppConnectorV2, ConnectorContextV2, FetchLivePageRequestV2, FetchSnapshotChunkRequestV2,
-        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+        AppConnectorV2, AppConnectorV3, AppStructureSyncReasonV3, ConnectorContextV2,
+        FetchLivePageRequestV2, FetchSnapshotChunkRequestV2, GetAppStructureRequestV3,
+        RefreshAppStructureRequestV3, RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2,
+        SubmitActionRequestV2,
     };
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
@@ -978,5 +1247,86 @@ mod tests {
             .expect_err("invalid payload should return mapped error");
         assert_eq!(err.code, "INVALID_PAYLOAD");
         assert!(!err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_v3_structure_get_and_refresh() {
+        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+
+        let initial = connector
+            .get_app_structure(
+                GetAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: None,
+                },
+                &ctx_v2(None),
+            )
+            .expect("initial structure should succeed");
+        let initial_revision = match initial.result {
+            crate::AppStructureSyncResultV3::Snapshot { snapshot } => {
+                assert_eq!(snapshot.active_scope.as_deref(), Some("chat-001"));
+                assert!(snapshot
+                    .nodes
+                    .iter()
+                    .any(|node| node.path == "chats/chat-001/messages.res.jsonl"));
+                snapshot.revision
+            }
+            _ => panic!("expected structure snapshot"),
+        };
+
+        let unchanged = connector
+            .get_app_structure(
+                GetAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: Some(initial_revision.clone()),
+                },
+                &ctx_v2(None),
+            )
+            .expect("unchanged structure should succeed");
+        assert!(matches!(
+            unchanged.result,
+            crate::AppStructureSyncResultV3::Unchanged { .. }
+        ));
+
+        let refreshed = connector
+            .refresh_app_structure(
+                RefreshAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: Some(initial_revision),
+                    reason: AppStructureSyncReasonV3::EnterScope,
+                    target_scope: Some("chat-long".to_string()),
+                    trigger_action_path: Some("/_app/enter_scope.act".to_string()),
+                },
+                &ctx_v2(None),
+            )
+            .expect("scope refresh should succeed");
+        match refreshed.result {
+            crate::AppStructureSyncResultV3::Snapshot { snapshot } => {
+                assert_eq!(snapshot.active_scope.as_deref(), Some("chat-long"));
+                assert!(snapshot
+                    .nodes
+                    .iter()
+                    .any(|node| node.path == "chats/chat-long/messages.res.jsonl"));
+                assert!(!snapshot
+                    .nodes
+                    .iter()
+                    .any(|node| node.path == "chats/chat-001/messages.res.jsonl"));
+            }
+            _ => panic!("expected refreshed structure snapshot"),
+        }
+
+        let invalid_scope = connector
+            .refresh_app_structure(
+                RefreshAppStructureRequestV3 {
+                    app_id: "aiim".to_string(),
+                    known_revision: None,
+                    reason: AppStructureSyncReasonV3::EnterScope,
+                    target_scope: Some("missing-scope".to_string()),
+                    trigger_action_path: None,
+                },
+                &ctx_v2(None),
+            )
+            .expect_err("unknown scope should be rejected");
+        assert_eq!(invalid_scope.code, "STRUCTURE_SCOPE_INVALID");
     }
 }
