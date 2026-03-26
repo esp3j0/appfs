@@ -63,6 +63,14 @@ pub fn mount(_args: MountArgs) -> Result<()> {
     anyhow::bail!("Mounting is only available on Unix (Linux or macOS)")
 }
 
+#[allow(dead_code)]
+pub(crate) fn mount_with_ready(
+    _args: MountArgs,
+    _ready_tx: Option<std::sync::mpsc::SyncSender<Result<()>>>,
+) -> Result<()> {
+    anyhow::bail!("Mounting is only available on Unix (Linux or macOS)")
+}
+
 /// Prune unused agentfs mount points.
 pub fn prune_mounts(_force: bool) -> Result<()> {
     anyhow::bail!("Mount pruning is only available on Unix")

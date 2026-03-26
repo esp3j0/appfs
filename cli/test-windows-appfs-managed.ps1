@@ -1,5 +1,5 @@
 # AgentFS Windows AppFS managed lifecycle regression test
-# Covers: WinFsp managed mount + serve appfs --managed + register_app + enter_scope + snapshot read + unregister_app
+# Covers: appfs up + register_app + enter_scope + snapshot read-through + unregister_app
 
 param(
     [string]$AgentId = "win-managed-regression",
@@ -15,8 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:DbPath = Join-Path $PSScriptRoot ".agentfs\$AgentId.db"
-$script:MountHandle = $null
-$script:RuntimeHandle = $null
+$script:AppfsHandle = $null
 $script:BridgeHandle = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:LogDir = Join-Path ([System.IO.Path]::GetTempPath()) ("agentfs-win-managed-{0}-{1}" -f $AgentId, ([guid]::NewGuid().ToString("N")))
@@ -83,8 +82,7 @@ function Stop-LoggedProcess {
 }
 
 function Cleanup-TestArtifacts {
-    Stop-LoggedProcess $script:RuntimeHandle
-    Stop-LoggedProcess $script:MountHandle
+    Stop-LoggedProcess $script:AppfsHandle
     Stop-LoggedProcess $script:BridgeHandle
 
     if (!$SkipCleanup) {
@@ -108,10 +106,8 @@ function Fail-WithContext {
         foreach ($path in @(
             (Join-Path $script:LogDir "bridge.stdout.log"),
             (Join-Path $script:LogDir "bridge.stderr.log"),
-            (Join-Path $script:LogDir "mount.stdout.log"),
-            (Join-Path $script:LogDir "mount.stderr.log"),
-            (Join-Path $script:LogDir "runtime.stdout.log"),
-            (Join-Path $script:LogDir "runtime.stderr.log")
+            (Join-Path $script:LogDir "appfs-up.stdout.log"),
+            (Join-Path $script:LogDir "appfs-up.stderr.log")
         )) {
             if (Test-Path $path) {
                 Write-Host "`n--- tail: $path ---" -ForegroundColor Gray
@@ -445,48 +441,27 @@ function Main {
     Assert-True (Test-Path $script:DbPath) "Created database $script:DbPath"
     Write-ProgressLog "db initialized"
 
-    Write-Section "Mount WinFsp Managed Root"
-    Write-ProgressLog "starting winfsp mount"
-    $mountArgs = @(
+    Write-Section "Start AppFS Managed Runtime"
+    Write-ProgressLog "starting appfs up"
+    $appfsArgs = @(
         "run", "--",
-        "mount", $script:DbPath, $MountPoint,
-        "--backend", "winfsp",
-        "--foreground",
-        "--managed-appfs"
+        "appfs", "up", $script:DbPath, $MountPoint,
+        "--backend", "winfsp"
     )
-    $script:MountHandle = New-LogHandle -Name "mount" -FilePath "cargo" -ArgumentList $mountArgs -WorkingDirectory $PSScriptRoot
-    Wait-Until -Description "WinFsp mount readiness" -TimeoutSec 20 -Condition {
-        Ensure-ProcessRunning $script:MountHandle
-        if (!(Test-Path $MountPoint -PathType Container)) {
-            return $false
-        }
-        try {
-            Get-ChildItem -Path $MountPoint -ErrorAction Stop | Out-Null
-            return $true
-        } catch {
-            return $false
-        }
-    }
-    Write-Success "Managed WinFsp mount is ready at $MountPoint"
-    Write-ProgressLog "mount ready"
-
-    Write-Section "Start Managed Runtime"
-    Write-ProgressLog "starting managed runtime"
-    $runtimeArgs = @("run", "--", "serve", "appfs", "--root", $MountPoint, "--managed")
-    $script:RuntimeHandle = New-LogHandle -Name "runtime" -FilePath "cargo" -ArgumentList $runtimeArgs -WorkingDirectory $PSScriptRoot
+    $script:AppfsHandle = New-LogHandle -Name "appfs-up" -FilePath "cargo" -ArgumentList $appfsArgs -WorkingDirectory $PSScriptRoot
 
     $controlDir = Join-Path $MountPoint "_appfs"
     $controlStream = Join-Path $controlDir "_stream"
     $controlEvents = Join-Path $controlStream "events.evt.jsonl"
     $registryPath = Join-Path $controlDir "apps.registry.json"
     Wait-Until -Description "managed control plane bootstrap" -TimeoutSec 20 -Condition {
-        Ensure-ProcessRunning $script:RuntimeHandle
+        Ensure-ProcessRunning $script:AppfsHandle
         return (Test-Path (Join-Path $controlDir "register_app.act")) -and
             (Test-Path (Join-Path $controlDir "list_apps.act")) -and
             (Test-Path $controlEvents)
     }
-    Write-Success "Managed control plane is ready"
-    Write-ProgressLog "managed control plane ready"
+    Write-Success "AppFS managed runtime is ready"
+    Write-ProgressLog "appfs up ready"
 
     Write-Section "Register HTTP App"
     Write-ProgressLog "registering app"

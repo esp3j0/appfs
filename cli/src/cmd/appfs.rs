@@ -1,14 +1,10 @@
-use agentfs_sdk::{AppConnectorV2, AppConnectorV3};
+use agentfs_sdk::AppConnector;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs,
-};
-use uuid::Uuid;
 
 mod action_dispatcher;
 mod bridge_resilience;
@@ -19,10 +15,14 @@ mod grpc_bridge_adapter;
 mod http_bridge_adapter;
 mod journal;
 #[cfg(any(unix, target_os = "windows"))]
-pub(crate) mod mount_readthrough;
+pub(crate) mod mount_runtime;
 mod paging;
 mod recovery;
 pub(crate) mod registry;
+mod registry_manager;
+mod runtime_config;
+mod runtime_entry;
+mod runtime_supervisor;
 mod shared;
 mod snapshot_cache;
 mod supervisor_control;
@@ -30,8 +30,13 @@ mod supervisor_control;
 mod tests;
 mod tree_sync;
 
-use bridge_resilience::BridgeRuntimeOptions;
 use journal::SnapshotExpandJournalEntry;
+pub(crate) use runtime_config::{
+    build_appfs_bridge_config, build_runtime_cli_args, normalize_appfs_session_id,
+    resolve_runtime_cli_args, AppfsBridgeCliArgs, AppfsBridgeConfig, AppfsRuntimeCliArgs,
+    ResolvedAppfsRuntimeCliArgs,
+};
+use runtime_supervisor::AppfsRuntimeSupervisor;
 
 const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
@@ -75,40 +80,43 @@ pub struct AppfsServeArgs {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AppfsBridgeCliArgs {
-    pub adapter_http_endpoint: Option<String>,
-    pub adapter_http_timeout_ms: u64,
-    pub adapter_grpc_endpoint: Option<String>,
-    pub adapter_grpc_timeout_ms: u64,
-    pub adapter_bridge_max_retries: u32,
-    pub adapter_bridge_initial_backoff_ms: u64,
-    pub adapter_bridge_max_backoff_ms: u64,
-    pub adapter_bridge_circuit_breaker_failures: u32,
-    pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
+pub struct AppfsUpArgs {
+    pub id_or_path: String,
+    pub mountpoint: PathBuf,
+    pub backend: crate::cmd::mount::MountBackend,
+    pub auto_unmount: bool,
+    pub allow_root: bool,
+    pub allow_other: bool,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub poll_ms: u64,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedAppfsRuntimeCliArgs {
-    pub app_id: String,
-    pub session_id: String,
-    pub bridge: AppfsBridgeCliArgs,
-}
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[derive(Debug, Clone)]
-pub(crate) struct AppfsRuntimeCliArgs {
-    pub app_id: String,
-    pub session_id: Option<String>,
-    pub bridge: AppfsBridgeCliArgs,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AppfsBridgeConfig {
-    adapter_http_endpoint: Option<String>,
-    adapter_http_timeout_ms: u64,
-    adapter_grpc_endpoint: Option<String>,
-    adapter_grpc_timeout_ms: u64,
-    runtime_options: BridgeRuntimeOptions,
+fn build_managed_mount_args(args: &AppfsUpArgs) -> crate::cmd::MountArgs {
+    crate::cmd::MountArgs {
+        id_or_path: args.id_or_path.clone(),
+        mountpoint: args.mountpoint.clone(),
+        auto_unmount: args.auto_unmount,
+        allow_root: args.allow_root,
+        allow_other: args.allow_other,
+        foreground: true,
+        uid: args.uid,
+        gid: args.gid,
+        backend: args.backend,
+        appfs_app_id: None,
+        appfs_app_ids: Vec::new(),
+        managed_appfs: true,
+        appfs_session: None,
+        adapter_http_endpoint: None,
+        adapter_http_timeout_ms: 5_000,
+        adapter_grpc_endpoint: None,
+        adapter_grpc_timeout_ms: 5_000,
+        adapter_bridge_max_retries: 2,
+        adapter_bridge_initial_backoff_ms: 100,
+        adapter_bridge_max_backoff_ms: 1_000,
+        adapter_bridge_circuit_breaker_failures: 5,
+        adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+    }
 }
 
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
@@ -187,405 +195,68 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     }
 }
 
-pub(crate) fn normalize_appfs_app_ids(
-    primary_app_id: Option<String>,
-    extra_app_ids: Vec<String>,
-    default_app_id: Option<&str>,
-) -> Result<Vec<String>> {
-    let mut seen = HashMap::new();
-    let mut ordered = Vec::new();
-
-    fn push_unique_app_id(
-        seen: &mut HashMap<String, ()>,
-        ordered: &mut Vec<String>,
-        raw: String,
-    ) -> Result<()> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            anyhow::bail!("app id cannot be empty");
+pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
+    let mount_args = build_managed_mount_args(&args);
+    let mountpoint = mount_args.mountpoint.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let mount_thread = std::thread::spawn(move || {
+        let startup_tx = ready_tx.clone();
+        let result = crate::cmd::mount::mount_with_ready(mount_args, Some(startup_tx));
+        if let Err(err) = &result {
+            let _ = ready_tx.send(Err(anyhow::anyhow!(err.to_string())));
         }
-        if seen.insert(trimmed.to_string(), ()).is_none() {
-            ordered.push(trimmed.to_string());
+        result
+    });
+
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            let _ = mount_thread.join();
+            return Err(err);
         }
-        Ok(())
-    }
-
-    if let Some(primary) = primary_app_id {
-        push_unique_app_id(&mut seen, &mut ordered, primary)?;
-    }
-    for app_id in extra_app_ids {
-        push_unique_app_id(&mut seen, &mut ordered, app_id)?;
-    }
-
-    if ordered.is_empty() {
-        if let Some(default_app_id) = default_app_id {
-            push_unique_app_id(&mut seen, &mut ordered, default_app_id.to_string())?;
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            return Err(anyhow::anyhow!(
+                "AppFS mount did not report readiness within 10 seconds: {}",
+                mountpoint.display()
+            ));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(anyhow::anyhow!(
+                "AppFS mount exited before reporting readiness: {}",
+                mountpoint.display()
+            ));
         }
     }
 
-    Ok(ordered)
-}
-
-pub(crate) fn build_runtime_cli_args(
-    primary_app_id: Option<String>,
-    extra_app_ids: Vec<String>,
-    session_id: Option<String>,
-    bridge: AppfsBridgeCliArgs,
-    default_app_id: Option<&str>,
-) -> Result<Vec<AppfsRuntimeCliArgs>> {
-    let app_ids = normalize_appfs_app_ids(primary_app_id, extra_app_ids, default_app_id)?;
-    if app_ids.len() > 1 && session_id.is_some() {
-        anyhow::bail!(
-            "multi-app AppFS runtime does not accept a single shared --session-id; omit it and runtime will generate isolated per-app sessions"
-        );
-    }
-
-    Ok(app_ids
-        .into_iter()
-        .map(|app_id| AppfsRuntimeCliArgs {
-            app_id,
-            session_id: session_id.clone(),
-            bridge: bridge.clone(),
-        })
-        .collect())
-}
-
-pub(crate) fn normalize_appfs_session_id(session_id: Option<String>) -> String {
-    session_id.unwrap_or_else(|| {
-        let uuid = Uuid::new_v4().simple().to_string();
-        format!("sess-{}", &uuid[..8])
+    let runtime_result = handle_appfs_adapter_command(AppfsServeArgs {
+        root: mountpoint,
+        managed: true,
+        app_id: None,
+        app_ids: Vec::new(),
+        session_id: None,
+        poll_ms: args.poll_ms,
+        adapter_http_endpoint: None,
+        adapter_http_timeout_ms: 5_000,
+        adapter_grpc_endpoint: None,
+        adapter_grpc_timeout_ms: 5_000,
+        adapter_bridge_max_retries: 2,
+        adapter_bridge_initial_backoff_ms: 100,
+        adapter_bridge_max_backoff_ms: 1_000,
+        adapter_bridge_circuit_breaker_failures: 5,
+        adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
     })
-}
+    .await;
 
-pub(crate) fn resolve_runtime_cli_args(
-    runtime_args: Vec<AppfsRuntimeCliArgs>,
-) -> Vec<ResolvedAppfsRuntimeCliArgs> {
-    runtime_args
-        .into_iter()
-        .map(|runtime| ResolvedAppfsRuntimeCliArgs {
-            app_id: runtime.app_id,
-            session_id: normalize_appfs_session_id(runtime.session_id),
-            bridge: runtime.bridge,
-        })
-        .collect()
-}
-
-pub(crate) fn build_appfs_bridge_config(args: AppfsBridgeCliArgs) -> AppfsBridgeConfig {
-    let bridge_runtime_options = BridgeRuntimeOptions::from_cli(
-        args.adapter_bridge_max_retries,
-        args.adapter_bridge_initial_backoff_ms,
-        args.adapter_bridge_max_backoff_ms,
-        args.adapter_bridge_circuit_breaker_failures,
-        args.adapter_bridge_circuit_breaker_cooldown_ms,
-    );
-    AppfsBridgeConfig {
-        adapter_http_endpoint: args.adapter_http_endpoint,
-        adapter_http_timeout_ms: args.adapter_http_timeout_ms,
-        adapter_grpc_endpoint: args.adapter_grpc_endpoint,
-        adapter_grpc_timeout_ms: args.adapter_grpc_timeout_ms,
-        runtime_options: bridge_runtime_options,
-    }
-}
-
-struct AppRuntimeEntry {
-    runtime: ResolvedAppfsRuntimeCliArgs,
-    adapter: AppfsAdapter,
-}
-
-struct AppfsRuntimeSupervisor {
-    root: PathBuf,
-    control_plane: supervisor_control::SupervisorControlPlane,
-    runtimes: BTreeMap<String, AppRuntimeEntry>,
-}
-
-impl AppfsRuntimeSupervisor {
-    fn new(root: PathBuf, runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>) -> Result<Self> {
-        let mut runtimes = BTreeMap::new();
-        for runtime in runtime_args {
-            let entry = Self::build_runtime_entry(&root, runtime)?;
-            if runtimes
-                .insert(entry.runtime.app_id.clone(), entry)
-                .is_some()
-            {
-                anyhow::bail!("duplicate runtime app_id during supervisor bootstrap");
-            }
-        }
-        Ok(Self {
-            control_plane: supervisor_control::SupervisorControlPlane::new(
-                root.clone(),
-                std::env::var("APPFS_V2_ACTIONLINE_STRICT")
-                    .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "True"))
-                    .unwrap_or(false),
-            )?,
-            root,
-            runtimes,
-        })
+    if let Err(err) = runtime_result {
+        return Err(err);
     }
 
-    fn prepare_action_sinks(&mut self) -> Result<()> {
-        self.control_plane.prepare_action_sinks()?;
-        for entry in self.runtimes.values_mut() {
-            entry.adapter.prepare_action_sinks()?;
-        }
-        Ok(())
-    }
-
-    fn poll_once(&mut self) -> Result<()> {
-        let invocations = self.control_plane.drain_invocations()?;
-        for invocation in invocations {
-            self.handle_control_invocation(invocation)?;
-        }
-        for entry in self.runtimes.values_mut() {
-            entry.adapter.poll_once()?;
-        }
-        self.sync_registry_to_disk(None)?;
-        Ok(())
-    }
-
-    fn log_started(&self) {
-        for entry in self.runtimes.values() {
-            let adapter = &entry.adapter;
-            eprintln!(
-                "AppFS adapter started for {} (app_id={} session={})",
-                adapter.app_dir.display(),
-                adapter.app_id,
-                adapter.session_id
-            );
-        }
-    }
-
-    fn sync_registry_to_disk(
-        &self,
-        existing: Option<&registry::AppfsAppsRegistryDoc>,
-    ) -> Result<()> {
-        let existing = match existing {
-            Some(existing) => Some(existing.clone()),
-            None => registry::read_app_registry(&self.root)?,
-        };
-        let active_scopes = self
-            .runtimes
-            .iter()
-            .map(|(app_id, entry)| (app_id.clone(), read_active_scope(&entry.adapter.app_dir)))
-            .collect::<HashMap<_, _>>();
-        let runtime_args = self
-            .runtimes
-            .values()
-            .map(|entry| entry.runtime.clone())
-            .collect::<Vec<_>>();
-        let doc =
-            registry::build_app_registry_doc(&runtime_args, &active_scopes, existing.as_ref());
-        if existing.as_ref() == Some(&doc) {
-            return Ok(());
-        }
-        registry::write_app_registry(&self.root, &doc)
-    }
-
-    fn handle_control_invocation(
-        &mut self,
-        invocation: supervisor_control::SupervisorControlInvocation,
-    ) -> Result<()> {
-        match invocation {
-            supervisor_control::SupervisorControlInvocation::Register {
-                request_id,
-                client_token,
-                request,
-            } => self.handle_register_app(&request_id, client_token, request),
-            supervisor_control::SupervisorControlInvocation::Unregister {
-                request_id,
-                client_token,
-                request,
-            } => self.handle_unregister_app(&request_id, client_token, request),
-            supervisor_control::SupervisorControlInvocation::List {
-                request_id,
-                client_token,
-            } => self.handle_list_apps(&request_id, client_token),
-        }
-    }
-
-    fn handle_register_app(
-        &mut self,
-        request_id: &str,
-        client_token: Option<String>,
-        request: action_dispatcher::RegisterAppRequest,
-    ) -> Result<()> {
-        if self.runtimes.contains_key(&request.app_id) {
-            self.control_plane.emit_failed(
-                "/_appfs/register_app.act",
-                request_id,
-                "APP_ALREADY_REGISTERED",
-                &format!("app {} is already registered", request.app_id),
-                client_token,
-            )?;
-            return Ok(());
-        }
-
-        let runtime = match register_request_to_runtime(request) {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                self.control_plane.emit_failed(
-                    "/_appfs/register_app.act",
-                    request_id,
-                    "APP_REGISTER_INVALID",
-                    &err.to_string(),
-                    client_token,
-                )?;
-                return Ok(());
-            }
-        };
-
-        match Self::build_runtime_entry(&self.root, runtime.clone()) {
-            Ok(mut entry) => {
-                entry.adapter.prepare_action_sinks()?;
-                let app_id = entry.runtime.app_id.clone();
-                let session_id = entry.runtime.session_id.clone();
-                let transport = transport_summary(&entry.runtime.bridge);
-                self.runtimes.insert(app_id.clone(), entry);
-                self.sync_registry_to_disk(None)?;
-                self.control_plane.emit_completed(
-                    "/_appfs/register_app.act",
-                    request_id,
-                    serde_json::json!({
-                        "app_id": app_id,
-                        "session_id": session_id,
-                        "transport": transport,
-                        "registered": true,
-                    }),
-                    client_token,
-                )?;
-            }
-            Err(err) => {
-                self.control_plane.emit_failed(
-                    "/_appfs/register_app.act",
-                    request_id,
-                    "APP_REGISTER_FAILED",
-                    &format!("failed to register app: {err}"),
-                    client_token,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_unregister_app(
-        &mut self,
-        request_id: &str,
-        client_token: Option<String>,
-        request: action_dispatcher::UnregisterAppRequest,
-    ) -> Result<()> {
-        let Some(entry) = self.runtimes.remove(&request.app_id) else {
-            self.control_plane.emit_failed(
-                "/_appfs/unregister_app.act",
-                request_id,
-                "APP_NOT_REGISTERED",
-                &format!("app {} is not registered", request.app_id),
-                client_token,
-            )?;
-            return Ok(());
-        };
-        self.sync_registry_to_disk(None)?;
-        self.control_plane.emit_completed(
-            "/_appfs/unregister_app.act",
-            request_id,
-            serde_json::json!({
-                "app_id": entry.runtime.app_id,
-                "session_id": entry.runtime.session_id,
-                "unregistered": true,
-            }),
-            client_token,
-        )?;
-        Ok(())
-    }
-
-    fn handle_list_apps(&mut self, request_id: &str, client_token: Option<String>) -> Result<()> {
-        let apps = self
-            .runtimes
-            .values()
-            .map(|entry| {
-                serde_json::json!({
-                    "app_id": entry.runtime.app_id,
-                    "session_id": entry.runtime.session_id,
-                    "transport": transport_summary(&entry.runtime.bridge),
-                    "active_scope": read_active_scope(&entry.adapter.app_dir),
-                })
-            })
-            .collect::<Vec<_>>();
-        self.control_plane.emit_completed(
-            "/_appfs/list_apps.act",
-            request_id,
-            serde_json::json!({ "apps": apps }),
-            client_token,
-        )?;
-        Ok(())
-    }
-
-    fn build_runtime_entry(
-        root: &Path,
-        runtime: ResolvedAppfsRuntimeCliArgs,
-    ) -> Result<AppRuntimeEntry> {
-        let adapter = AppfsAdapter::new(
-            root.to_path_buf(),
-            runtime.app_id.clone(),
-            runtime.session_id.clone(),
-            build_appfs_bridge_config(runtime.bridge.clone()),
-        )?;
-        Ok(AppRuntimeEntry { runtime, adapter })
-    }
-}
-
-fn register_request_to_runtime(
-    request: action_dispatcher::RegisterAppRequest,
-) -> Result<ResolvedAppfsRuntimeCliArgs> {
-    let session_id = normalize_appfs_session_id(request.session_id);
-    let doc = registry::AppfsAppsRegistryDoc {
-        version: registry::APPFS_REGISTRY_VERSION,
-        apps: vec![registry::AppfsRegisteredAppDoc {
-            app_id: request.app_id,
-            transport: request.transport,
-            session_id: session_id.clone(),
-            registered_at: chrono::Utc::now().to_rfc3339(),
-            active_scope: None,
-        }],
-    };
-    let mut runtimes = resolve_runtime_cli_args(registry::runtime_args_from_registry(&doc)?);
-    let runtime = runtimes
-        .pop()
-        .ok_or_else(|| anyhow::anyhow!("register request did not resolve any runtime args"))?;
-    Ok(ResolvedAppfsRuntimeCliArgs {
-        session_id,
-        ..runtime
-    })
-}
-
-fn read_active_scope(app_dir: &Path) -> Option<String> {
-    let state_path = app_dir
-        .join("_meta")
-        .join(APP_STRUCTURE_SYNC_STATE_FILENAME);
-    fs::read_to_string(&state_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<JsonValue>(&content).ok())
-        .and_then(|value| {
-            value
-                .get("active_scope")
-                .and_then(|scope| scope.as_str())
-                .map(ToString::to_string)
-        })
-}
-
-fn transport_summary(bridge: &AppfsBridgeCliArgs) -> JsonValue {
-    if let Some(endpoint) = &bridge.adapter_http_endpoint {
-        serde_json::json!({
-            "kind": "http",
-            "endpoint": endpoint,
-        })
-    } else if let Some(endpoint) = &bridge.adapter_grpc_endpoint {
-        serde_json::json!({
-            "kind": "grpc",
-            "endpoint": endpoint,
-        })
-    } else {
-        serde_json::json!({
-            "kind": "in_process",
-        })
+    match mount_thread.join() {
+        Ok(Ok(())) => runtime_result,
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow::anyhow!(
+            "AppFS mount thread panicked during shutdown"
+        )),
     }
 }
 
@@ -779,14 +450,13 @@ struct AppfsAdapter {
     snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
     streaming_jobs: Vec<StreamingJob>,
     actionline_v2_strict: bool,
-    business_connector: Box<dyn AppConnectorV2>,
-    structure_connector: Option<Box<dyn AppConnectorV3>>,
+    connector: Box<dyn AppConnector>,
 }
 
 #[cfg(test)]
 mod supervisor_tests {
     use super::{
-        build_runtime_cli_args, normalize_appfs_app_ids, registry, resolve_runtime_cli_args,
+        build_runtime_cli_args, registry, resolve_runtime_cli_args, runtime_config,
         AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
     };
     use serde_json::{json, Value as JsonValue};
@@ -806,6 +476,35 @@ mod supervisor_tests {
             adapter_bridge_circuit_breaker_failures: 5,
             adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
         }
+    }
+
+    #[test]
+    fn appfs_up_builds_managed_mount_args() {
+        let args = super::AppfsUpArgs {
+            id_or_path: ".agentfs/demo.db".to_string(),
+            mountpoint: std::path::PathBuf::from("C:\\mnt\\demo"),
+            backend: crate::cmd::mount::MountBackend::Winfsp,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: true,
+            uid: Some(1000),
+            gid: Some(1000),
+            poll_ms: 150,
+        };
+
+        let mount_args = super::build_managed_mount_args(&args);
+        assert_eq!(mount_args.id_or_path, ".agentfs/demo.db");
+        assert_eq!(
+            mount_args.mountpoint,
+            std::path::PathBuf::from("C:\\mnt\\demo")
+        );
+        assert!(mount_args.managed_appfs);
+        assert!(mount_args.foreground);
+        assert!(mount_args.allow_other);
+        assert!(mount_args.appfs_app_id.is_none());
+        assert!(mount_args.appfs_app_ids.is_empty());
+        assert!(mount_args.adapter_http_endpoint.is_none());
+        assert!(mount_args.adapter_grpc_endpoint.is_none());
     }
 
     fn append_text(path: &std::path::Path, text: &str) {
@@ -833,7 +532,7 @@ mod supervisor_tests {
 
     #[test]
     fn normalize_app_ids_defaults_and_deduplicates() {
-        let app_ids = normalize_appfs_app_ids(
+        let app_ids = runtime_config::normalize_appfs_app_ids(
             Some("aiim".to_string()),
             vec![" notion ".into(), "aiim".into()],
             Some("default"),
@@ -841,8 +540,8 @@ mod supervisor_tests {
         .expect("normalize app ids");
         assert_eq!(app_ids, vec!["aiim".to_string(), "notion".to_string()]);
 
-        let defaulted =
-            normalize_appfs_app_ids(None, Vec::new(), Some("aiim")).expect("default app id");
+        let defaulted = runtime_config::normalize_appfs_app_ids(None, Vec::new(), Some("aiim"))
+            .expect("default app id");
         assert_eq!(defaulted, vec!["aiim".to_string()]);
     }
 

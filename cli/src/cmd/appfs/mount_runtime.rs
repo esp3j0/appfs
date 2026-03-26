@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use super::core::{build_business_connector, parse_manifest_contract_json};
+use super::core::{build_app_connector, parse_manifest_contract_json};
 use super::journal::{SnapshotExpandJournalDoc, SnapshotExpandJournalEntry};
 use super::registry;
 use super::shared::{
@@ -48,7 +48,7 @@ pub(crate) struct MountSnapshotReadThroughConfig {
     pub managed: bool,
 }
 
-pub(crate) fn wrap_mount_readthrough_filesystem(
+pub(crate) fn wrap_mount_runtime_filesystem(
     inner: DynFs,
     config: MountSnapshotReadThroughConfig,
 ) -> DynFs {
@@ -70,7 +70,7 @@ struct MountSnapshotRuntime {
     session_id: String,
     snapshot_specs: Vec<SnapshotSpec>,
     snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
-    business_connector: Box<dyn agentfs_sdk::AppConnectorV2>,
+    connector: Box<dyn agentfs_sdk::AppConnector>,
 }
 
 impl MountSnapshotRuntime {
@@ -216,7 +216,7 @@ impl MountSnapshotReadThroughFs {
             parse_manifest_contract_json(&manifest_json, &format!("/{}", manifest_rel))?;
         let session_id = super::normalize_appfs_session_id(runtime_config.session_id.clone());
         let bridge_config = super::build_appfs_bridge_config(runtime_config.bridge.clone());
-        let business_connector = build_business_connector(app_id, &bridge_config)?;
+        let connector = build_app_connector(app_id, &bridge_config)?;
         let journal_path = format!("{app_id}/_stream/{}", SNAPSHOT_EXPAND_JOURNAL_FILENAME);
         let snapshot_expand_journal = match self.read_file_if_exists(&journal_path).await? {
             Some(bytes) => {
@@ -235,7 +235,7 @@ impl MountSnapshotReadThroughFs {
             session_id,
             snapshot_specs: manifest_contract.snapshot_specs,
             snapshot_expand_journal,
-            business_connector,
+            connector,
         };
         guard.insert(app_id.to_string(), runtime);
         Ok(true)
@@ -535,7 +535,7 @@ impl MountSnapshotReadThroughFs {
         let budget_bytes = 1_048_576_u64;
         loop {
             let response = runtime
-                .business_connector
+                .connector
                 .fetch_snapshot_chunk(
                     FetchSnapshotChunkRequestV2 {
                         resource_path: format!("/{}", resource_rel),

@@ -1,5 +1,6 @@
 pub mod appfs_adapter;
 pub mod appfs_adapter_testkit;
+pub mod appfs_connector;
 pub mod appfs_connector_v2;
 pub mod appfs_connector_v3;
 pub mod appfs_demo_adapter;
@@ -30,6 +31,15 @@ pub use appfs_adapter::{
 pub use appfs_adapter_testkit::{
     default_request_context_v1, run_error_case_matrix_v1, run_required_case_matrix_v1,
     AdapterCaseErrorV1, ErrorCaseMatrixV1, RequiredCaseMatrixV1,
+};
+pub use appfs_connector::{
+    ActionExecutionMode, ActionStreamingPlan, AppConnector, AppStructureNode, AppStructureNodeKind,
+    AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult, ConnectorContext,
+    ConnectorError, ConnectorInfo, FetchLivePageRequest, FetchLivePageResponse,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, GetAppStructureRequest,
+    GetAppStructureResponse, HealthStatus, RefreshAppStructureRequest, RefreshAppStructureResponse,
+    SnapshotMeta, SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
+    APPFS_CONNECTOR_SDK_VERSION,
 };
 pub use appfs_connector_v2::connector_error_codes_v2;
 pub use appfs_connector_v2::{

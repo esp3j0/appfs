@@ -4,18 +4,22 @@ use super::bridge_resilience::{
 use agentfs_sdk::{
     connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1,
     AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AuthStatusV2,
-    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
-    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
-    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, RequestContextV1,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppConnectorV2,
+    AuthStatusV2, ConnectorContext, ConnectorContextV2, ConnectorError, ConnectorErrorV2,
+    ConnectorInfo, ConnectorInfoV2, ConnectorTransportV2, FetchLivePageRequest,
+    FetchLivePageRequestV2, FetchLivePageResponse, FetchLivePageResponseV2,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponse,
+    FetchSnapshotChunkResponseV2, GetAppStructureRequest, GetAppStructureRequestV3,
+    GetAppStructureResponse, GetAppStructureResponseV3, HealthStatus, HealthStatusV2, LiveModeV2,
+    LivePageInfoV2, RefreshAppStructureRequest, RefreshAppStructureRequestV3,
+    RefreshAppStructureResponse, RefreshAppStructureResponseV3, RequestContextV1, SnapshotMeta,
     SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
-    SubmitActionRequestV2, SubmitActionResponseV2,
+    SubmitActionRequest as ConnectorSubmitActionRequest, SubmitActionRequestV2,
+    SubmitActionResponse as ConnectorSubmitActionResponse, SubmitActionResponseV2,
 };
 use agentfs_sdk::{
     AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
     AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3, ConnectorErrorV3,
-    GetAppStructureRequestV3, GetAppStructureResponseV3, RefreshAppStructureRequestV3,
-    RefreshAppStructureResponseV3,
 };
 use serde_json::Value as JsonValue;
 use std::future::Future;
@@ -780,6 +784,65 @@ impl AppConnectorV3 for GrpcBridgeConnectorV2 {
             }
             None => Err(empty_result_error_v3("RefreshAppStructure")),
         }
+    }
+}
+
+impl AppConnector for GrpcBridgeConnectorV2 {
+    fn connector_id(&self) -> Result<ConnectorInfo, ConnectorError> {
+        <Self as AppConnectorV2>::connector_id(self)
+    }
+
+    fn health(&mut self, ctx: &ConnectorContext) -> Result<HealthStatus, ConnectorError> {
+        <Self as AppConnectorV2>::health(self, ctx)
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        ctx: &ConnectorContext,
+    ) -> Result<SnapshotMeta, ConnectorError> {
+        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        request: FetchSnapshotChunkRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<FetchSnapshotChunkResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<FetchLivePageResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
+    }
+
+    fn submit_action(
+        &mut self,
+        request: ConnectorSubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<ConnectorSubmitActionResponse, ConnectorError> {
+        <Self as AppConnectorV2>::submit_action(self, request, ctx)
+    }
+
+    fn get_app_structure(
+        &mut self,
+        request: GetAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<GetAppStructureResponse, ConnectorError> {
+        <Self as AppConnectorV3>::get_app_structure(self, request, ctx)
+    }
+
+    fn refresh_app_structure(
+        &mut self,
+        request: RefreshAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<RefreshAppStructureResponse, ConnectorError> {
+        <Self as AppConnectorV3>::refresh_app_structure(self, request, ctx)
     }
 }
 

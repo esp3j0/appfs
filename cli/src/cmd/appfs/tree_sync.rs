@@ -1,10 +1,10 @@
-use super::core::build_structure_connector;
+use super::core::build_app_connector;
 use super::{
     ActionCursorDoc, AppfsBridgeConfig, CursorState, APP_STRUCTURE_SYNC_STATE_FILENAME,
     DEFAULT_RETENTION_HINT_SEC, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 use agentfs_sdk::{
-    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
+    AppConnector, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
     AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3,
     GetAppStructureRequestV3, RefreshAppStructureRequestV3,
 };
@@ -47,16 +47,7 @@ pub(super) fn ensure_app_structure_initialized(
         return Ok(());
     }
 
-    let Some(mut connector) = build_structure_connector(app_id, bridge_config)? else {
-        if app_dir.exists() && manifest_path.exists() {
-            bootstrap_runtime_scaffolding(root, app_id)?;
-            return Ok(());
-        }
-        anyhow::bail!(
-            "App structure is not initialized for app_id={} and no AppConnectorV3 structure path is available yet for the configured transport",
-            app_id
-        );
-    };
+    let mut connector = build_app_connector(app_id, bridge_config)?;
 
     let mut service = AppTreeSyncService::new(
         root.to_path_buf(),
@@ -71,7 +62,7 @@ pub(super) fn refresh_app_structure(
     root: &Path,
     app_id: &str,
     session_id: &str,
-    connector: &mut dyn AppConnectorV3,
+    connector: &mut dyn AppConnector,
     reason: AppStructureSyncReasonV3,
     target_scope: Option<String>,
     trigger_action_path: Option<String>,
@@ -99,7 +90,7 @@ impl AppTreeSyncService {
         }
     }
 
-    fn sync_initial(&mut self, connector: &mut dyn AppConnectorV3) -> Result<()> {
+    fn sync_initial(&mut self, connector: &mut dyn AppConnector) -> Result<()> {
         let state = self.load_state()?;
         let ctx = self.context("structure-init");
         eprintln!(
@@ -143,7 +134,7 @@ impl AppTreeSyncService {
     #[allow(dead_code)]
     fn refresh(
         &mut self,
-        connector: &mut dyn AppConnectorV3,
+        connector: &mut dyn AppConnector,
         reason: AppStructureSyncReasonV3,
         target_scope: Option<String>,
         trigger_action_path: Option<String>,

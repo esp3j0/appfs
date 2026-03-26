@@ -1,7 +1,7 @@
 use agentfs::{
     cmd::{self, completions::handle_completions},
     get_runtime,
-    opts::{Args, Command, FsCommand, PruneCommand, ServeCommand, SyncCommand},
+    opts::{AppfsCommand, Args, Command, FsCommand, PruneCommand, ServeCommand, SyncCommand},
 };
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
@@ -373,6 +373,37 @@ fn main() {
                         adapter_bridge_max_backoff_ms,
                         adapter_bridge_circuit_breaker_failures,
                         adapter_bridge_circuit_breaker_cooldown_ms,
+                    },
+                )) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        },
+        Command::Appfs { command } => match command {
+            AppfsCommand::Up {
+                id_or_path,
+                mountpoint,
+                backend,
+                auto_unmount,
+                allow_root,
+                system,
+                uid,
+                gid,
+                poll_ms,
+            } => {
+                let rt = get_runtime();
+                if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_up_command(
+                    cmd::appfs::AppfsUpArgs {
+                        id_or_path,
+                        mountpoint,
+                        backend,
+                        auto_unmount,
+                        allow_root,
+                        allow_other: system,
+                        uid,
+                        gid,
+                        poll_ms,
                     },
                 )) {
                     eprintln!("Error: {}", e);

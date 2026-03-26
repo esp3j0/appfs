@@ -1,14 +1,18 @@
 use crate::{
     ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1, AdapterControlOutcomeV1,
     AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2, AppConnectorV3,
-    AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3, AppStructureSyncReasonV3,
-    AppStructureSyncResultV3, AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2,
-    ConnectorTransportV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, GetAppStructureRequestV3,
-    GetAppStructureResponseV3, HealthStatusV2, LiveModeV2, LivePageInfoV2,
-    RefreshAppStructureRequestV3, RefreshAppStructureResponseV3, RequestContextV1, SnapshotMetaV2,
-    SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppConnectorV2,
+    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
+    AppStructureSyncReasonV3, AppStructureSyncResultV3, AuthStatusV2, ConnectorContext,
+    ConnectorContextV2, ConnectorError, ConnectorErrorV2, ConnectorInfo, ConnectorInfoV2,
+    ConnectorTransportV2, FetchLivePageRequest, FetchLivePageRequestV2, FetchLivePageResponse,
+    FetchLivePageResponseV2, FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2,
+    FetchSnapshotChunkResponse, FetchSnapshotChunkResponseV2, GetAppStructureRequest,
+    GetAppStructureRequestV3, GetAppStructureResponse, GetAppStructureResponseV3, HealthStatus,
+    HealthStatusV2, LiveModeV2, LivePageInfoV2, RefreshAppStructureRequest,
+    RefreshAppStructureRequestV3, RefreshAppStructureResponse, RefreshAppStructureResponseV3,
+    RequestContextV1, SnapshotMeta, SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2,
+    SubmitActionOutcomeV2, SubmitActionRequest, SubmitActionRequestV2, SubmitActionResponse,
     SubmitActionResponseV2,
 };
 use serde_json::{json, Value as JsonValue};
@@ -845,6 +849,68 @@ impl AppConnectorV3 for DemoAppConnectorV2 {
         Ok(RefreshAppStructureResponseV3 {
             result: AppStructureSyncResultV3::Snapshot { snapshot },
         })
+    }
+}
+
+impl AppConnector for DemoAppConnectorV2 {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+        <Self as AppConnectorV2>::connector_id(self)
+    }
+
+    fn health(
+        &mut self,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<HealthStatus, ConnectorError> {
+        <Self as AppConnectorV2>::health(self, ctx)
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
+        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        request: FetchSnapshotChunkRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
+    }
+
+    fn submit_action(
+        &mut self,
+        request: SubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
+        <Self as AppConnectorV2>::submit_action(self, request, ctx)
+    }
+
+    fn get_app_structure(
+        &mut self,
+        request: GetAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<GetAppStructureResponse, ConnectorError> {
+        <Self as AppConnectorV3>::get_app_structure(self, request, ctx)
+    }
+
+    fn refresh_app_structure(
+        &mut self,
+        request: RefreshAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
+        <Self as AppConnectorV3>::refresh_app_structure(self, request, ctx)
     }
 }
 

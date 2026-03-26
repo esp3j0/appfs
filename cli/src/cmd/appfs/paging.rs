@@ -97,7 +97,7 @@ impl AppfsAdapter {
             client_token: client_token.clone(),
             trace_id: None,
         };
-        match self.business_connector.fetch_live_page(
+        match self.connector.fetch_live_page(
             FetchLivePageRequestV2 {
                 resource_path,
                 handle_id: Some(handle_key.clone()),

@@ -40,8 +40,7 @@ Use the dedicated script when you want to validate the Windows-specific AppFS ma
 What it covers:
 - start the demo HTTP bridge
 - `agentfs init`
-- `agentfs mount --managed-appfs` on WinFsp
-- `agentfs serve appfs --managed`
+- `agentfs appfs up` on WinFsp
 - `/_appfs/register_app.act`
 - `/_app/enter_scope.act`
 - snapshot read-through after scope switch

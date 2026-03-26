@@ -54,7 +54,7 @@ impl AppfsAdapter {
                 trace_id: None,
             };
             match self
-                .business_connector
+                .connector
                 .prewarm_snapshot_meta(&resource_path, timeout, &ctx)
             {
                 Ok(meta) => {
@@ -696,7 +696,7 @@ impl AppfsAdapter {
                 trace_id: None,
             };
             let response = self
-                .business_connector
+                .connector
                 .fetch_snapshot_chunk(
                     FetchSnapshotChunkRequestV2 {
                         resource_path: format!("/{}", resource_rel),

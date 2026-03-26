@@ -399,6 +399,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ServeCommand,
     },
+    /// High-level AppFS lifecycle commands
+    Appfs {
+        #[command(subcommand)]
+        command: AppfsCommand,
+    },
     /// List active agentfs run sessions
     Ps,
     /// Prune unused resources
@@ -577,6 +582,48 @@ pub enum ServeCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum AppfsCommand {
+    /// Start AppFS in managed mode and orchestrate mount + runtime together
+    Up {
+        /// Agent ID or database path
+        #[arg(value_name = "ID_OR_PATH", add = ArgValueCompleter::new(id_or_path_completer))]
+        id_or_path: String,
+
+        /// Mount point directory
+        #[arg(value_name = "MOUNTPOINT", add = ArgValueCompleter::new(PathCompleter::dir()))]
+        mountpoint: PathBuf,
+
+        /// Backend to use for mounting
+        #[arg(long, default_value_t = MountBackend::default())]
+        backend: MountBackend,
+
+        /// Automatically unmount on exit
+        #[arg(short = 'a', long)]
+        auto_unmount: bool,
+
+        /// Allow root user to access filesystem
+        #[arg(long)]
+        allow_root: bool,
+
+        /// Allow other system users to access this mount
+        #[arg(long = "system")]
+        system: bool,
+
+        /// User ID to report for all files (defaults to current user)
+        #[arg(long)]
+        uid: Option<u32>,
+
+        /// Group ID to report for all files (defaults to current group)
+        #[arg(long)]
+        gid: Option<u32>,
+
+        /// Poll interval in milliseconds for action sink scanning
+        #[arg(long, default_value_t = 200)]
+        poll_ms: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum PruneCommand {
     /// Unmount unused agentfs mount points
     Mounts {
@@ -650,4 +697,55 @@ fn id_or_path_completer(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     completions.append(&mut path_completions);
 
     completions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppfsCommand, Args, Command, MountBackend};
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_appfs_up_command() {
+        let args = Args::parse_from([
+            "agentfs",
+            "appfs",
+            "up",
+            ".agentfs/demo.db",
+            "C:\\mnt\\appfs",
+            "--backend",
+            "winfsp",
+            "--system",
+            "--poll-ms",
+            "150",
+        ]);
+
+        match args.command {
+            Command::Appfs {
+                command:
+                    AppfsCommand::Up {
+                        id_or_path,
+                        mountpoint,
+                        backend,
+                        auto_unmount,
+                        allow_root,
+                        system,
+                        uid,
+                        gid,
+                        poll_ms,
+                    },
+            } => {
+                assert_eq!(id_or_path, ".agentfs/demo.db");
+                assert_eq!(mountpoint, PathBuf::from("C:\\mnt\\appfs"));
+                assert!(matches!(backend, MountBackend::Winfsp));
+                assert!(!auto_unmount);
+                assert!(!allow_root);
+                assert!(system);
+                assert_eq!(uid, None);
+                assert_eq!(gid, None);
+                assert_eq!(poll_ms, 150);
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
 }

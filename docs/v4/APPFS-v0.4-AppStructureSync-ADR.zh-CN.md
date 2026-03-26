@@ -114,25 +114,44 @@ runtime 继续作为以下内容的真相源：
 
 ## 4. 兼容性决策
 
-### 4.1 不修改 `AppConnectorV2`
+### 4.1 `AppConnectorV3` 作为扩展阶段存在，运行时收口为统一 `AppConnector`
 
-`v0.3` 已冻结 `AppConnectorV2` 方法集。本阶段不 reopen `V3-01`，而是引入新契约：
+`v0.3` 冻结时不应直接把结构同步塞进 `AppConnectorV2`，因此 `v0.4` 先引入了：
 
 `AppConnectorV3`
 
-理由：
+这一步仍然成立，它解释了结构同步为何作为独立 shipping surface 引入。
 
-1. `v0.3` 文档已明确方法集冻结。
-2. 结构同步是新的 shipping surface，不应偷偷塞进 V2。
-3. transport 协议升级、CI 与 pilot 更容易按版本切分。
+但在后续收口阶段，运行时与 Rust SDK 的 canonical surface 改为：
+
+`AppConnector`
+
+约束：
+
+1. HTTP / gRPC wire contract 仍可继续使用 `v2` / `v3` 名称；
+2. adapter 层负责把现有 wire shape 映射到统一 `AppConnector`；
+3. runtime 不再持有“business connector + structure connector”双概念。
 
 ### 4.2 迁移窗口
 
-1. `AppConnectorV2` 继续支撑当前单 app 静态结构路径。
-2. `AppConnectorV3` 承担动态结构与多 app 路径。
-3. 在 `v0.4` 收口前，README 与实现应明确区分：
-   - `v0.3 shipping path`
-   - `v0.4 structure-sync path`
+1. `AppConnectorV2` / `AppConnectorV3` 继续保留为 adapter/wire 兼容层。
+2. canonical Rust SDK/runtime surface 使用统一 `AppConnector`。
+3. 在 `v0.4` 收口后，README 与实现应明确区分：
+   - low-level transport versioning
+   - runtime-facing canonical connector
+
+### 4.3 `managed-first` 成为默认启动流
+
+`v0.4` 收口后，AppFS 默认启动流冻结为：
+
+`agentfs appfs up <id-or-path> <mountpoint>`
+
+约束：
+
+1. `managed registry` 成为 AppFS happy path 的唯一配置真相源；
+2. `mount --managed-appfs` 与 `serve appfs --managed` 继续保留，但降级为调试入口；
+3. `agentfs init --base` 继续属于 AgentFS Core 能力，但退出 AppFS 推荐流程；
+4. `_meta/manifest.res.json` 视为结构快照派生物，而不是 AppFS 运行态主真相。
 
 ## 5. 影响
 

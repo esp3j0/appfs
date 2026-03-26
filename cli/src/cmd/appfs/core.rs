@@ -1,9 +1,12 @@
 use agentfs_sdk::{
-    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnectorV2, AppConnectorV3,
-    AppStructureSyncReasonV3, AuthStatusV2, ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2,
-    ConnectorTransportV2, DemoAppConnectorV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2,
-    SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
+    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnector, AppConnectorV2,
+    AppStructureSyncReasonV3, AuthStatusV2, ConnectorContext, ConnectorContextV2, ConnectorError,
+    ConnectorErrorV2, ConnectorInfo, ConnectorInfoV2, ConnectorTransportV2, DemoAppConnectorV2,
+    FetchLivePageRequest, FetchLivePageRequestV2, FetchLivePageResponse, FetchLivePageResponseV2,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponse,
+    FetchSnapshotChunkResponseV2, HealthStatus, HealthStatusV2, SnapshotMeta, SnapshotMetaV2,
+    SubmitActionOutcomeV2, SubmitActionRequest, SubmitActionRequestV2, SubmitActionResponse,
+    SubmitActionResponseV2,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -277,6 +280,52 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
     }
 }
 
+impl AppConnector for LegacyAdapterConnectorV2 {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+        <Self as AppConnectorV2>::connector_id(self)
+    }
+
+    fn health(
+        &mut self,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<HealthStatus, ConnectorError> {
+        <Self as AppConnectorV2>::health(self, ctx)
+    }
+
+    fn prewarm_snapshot_meta(
+        &mut self,
+        resource_path: &str,
+        timeout: Duration,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
+        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
+    }
+
+    fn fetch_snapshot_chunk(
+        &mut self,
+        request: FetchSnapshotChunkRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
+    }
+
+    fn fetch_live_page(
+        &mut self,
+        request: FetchLivePageRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
+        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
+    }
+
+    fn submit_action(
+        &mut self,
+        request: SubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
+        <Self as AppConnectorV2>::submit_action(self, request, ctx)
+    }
+}
+
 impl AppfsAdapter {
     pub(super) fn new(
         root: PathBuf,
@@ -340,9 +389,8 @@ impl AppfsAdapter {
                 );
             }
         }
-        let business_connector = build_business_connector(&app_id, &bridge_config)?;
-        let structure_connector = build_structure_connector(&app_id, &bridge_config)?;
-        let connector_info = business_connector
+        let connector = build_app_connector(&app_id, &bridge_config)?;
+        let connector_info = connector
             .connector_id()
             .map_err(|err| anyhow::anyhow!("connector_id failed: {}: {}", err.code, err.message))?;
         if connector_info.app_id != app_id {
@@ -377,8 +425,7 @@ impl AppfsAdapter {
             )?,
             streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
             actionline_v2_strict: env_flag_enabled("APPFS_V2_ACTIONLINE_STRICT"),
-            business_connector,
-            structure_connector,
+            connector,
         };
         adapter.initialize_snapshot_states();
         adapter.recover_snapshot_expand_journal()?;
@@ -764,7 +811,7 @@ impl AppfsAdapter {
         let payload_json: JsonValue =
             serde_json::from_str(payload).context("validated JSON payload must parse")?;
 
-        match self.business_connector.submit_action(
+        match self.connector.submit_action(
             SubmitActionRequestV2 {
                 path: normalized_path.clone(),
                 payload: payload_json,
@@ -848,10 +895,10 @@ impl AppfsAdapter {
     }
 }
 
-pub(super) fn build_business_connector(
+pub(super) fn build_app_connector(
     app_id: &str,
     bridge_config: &AppfsBridgeConfig,
-) -> Result<Box<dyn AppConnectorV2>> {
+) -> Result<Box<dyn AppConnector>> {
     let normalized_http_endpoint = bridge_config
         .adapter_http_endpoint
         .as_deref()
@@ -870,7 +917,7 @@ pub(super) fn build_business_connector(
         );
     }
 
-    let connector: Box<dyn AppConnectorV2> = if let Some(endpoint) = normalized_grpc_endpoint {
+    let connector: Box<dyn AppConnector> = if let Some(endpoint) = normalized_grpc_endpoint {
         eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
         Box::new(
             GrpcBridgeConnectorV2::new(
@@ -910,42 +957,6 @@ pub(super) fn build_business_connector(
         );
     }
     Ok(connector)
-}
-
-pub(super) fn build_structure_connector(
-    app_id: &str,
-    bridge_config: &AppfsBridgeConfig,
-) -> Result<Option<Box<dyn AppConnectorV3>>> {
-    let normalized_http_endpoint = bridge_config
-        .adapter_http_endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let normalized_grpc_endpoint = bridge_config
-        .adapter_grpc_endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    if let Some(endpoint) = normalized_http_endpoint {
-        return Ok(Some(Box::new(HttpBridgeConnectorV2::new(
-            app_id.to_string(),
-            endpoint.to_string(),
-            Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
-            bridge_config.runtime_options,
-        ))));
-    }
-
-    if let Some(endpoint) = normalized_grpc_endpoint {
-        return Ok(Some(Box::new(GrpcBridgeConnectorV2::new(
-            app_id.to_string(),
-            endpoint.to_string(),
-            Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
-            bridge_config.runtime_options,
-        )?)));
-    }
-
-    Ok(Some(Box::new(DemoAppConnectorV2::new(app_id.to_string()))))
 }
 
 pub(super) fn parse_manifest_contract_json(
@@ -1272,18 +1283,6 @@ impl AppfsAdapter {
         target_scope: &str,
         client_token: Option<String>,
     ) -> Result<ProcessOutcome> {
-        let Some(connector) = self.structure_connector.as_deref_mut() else {
-            self.emit_failed_with_retryable(
-                action_path,
-                request_id,
-                connector_error_codes_v2::NOT_SUPPORTED,
-                "structure sync is not supported for the configured connector transport",
-                false,
-                client_token,
-            )?;
-            return Ok(ProcessOutcome::Consumed);
-        };
-
         let root = self
             .app_dir
             .parent()
@@ -1292,7 +1291,7 @@ impl AppfsAdapter {
             root,
             &self.app_id,
             &self.session_id,
-            connector,
+            &mut *self.connector,
             AppStructureSyncReasonV3::EnterScope,
             Some(target_scope.to_string()),
             Some(action_path.to_string()),
@@ -1314,12 +1313,20 @@ impl AppfsAdapter {
                 Ok(ProcessOutcome::Consumed)
             }
             Err(err) => {
+                let (code, retryable) = match err.downcast_ref::<ConnectorErrorV2>() {
+                    Some(connector_err)
+                        if connector_err.code == connector_error_codes_v2::NOT_SUPPORTED =>
+                    {
+                        (connector_error_codes_v2::NOT_SUPPORTED, false)
+                    }
+                    _ => ("STRUCTURE_SYNC_FAILED", true),
+                };
                 self.emit_failed_with_retryable(
                     action_path,
                     request_id,
-                    "STRUCTURE_SYNC_FAILED",
+                    code,
                     &format!("structure enter_scope failed: {err}"),
-                    true,
+                    retryable,
                     client_token,
                 )?;
                 Ok(ProcessOutcome::Consumed)
@@ -1334,18 +1341,6 @@ impl AppfsAdapter {
         target_scope: Option<&str>,
         client_token: Option<String>,
     ) -> Result<ProcessOutcome> {
-        let Some(connector) = self.structure_connector.as_deref_mut() else {
-            self.emit_failed_with_retryable(
-                action_path,
-                request_id,
-                connector_error_codes_v2::NOT_SUPPORTED,
-                "structure sync is not supported for the configured connector transport",
-                false,
-                client_token,
-            )?;
-            return Ok(ProcessOutcome::Consumed);
-        };
-
         let root = self
             .app_dir
             .parent()
@@ -1354,7 +1349,7 @@ impl AppfsAdapter {
             root,
             &self.app_id,
             &self.session_id,
-            connector,
+            &mut *self.connector,
             AppStructureSyncReasonV3::Refresh,
             target_scope.map(ToOwned::to_owned),
             Some(action_path.to_string()),
@@ -1376,12 +1371,20 @@ impl AppfsAdapter {
                 Ok(ProcessOutcome::Consumed)
             }
             Err(err) => {
+                let (code, retryable) = match err.downcast_ref::<ConnectorErrorV2>() {
+                    Some(connector_err)
+                        if connector_err.code == connector_error_codes_v2::NOT_SUPPORTED =>
+                    {
+                        (connector_error_codes_v2::NOT_SUPPORTED, false)
+                    }
+                    _ => ("STRUCTURE_SYNC_FAILED", true),
+                };
                 self.emit_failed_with_retryable(
                     action_path,
                     request_id,
-                    "STRUCTURE_SYNC_FAILED",
+                    code,
                     &format!("structure refresh failed: {err}"),
-                    true,
+                    retryable,
                     client_token,
                 )?;
                 Ok(ProcessOutcome::Consumed)
@@ -1399,6 +1402,7 @@ impl AppfsAdapter {
 mod tests {
     use super::{map_adapter_error_v1_to_connector_error_v2, LegacyAdapterConnectorV2};
     use super::{AppfsAdapter, AppfsBridgeConfig};
+    use crate::cmd::appfs::bridge_resilience::BridgeRuntimeOptions;
     use crate::cmd::appfs::{ACTION_CURSORS_FILENAME, SNAPSHOT_EXPAND_JOURNAL_FILENAME};
     use agentfs_sdk::{
         AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
@@ -1549,7 +1553,7 @@ mod tests {
             adapter_http_timeout_ms: 5_000,
             adapter_grpc_endpoint: None,
             adapter_grpc_timeout_ms: 5_000,
-            runtime_options: super::super::BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
+            runtime_options: BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
         }
     }
 
@@ -1559,7 +1563,7 @@ mod tests {
             adapter_http_timeout_ms: 5_000,
             adapter_grpc_endpoint: None,
             adapter_grpc_timeout_ms: 5_000,
-            runtime_options: super::super::BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
+            runtime_options: BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
         }
     }
 
@@ -1569,7 +1573,7 @@ mod tests {
             adapter_http_timeout_ms: 5_000,
             adapter_grpc_endpoint: Some(endpoint),
             adapter_grpc_timeout_ms: 5_000,
-            runtime_options: super::super::BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
+            runtime_options: BridgeRuntimeOptions::from_cli(2, 100, 1_000, 5, 3_000),
         }
     }
 

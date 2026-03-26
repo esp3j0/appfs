@@ -4,6 +4,8 @@ use agentfs_sdk::{error::Error as SdkError, AgentFSOptions};
 #[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(any(unix, target_os = "windows"))]
+use std::sync::mpsc::SyncSender;
 use std::{path::PathBuf, sync::Arc};
 
 #[cfg(target_os = "windows")]
@@ -95,6 +97,16 @@ pub struct MountArgs {
     pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
 }
 
+#[cfg(any(unix, target_os = "windows"))]
+type MountReadyTx = SyncSender<Result<()>>;
+
+#[cfg(any(unix, target_os = "windows"))]
+fn notify_mount_ready(ready_tx: Option<&MountReadyTx>, result: Result<()>) {
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(result);
+    }
+}
+
 fn has_appfs_mount_config(args: &MountArgs) -> bool {
     args.managed_appfs
         || args.appfs_app_id.is_some()
@@ -141,9 +153,9 @@ fn wrap_mount_fs_if_appfs_enabled(
     if runtime_args.is_empty() && !args.managed_appfs {
         return Ok(fs);
     }
-    Ok(appfs::mount_readthrough::wrap_mount_readthrough_filesystem(
+    Ok(appfs::mount_runtime::wrap_mount_runtime_filesystem(
         fs,
-        appfs::mount_readthrough::MountSnapshotReadThroughConfig {
+        appfs::mount_runtime::MountSnapshotReadThroughConfig {
             runtimes: runtime_args,
             managed: args.managed_appfs,
         },
@@ -561,6 +573,11 @@ impl FileSystem for WinfspTokioFsAdapter {
 /// Mount the agent filesystem (Linux).
 #[cfg(target_os = "linux")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    mount_with_ready(args, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn mount_with_ready(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     validate_appfs_mount_mode(&args)?;
     if has_appfs_mount_config(&args) && !matches!(args.backend, MountBackend::Fuse) {
         anyhow::bail!(
@@ -568,10 +585,10 @@ pub fn mount(args: MountArgs) -> Result<()> {
         );
     }
     match args.backend {
-        MountBackend::Fuse => mount_fuse(args),
+        MountBackend::Fuse => mount_fuse(args, ready_tx),
         MountBackend::Nfs => {
             let rt = crate::get_runtime();
-            rt.block_on(mount_nfs_backend(args))
+            rt.block_on(mount_nfs_backend(args, ready_tx))
         }
         MountBackend::Winfsp => anyhow::bail!(
             "WinFsp mounting is only supported on Windows.\n\
@@ -583,6 +600,11 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (macOS).
 #[cfg(target_os = "macos")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    mount_with_ready(args, None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mount_with_ready(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     validate_appfs_mount_mode(&args)?;
     match args.backend {
         MountBackend::Fuse => {
@@ -593,7 +615,7 @@ pub fn mount(args: MountArgs) -> Result<()> {
         }
         MountBackend::Nfs => {
             let rt = crate::get_runtime();
-            rt.block_on(mount_nfs_backend(args))
+            rt.block_on(mount_nfs_backend(args, ready_tx))
         }
         MountBackend::Winfsp => {
             anyhow::bail!(
@@ -607,6 +629,11 @@ pub fn mount(args: MountArgs) -> Result<()> {
 /// Mount the agent filesystem (Windows).
 #[cfg(target_os = "windows")]
 pub fn mount(args: MountArgs) -> Result<()> {
+    mount_with_ready(args, None)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn mount_with_ready(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     validate_appfs_mount_mode(&args)?;
     match args.backend {
         MountBackend::Fuse => {
@@ -623,14 +650,14 @@ pub fn mount(args: MountArgs) -> Result<()> {
         }
         MountBackend::Winfsp => {
             let rt = crate::get_runtime();
-            rt.block_on(mount_winfsp_backend(args))
+            rt.block_on(mount_winfsp_backend(args, ready_tx))
         }
     }
 }
 
 /// Mount the agent filesystem using WinFsp (Windows only).
 #[cfg(target_os = "windows")]
-async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
+async fn mount_winfsp_backend(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     use parking_lot::Mutex;
 
     let opts = AgentFSOptions::resolve(&args.id_or_path)?;
@@ -703,6 +730,7 @@ async fn mount_winfsp_backend(args: MountArgs) -> Result<()> {
 
     // Call winfsp mount directly
     let _mount_handle = crate::mount::winfsp::mount_winfsp(fs, mount_opts).await?;
+    notify_mount_ready(ready_tx.as_ref(), Ok(()));
 
     eprintln!("Mounted at {}", mountpoint.display());
     eprintln!("Press Ctrl+C to unmount and exit.");
@@ -731,7 +759,7 @@ async fn overlay_mount_filesystem(
 
 /// Mount the agent filesystem using FUSE (Linux only).
 #[cfg(target_os = "linux")]
-fn mount_fuse(args: MountArgs) -> Result<()> {
+fn mount_fuse(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     let opts = AgentFSOptions::resolve(&args.id_or_path)?;
 
     // Check schema version before daemonizing. This allows us to show the error
@@ -842,6 +870,7 @@ fn mount_fuse(args: MountArgs) -> Result<()> {
 
         rt.block_on(async {
             let _mount_handle = mount_fs(fs, mount_opts).await?;
+            notify_mount_ready(ready_tx.as_ref(), Ok(()));
             eprintln!("Mounted at {}", mountpoint.display());
             eprintln!("Press Ctrl+C to unmount and exit.");
             tokio::select! {
@@ -974,7 +1003,7 @@ fn lazy_unmount_fuse(mountpoint: &Path) -> Result<()> {
 
 /// Mount the agent filesystem using NFS over localhost.
 #[cfg(unix)]
-async fn mount_nfs_backend(args: MountArgs) -> Result<()> {
+async fn mount_nfs_backend(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
     use crate::cmd::init::open_agentfs;
 
     let opts = AgentFSOptions::resolve(&args.id_or_path)?;
@@ -1053,6 +1082,7 @@ async fn mount_nfs_backend(args: MountArgs) -> Result<()> {
         };
 
         let _mount_handle = mount_fs(fs, mount_opts).await?;
+        notify_mount_ready(ready_tx.as_ref(), Ok(()));
 
         eprintln!("Mounted at {}", mountpoint.display());
         eprintln!("Press Ctrl+C to unmount and exit.");
