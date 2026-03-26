@@ -291,9 +291,10 @@ impl MountSnapshotReadThroughFs {
                     let _ = self.remove_file_if_exists(temp_rel).await;
                 }
             }
-            eprintln!(
-                "[recovery] mount snapshot expand incomplete resource=/{} status={} -> cold",
-                resource_rel, entry.status
+            tracing::debug!(
+                resource = format!("/{}", resource_rel),
+                status = entry.status,
+                "mount snapshot expand recovery reset to cold"
             );
         }
         journal_resources.clear();
@@ -964,14 +965,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
                         .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
                         .await
                         .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                    eprintln!(
-                        "[cache.open] app={} resource=/{} flags=0x{:x} size={} has_journal={} force_expand={} read_intent=true",
-                        resource_app_id,
-                        resource_rel,
-                        flags,
-                        current_stats.as_ref().map(|stats| stats.size).unwrap_or(-1),
+                    tracing::debug!(
+                        app_id = resource_app_id,
+                        resource = format!("/{}", resource_rel),
+                        flags = format_args!("0x{:x}", flags),
+                        size = current_stats.as_ref().map(|stats| stats.size).unwrap_or(-1),
                         has_journal,
-                        should_force_expand
+                        force_expand = should_force_expand,
+                        read_intent = true,
+                        "mount snapshot open evaluation"
                     );
                     if should_expand_on_open(
                         current_stats.as_ref(),
