@@ -320,6 +320,13 @@ impl AgentFSWinFsp {
         Ok(self.block_on(async move { fs.lock().lookup(parent_ino, &name).await })?)
     }
 
+    fn refresh_open_stats(&self, path: &str, fallback: &Stats) -> Stats {
+        match self.path_lookup(path) {
+            Ok(Some(stats)) => stats,
+            _ => fallback.clone(),
+        }
+    }
+
     /// Delete a file or directory by path.
     fn delete_path(&self, path: &str, is_dir: bool) -> Result<()> {
         let (parent_ino, name) = self.parse_path(path)?;
@@ -577,13 +584,12 @@ impl FileSystemContext for AgentFSWinFsp {
 
         match self.path_lookup(&path) {
             Ok(Some(stats)) => {
-                fill_file_info(&stats, file_info.as_mut());
-
                 let fh = self.alloc_fh();
                 let is_dir = stats.is_directory();
                 let path_owned = path.clone();
 
                 if is_dir {
+                    fill_file_info(&stats, file_info.as_mut());
                     // For directories, we don't need a file handle, just track the inode
                     self.open_files.lock().insert(
                         fh,
@@ -599,6 +605,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     );
                     Ok(FileContext { fh })
                 } else if stats.is_symlink() {
+                    fill_file_info(&stats, file_info.as_mut());
                     self.open_files.lock().insert(
                         fh,
                         OpenFile {
@@ -621,11 +628,20 @@ impl FileSystemContext for AgentFSWinFsp {
 
                     match file {
                         Ok(file) => {
+                            let refreshed_stats = self.refresh_open_stats(&path, &stats);
+                            tracing::debug!(
+                                "WinFsp::open refreshed path={} ino={} -> {} size={}",
+                                path,
+                                stats.ino,
+                                refreshed_stats.ino,
+                                refreshed_stats.size
+                            );
+                            fill_file_info(&refreshed_stats, file_info.as_mut());
                             self.open_files.lock().insert(
                                 fh,
                                 OpenFile {
                                     file: Some(file),
-                                    ino: stats.ino,
+                                    ino: refreshed_stats.ino,
                                     is_dir: false,
                                     is_symlink: false,
                                     delete_on_close: std::sync::atomic::AtomicBool::new(
@@ -690,12 +706,12 @@ impl FileSystemContext for AgentFSWinFsp {
                     path,
                     stats.ino
                 );
-                fill_file_info(&stats, file_info.as_mut());
 
                 let fh = self.alloc_fh();
                 let path_owned = path.clone();
 
                 if stats.is_directory() {
+                    fill_file_info(&stats, file_info.as_mut());
                     self.open_files.lock().insert(
                         fh,
                         OpenFile {
@@ -710,6 +726,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     );
                     Ok(FileContext { fh })
                 } else if stats.is_symlink() {
+                    fill_file_info(&stats, file_info.as_mut());
                     self.open_files.lock().insert(
                         fh,
                         OpenFile {
@@ -731,11 +748,20 @@ impl FileSystemContext for AgentFSWinFsp {
 
                     match file {
                         Ok(file) => {
+                            let refreshed_stats = self.refresh_open_stats(&path, &stats);
+                            tracing::debug!(
+                                "WinFsp::create refreshed existing path={} ino={} -> {} size={}",
+                                path,
+                                stats.ino,
+                                refreshed_stats.ino,
+                                refreshed_stats.size
+                            );
+                            fill_file_info(&refreshed_stats, file_info.as_mut());
                             self.open_files.lock().insert(
                                 fh,
                                 OpenFile {
                                     file: Some(file),
-                                    ino: stats.ino,
+                                    ino: refreshed_stats.ino,
                                     is_dir: false,
                                     is_symlink: false,
                                     delete_on_close: std::sync::atomic::AtomicBool::new(

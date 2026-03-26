@@ -210,6 +210,7 @@ impl AppTreeSyncService {
         let desired_owned_paths = self.desired_owned_paths(&snapshot);
         self.prune_removed_owned_paths(&state.owned_paths, &desired_owned_paths)?;
         self.materialize_snapshot(&snapshot)?;
+        self.ensure_snapshot_paths_visible(&snapshot, &desired_owned_paths)?;
         self.save_state(&AppStructureSyncStateDoc {
             revision: Some(snapshot.revision),
             active_scope: snapshot.active_scope,
@@ -361,6 +362,46 @@ impl AppTreeSyncService {
         owned
     }
 
+    fn ensure_snapshot_paths_visible(
+        &self,
+        snapshot: &AppStructureSnapshotV3,
+        desired_owned_paths: &BTreeSet<String>,
+    ) -> Result<()> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = snapshot;
+            let _ = desired_owned_paths;
+            Ok(())
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let file_paths = self.snapshot_file_paths(snapshot);
+            wait_for_path_visibility(&self.app_dir(), true).with_context(|| {
+                format!("App root is not visible yet: {}", self.app_dir().display())
+            })?;
+            for rel in desired_owned_paths {
+                let full = self.app_dir().join(rel);
+                let expect_dir = !file_paths.contains(rel);
+                wait_for_path_visibility(&full, expect_dir).with_context(|| {
+                    format!("structure path is not visible yet: {}", full.display())
+                })?;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn snapshot_file_paths(&self, snapshot: &AppStructureSnapshotV3) -> BTreeSet<String> {
+        let mut file_paths = BTreeSet::from(["_meta/manifest.res.json".to_string()]);
+        for node in &snapshot.nodes {
+            if !matches!(node.kind, AppStructureNodeKindV3::Directory) {
+                file_paths.insert(node.path.clone());
+            }
+        }
+        file_paths
+    }
+
     fn validate_node(&self, node: &AppStructureNodeV3) -> Result<()> {
         if node.path.trim().is_empty() {
             anyhow::bail!("structure node path cannot be empty");
@@ -494,6 +535,41 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(parent)
         .with_context(|| format!("Failed to create parent directory {}", parent.display()))?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_path_visibility(path: &Path, expect_dir: bool) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 20;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        refresh_parent_directory(path);
+        let visible = if expect_dir {
+            path.is_dir()
+        } else {
+            path.is_file()
+        };
+        if visible {
+            return Ok(());
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(15 * (attempt + 1) as u64));
+        }
+    }
+
+    anyhow::bail!(
+        "path did not become visible in time: {} (expect_dir={expect_dir})",
+        path.display()
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_parent_directory(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Ok(entries) = fs::read_dir(parent) {
+        for _ in entries.take(1) {}
+    }
 }
 
 fn remove_empty_dir_with_retry(path: &Path) -> Result<()> {
