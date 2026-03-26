@@ -1139,6 +1139,39 @@ impl FileSystem for MountSnapshotReadThroughFs {
     }
 }
 
+fn join_rel_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn split_app_relative_path(rel_path: &str) -> Option<(&str, &str)> {
+    let trimmed = rel_path.trim_matches('/');
+    let (app_id, rest) = trimmed.split_once('/')?;
+    if app_id.is_empty() || rest.is_empty() {
+        return None;
+    }
+    Some((app_id, rest))
+}
+
+fn io_error(errno: i32, message: String) -> std::io::Error {
+    let _ = message;
+    std::io::Error::from_raw_os_error(errno)
+}
+
+fn io_error_eio<E: std::fmt::Display>(err: E) -> std::io::Error {
+    io_error(RAW_IO_ERROR, err.to_string())
+}
+
+fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sdk::error::Error {
+    match err.downcast::<std::io::Error>() {
+        Ok(io_err) => io_err.into(),
+        Err(other) => io_error(default_errno, other.to_string()).into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1205,38 +1238,5 @@ mod tests {
         assert!(open_requests_read(OPEN_READ_WRITE));
         assert!(!open_requests_read(OPEN_WRITE_ONLY));
         assert!(!open_requests_read(OPEN_READ_ONLY | OPEN_NO_READ_HINT));
-    }
-}
-
-fn join_rel_path(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        name.to_string()
-    } else {
-        format!("{parent}/{name}")
-    }
-}
-
-fn split_app_relative_path(rel_path: &str) -> Option<(&str, &str)> {
-    let trimmed = rel_path.trim_matches('/');
-    let (app_id, rest) = trimmed.split_once('/')?;
-    if app_id.is_empty() || rest.is_empty() {
-        return None;
-    }
-    Some((app_id, rest))
-}
-
-fn io_error(errno: i32, message: String) -> std::io::Error {
-    let _ = message;
-    std::io::Error::from_raw_os_error(errno)
-}
-
-fn io_error_eio<E: std::fmt::Display>(err: E) -> std::io::Error {
-    io_error(RAW_IO_ERROR, err.to_string())
-}
-
-fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sdk::error::Error {
-    match err.downcast::<std::io::Error>() {
-        Ok(io_err) => io_err.into(),
-        Err(other) => io_error(default_errno, other.to_string()).into(),
     }
 }

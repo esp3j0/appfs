@@ -21,6 +21,9 @@ const CONTROL_REGISTER_ACTION: &str = "register_app.act";
 const CONTROL_UNREGISTER_ACTION: &str = "unregister_app.act";
 const CONTROL_LIST_ACTION: &str = "list_apps.act";
 
+type NormalizedPayload = (String, Option<String>);
+type NormalizePayloadError = (&'static str, &'static str, Option<String>);
+
 #[derive(Debug, Clone)]
 pub(super) enum SupervisorControlInvocation {
     Register {
@@ -231,8 +234,7 @@ impl SupervisorControlPlane {
     fn normalize_payload(
         &self,
         line: &str,
-    ) -> std::result::Result<(String, Option<String>), (&'static str, &'static str, Option<String>)>
-    {
+    ) -> std::result::Result<NormalizedPayload, NormalizePayloadError> {
         match normalize_actionline_v2_payload(line, self.actionline_v2_strict) {
             Ok(Some(parsed)) => Ok((parsed.payload_json, Some(parsed.client_token))),
             Ok(None) => Ok((line.to_string(), extract_client_token(line))),

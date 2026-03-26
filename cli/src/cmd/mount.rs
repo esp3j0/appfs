@@ -6,8 +6,10 @@ use anyhow::Context;
 use anyhow::Result;
 use std::{path::PathBuf, sync::Arc};
 
+#[cfg(target_os = "windows")]
+use agentfs_sdk::AgentFS as SdkAgentFS;
 #[cfg(any(unix, target_os = "windows"))]
-use agentfs_sdk::{AgentFS as SdkAgentFS, HostFS, OverlayFS};
+use agentfs_sdk::{HostFS, OverlayFS};
 #[cfg(unix)]
 use std::{path::Path, process::Command};
 #[cfg(any(unix, target_os = "windows"))]

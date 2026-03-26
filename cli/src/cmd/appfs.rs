@@ -2,7 +2,7 @@ use agentfs_sdk::{AppConnectorV2, AppConnectorV3};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -518,12 +518,9 @@ impl AppfsRuntimeSupervisor {
         Ok(())
     }
 
-    fn build_runtime_entry(
-        root: &PathBuf,
-        runtime: ResolvedAppfsRuntimeCliArgs,
-    ) -> Result<AppRuntimeEntry> {
+    fn build_runtime_entry(root: &Path, runtime: ResolvedAppfsRuntimeCliArgs) -> Result<AppRuntimeEntry> {
         let adapter = AppfsAdapter::new(
-            root.clone(),
+            root.to_path_buf(),
             runtime.app_id.clone(),
             runtime.session_id.clone(),
             build_appfs_bridge_config(runtime.bridge.clone()),
@@ -556,7 +553,7 @@ fn register_request_to_runtime(
     })
 }
 
-fn read_active_scope(app_dir: &PathBuf) -> Option<String> {
+fn read_active_scope(app_dir: &Path) -> Option<String> {
     let state_path = app_dir
         .join("_meta")
         .join(APP_STRUCTURE_SYNC_STATE_FILENAME);

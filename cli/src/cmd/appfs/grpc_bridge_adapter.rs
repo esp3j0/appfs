@@ -712,6 +712,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
 }
 
 impl AppConnectorV3 for GrpcBridgeConnectorV2 {
+    #[allow(clippy::result_large_err)]
     fn get_app_structure(
         &mut self,
         request: GetAppStructureRequestV3,
@@ -746,6 +747,7 @@ impl AppConnectorV3 for GrpcBridgeConnectorV2 {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn refresh_app_structure(
         &mut self,
         request: RefreshAppStructureRequestV3,

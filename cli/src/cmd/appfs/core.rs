@@ -1641,15 +1641,12 @@ mod tests {
             let stop = Arc::new(AtomicBool::new(false));
             let stop_flag = Arc::clone(&stop);
 
-            let thread = thread::spawn(move || loop {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        if stop_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        handle_test_http_connection(&mut stream)
+            let thread = thread::spawn(move || {
+                while let Ok((mut stream, _)) = listener.accept() {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        break;
                     }
-                    Err(_) => break,
+                    handle_test_http_connection(&mut stream);
                 }
             });
 
