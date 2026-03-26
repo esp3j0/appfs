@@ -291,10 +291,9 @@ impl MountSnapshotReadThroughFs {
                     let _ = self.remove_file_if_exists(temp_rel).await;
                 }
             }
-            tracing::debug!(
-                resource = format!("/{}", resource_rel),
-                status = entry.status,
-                "mount snapshot expand recovery reset to cold"
+            eprintln!(
+                "[recovery] mount snapshot expand incomplete resource=/{} status={} -> cold",
+                resource_rel, entry.status
             );
         }
         journal_resources.clear();
