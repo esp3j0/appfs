@@ -518,7 +518,10 @@ impl AppfsRuntimeSupervisor {
         Ok(())
     }
 
-    fn build_runtime_entry(root: &Path, runtime: ResolvedAppfsRuntimeCliArgs) -> Result<AppRuntimeEntry> {
+    fn build_runtime_entry(
+        root: &Path,
+        runtime: ResolvedAppfsRuntimeCliArgs,
+    ) -> Result<AppRuntimeEntry> {
         let adapter = AppfsAdapter::new(
             root.to_path_buf(),
             runtime.app_id.clone(),
