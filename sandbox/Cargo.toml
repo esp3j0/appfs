@@ -2,6 +2,7 @@
 name = "agentfs-sandbox"
 version = "0.7.0-beta.1"
 edition = "2021"
+repository = "https://github.com/esp3j0/appfs"
 
 [dependencies]
 agentfs-sdk = { path = "../sdk/rust" }

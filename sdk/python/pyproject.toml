@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 keywords = ["ai", "agent", "turso", "sqlite", "key-value", "filesystem"]
 authors = [
-    {name = "Turso"}
+    {name = "AppFS Contributors"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -40,10 +40,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tursodatabase/agentfs"
-Source = "https://github.com/tursodatabase/agentfs"
-Repository = "https://github.com/tursodatabase/agentfs"
-Issues = "https://github.com/tursodatabase/agentfs/issues"
+Homepage = "https://github.com/esp3j0/appfs"
+Source = "https://github.com/esp3j0/appfs"
+Repository = "https://github.com/esp3j0/appfs"
+Issues = "https://github.com/esp3j0/appfs/issues"
 
 [tool.setuptools.packages.find]
 include = ["agentfs_sdk*"]

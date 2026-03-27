@@ -2,7 +2,7 @@
 name = "agentfs"
 version = "0.7.0-beta.1"
 edition = "2021"
-repository = "https://github.com/tursodatabase/agentfs"
+repository = "https://github.com/esp3j0/appfs"
 
 [lib]
 name = "agentfs"

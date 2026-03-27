@@ -4,6 +4,7 @@ version = "0.7.0-beta.1"
 edition = "2021"
 description = "AgentFS SDK for Rust"
 license = "MIT"
+repository = "https://github.com/esp3j0/appfs"
 
 [dependencies]
 turso = { version = "0.4.4", features = ["sync"] }
