@@ -184,7 +184,7 @@ MIT License - see LICENSE file for details.
 
 ## Links
 
-- [GitHub Repository](https://github.com/tursodatabase/agentfs)
-- [TypeScript SDK](https://github.com/tursodatabase/agentfs/tree/main/sdk/typescript)
+- [GitHub Repository](https://github.com/esp3j0/appfs)
+- [TypeScript SDK](https://github.com/esp3j0/appfs/tree/main/sdk/typescript)
 - [tursodb](https://github.com/tursodatabase/turso)
 - [pyturso](https://pypi.org/project/pyturso/)

@@ -2,12 +2,12 @@
 
 Command-line reference for the AgentFS CLI.
 
-For guides, tutorials, and SDK documentation, see [docs.turso.tech/agentfs](https://docs.turso.tech/agentfs).
+For guides, tutorials, and SDK documentation, see [README.md](README.md) and the [docs](docs/) directory in this repository.
 
 ## Installation
 
 ```bash
-curl -fsSL https://github.com/tursodatabase/agentfs/releases/latest/download/agentfs-installer.sh | sh
+curl -fsSL https://github.com/esp3j0/appfs/releases/latest/download/agentfs-installer.sh | sh
 ```
 
 ## Commands
@@ -366,6 +366,6 @@ agentfs fs my-secure-agent ls /
 
 ## See Also
 
-- [AgentFS Documentation](https://docs.turso.tech/agentfs) - Guides, tutorials, SDK docs
+- [Project Documentation](docs/) - Guides, tutorials, ADRs, and SDK docs
 - [AgentFS Specification](SPEC.md) - SQLite schema specification
-- [GitHub Repository](https://github.com/tursodatabase/agentfs) - Source code and examples
+- [GitHub Repository](https://github.com/esp3j0/appfs) - Source code and examples

@@ -8,7 +8,7 @@
  * - AgentFS (Turso/libsql) for Node.js and browser
  * - Cloudflare AgentFS (Durable Objects) for Cloudflare Workers
  *
- * @see https://docs.turso.tech/agentfs/sdk/typescript
+ * @see https://github.com/esp3j0/appfs/tree/main/sdk/typescript
  */
 
 import type { FileSystem } from "../../filesystem/interface.js";

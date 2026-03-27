@@ -1,6 +1,6 @@
 # AI SDK + just-bash Code Explorer Agent
 
-An interactive AI agent that combines [Vercel AI SDK](https://sdk.vercel.ai/), [just-bash](https://github.com/vercel-labs/just-bash) for bash command execution, and [AgentFS](https://github.com/tursodatabase/agentfs) for persistent filesystem storage.
+An interactive AI agent that combines [Vercel AI SDK](https://sdk.vercel.ai/), [just-bash](https://github.com/vercel-labs/just-bash) for bash command execution, and [AgentFS](https://github.com/esp3j0/appfs) for persistent filesystem storage.
 
 This example is forked from the [just-bash bash-agent example](https://github.com/vercel-labs/just-bash/tree/main/examples/bash-agent) with AgentFS integration added.
 
