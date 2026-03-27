@@ -5,6 +5,8 @@ use agentfs::{
 };
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use tracing_subscriber::prelude::*;
 
 /// Parse and validate encryption key and cipher options.
@@ -24,7 +26,54 @@ fn parse_encryption(key: Option<String>, cipher: Option<String>) -> Option<(Stri
     }
 }
 
+#[cfg(target_os = "windows")]
+fn ensure_winfsp_runtime_on_path() {
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let current_paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+
+    let normalize = |path: &std::path::Path| path.to_string_lossy().to_ascii_lowercase();
+    let has_dir = |candidate: &std::path::Path| {
+        current_paths
+            .iter()
+            .any(|existing| normalize(existing) == normalize(candidate))
+    };
+
+    let candidates = [
+        (
+            PathBuf::from(r"C:\Program Files\WinFsp\bin"),
+            "winfsp-x64.dll",
+        ),
+        (
+            PathBuf::from(r"C:\Program Files (x86)\WinFsp\bin"),
+            "winfsp-x64.dll",
+        ),
+    ];
+
+    for (dir, dll_name) in candidates {
+        if has_dir(&dir) {
+            return;
+        }
+        if !dir.join(dll_name).is_file() {
+            continue;
+        }
+
+        let mut merged = Vec::with_capacity(current_paths.len() + 1);
+        merged.push(dir);
+        merged.extend(current_paths.iter().cloned());
+        if let Ok(joined) = std::env::join_paths(merged) {
+            // SAFETY: this runs during process startup before worker threads are spawned.
+            unsafe {
+                std::env::set_var("PATH", joined);
+            }
+        }
+        return;
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "windows")]
+    ensure_winfsp_runtime_on_path();
+
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .with(

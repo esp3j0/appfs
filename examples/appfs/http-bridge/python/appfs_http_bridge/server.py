@@ -7,6 +7,7 @@ from typing import Any
 
 from .errors import internal_error, rejected_error
 from .fault_injector import FaultInjector
+from .huoyan_backend import HuoyanBackend
 from .mock_aiim import MockAiimBackend
 from .protocol import (
     connector_error,
@@ -26,7 +27,7 @@ from .protocol import (
 def _json_response(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
     encoded = json.dumps(body).encode("utf-8")
     handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(encoded)))
     handler.end_headers()
     handler.wfile.write(encoded)
@@ -173,13 +174,15 @@ def run_server() -> None:
 
     if backend_mode in ("mock", "mock_aiim", "aiim"):
         backend = MockAiimBackend()
+    elif backend_mode in ("huoyan", "fireeye"):
+        backend = HuoyanBackend()
     elif backend_mode in ("jsonplaceholder", "real_jsonplaceholder"):
         raise ValueError(
             "APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder is v1-only and not supported for v0.3 HTTP connector v2 mode"
         )
     else:
         raise ValueError(
-            "unsupported APPFS_HTTP_BRIDGE_BACKEND=%r (supported: mock_aiim)"
+            "unsupported APPFS_HTTP_BRIDGE_BACKEND=%r (supported: mock_aiim, huoyan)"
             % backend_mode
         )
 
