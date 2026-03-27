@@ -24,6 +24,33 @@
 - Adapter implementation/requirements docs updated with DX rollout status and acceptance item 20.
 - AppFS runtime bridge path now supports native resilience knobs (`retry/backoff/circuit-breaker`) and transport metrics logging for HTTP/gRPC adapters.
 
+## [0.7.0-beta.1] - 2026-03-27
+
+First prerelease with downloadable AppFS binaries for Windows and Linux.
+
+### Added
+
+- Managed-first AppFS startup flow through `agentfs appfs up`.
+- Unified runtime-facing `AppConnector` across in-process, HTTP, and gRPC adapters.
+- App structure sync, managed registry, dynamic app lifecycle, and multi-app runtime supervisor.
+- Windows managed-lifecycle regression coverage through `cli/test-windows-appfs-managed.ps1`.
+
+### Changed
+
+- Repository and package metadata now point to `https://github.com/esp3j0/appfs`.
+- README and quick-start guides now use a standard project-homepage layout and the managed-first AppFS flow.
+- AppFS documentation now treats `mount` and `serve appfs` as debug surfaces rather than the primary startup path.
+
+### Fixed
+
+- WinFsp managed snapshot first-read behavior on Windows.
+- Windows managed structure visibility and scope-switch snapshot pruning around AppFS tree sync.
+
+### Notes
+
+- Linux remains the primary required CI platform.
+- Windows binaries require WinFsp to be installed before mounting AppFS.
+
 ## [0.6.2] - 2026-02-21
 
 ### Fixed
@@ -339,6 +366,7 @@ AgentFS is now beta!
 - Cross-platform builds (Linux, macOS).
 - Example agent implementations.
 
+[0.7.0-beta.1]: https://github.com/esp3j0/appfs/compare/v0.2.0...v0.7.0-beta.1
 [0.6.2]: https://github.com/tursodatabase/agentfs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tursodatabase/agentfs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tursodatabase/agentfs/compare/v0.5.3...v0.6.0
