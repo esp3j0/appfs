@@ -9,14 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from appfs_http_bridge.fault_injector import FaultInjector, FaultState
 from appfs_http_bridge.mock_aiim import MockAiimBackend
 from appfs_http_bridge.protocol import (
+    dispatch_connector_health,
+    dispatch_connector_info,
+    dispatch_connector_submit_action,
+    dispatch_get_app_structure,
+    dispatch_live_fetch_page,
+    dispatch_refresh_app_structure,
+    dispatch_snapshot_fetch_chunk,
+    dispatch_snapshot_prewarm,
     dispatch_submit_action,
     dispatch_submit_control,
-    dispatch_v2_connector_info,
-    dispatch_v2_health,
-    dispatch_v2_live_fetch_page,
-    dispatch_v2_snapshot_fetch_chunk,
-    dispatch_v2_snapshot_prewarm,
-    dispatch_v2_submit_action,
 )
 
 
@@ -139,14 +141,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(body["code"], "NOT_SUPPORTED")
         self.assertFalse(body["retryable"])
 
-    def test_v2_connector_info(self) -> None:
-        status, body = dispatch_v2_connector_info(self.backend)
+    def test_connector_info(self) -> None:
+        status, body = dispatch_connector_info(self.backend)
         self.assertEqual(status, 200)
         self.assertEqual(body["transport"], "http_bridge")
         self.assertEqual(body["app_id"], "aiim")
 
-    def test_v2_health(self) -> None:
-        status, body = dispatch_v2_health(
+    def test_connector_health(self) -> None:
+        status, body = dispatch_connector_health(
             {
                 "context": {
                     "app_id": "aiim",
@@ -159,8 +161,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["healthy"])
 
-    def test_v2_snapshot_fetch_chunk(self) -> None:
-        status, body = dispatch_v2_snapshot_fetch_chunk(
+    def test_snapshot_fetch_chunk(self) -> None:
+        status, body = dispatch_snapshot_fetch_chunk(
             {
                 "context": {
                     "app_id": "aiim",
@@ -180,7 +182,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(body["records"]), 2)
         self.assertTrue(body["has_more"])
 
-    def test_v2_snapshot_fetch_chunk_rejects_invalid_resume_shapes(self) -> None:
+    def test_snapshot_fetch_chunk_rejects_invalid_resume_shapes(self) -> None:
         base = {
             "context": {
                 "app_id": "aiim",
@@ -196,7 +198,7 @@ class ProtocolTests(unittest.TestCase):
         payload = dict(base)
         payload["request"] = dict(base["request"])
         payload["request"]["resume"] = {"kind": "start", "value": "x"}
-        status, body = dispatch_v2_snapshot_fetch_chunk(
+        status, body = dispatch_snapshot_fetch_chunk(
             payload,
             fault_injector=self.fault,
             backend=self.backend,
@@ -207,7 +209,7 @@ class ProtocolTests(unittest.TestCase):
         payload = dict(base)
         payload["request"] = dict(base["request"])
         payload["request"]["resume"] = {"kind": "cursor"}
-        status, body = dispatch_v2_snapshot_fetch_chunk(
+        status, body = dispatch_snapshot_fetch_chunk(
             payload,
             fault_injector=self.fault,
             backend=self.backend,
@@ -218,7 +220,7 @@ class ProtocolTests(unittest.TestCase):
         payload = dict(base)
         payload["request"] = dict(base["request"])
         payload["request"]["resume"] = {"kind": "offset", "value": -1}
-        status, body = dispatch_v2_snapshot_fetch_chunk(
+        status, body = dispatch_snapshot_fetch_chunk(
             payload,
             fault_injector=self.fault,
             backend=self.backend,
@@ -226,7 +228,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
-    def test_v2_live_fetch_page(self) -> None:
+    def test_live_fetch_page(self) -> None:
         payload = {
             "context": {
                 "app_id": "aiim",
@@ -240,12 +242,12 @@ class ProtocolTests(unittest.TestCase):
                 "page_size": 20,
             },
         }
-        status, body = dispatch_v2_live_fetch_page(payload, self.backend)
+        status, body = dispatch_live_fetch_page(payload, self.backend)
         self.assertEqual(status, 200)
         self.assertEqual(body["page"]["page_no"], 1)
 
-    def test_v2_live_fetch_page_cursor_invalid(self) -> None:
-        status, body = dispatch_v2_live_fetch_page(
+    def test_live_fetch_page_cursor_invalid(self) -> None:
+        status, body = dispatch_live_fetch_page(
             {
                 "context": {
                     "app_id": "aiim",
@@ -264,8 +266,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "CURSOR_INVALID")
 
-    def test_v2_live_fetch_page_rejects_invalid_optional_types(self) -> None:
-        status, body = dispatch_v2_live_fetch_page(
+    def test_live_fetch_page_rejects_invalid_optional_types(self) -> None:
+        status, body = dispatch_live_fetch_page(
             {
                 "context": {
                     "app_id": "aiim",
@@ -284,7 +286,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
-        status, body = dispatch_v2_live_fetch_page(
+        status, body = dispatch_live_fetch_page(
             {
                 "context": {
                     "app_id": "aiim",
@@ -303,8 +305,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
-    def test_v2_submit_action(self) -> None:
-        status, body = dispatch_v2_submit_action(
+    def test_connector_submit_action(self) -> None:
+        status, body = dispatch_connector_submit_action(
             {
                 "context": {
                     "app_id": "aiim",
@@ -323,8 +325,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["outcome"]["kind"], "completed")
 
-    def test_v2_prewarm_requires_timeout(self) -> None:
-        status, body = dispatch_v2_snapshot_prewarm(
+    def test_snapshot_prewarm_requires_timeout(self) -> None:
+        status, body = dispatch_snapshot_prewarm(
             {
                 "context": {
                     "app_id": "aiim",
@@ -340,8 +342,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
-    def test_v2_submit_action_rate_limited(self) -> None:
-        status, body = dispatch_v2_submit_action(
+    def test_connector_submit_action_rate_limited(self) -> None:
+        status, body = dispatch_connector_submit_action(
             {
                 "context": {
                     "app_id": "aiim",

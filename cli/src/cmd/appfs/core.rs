@@ -2168,8 +2168,8 @@ mod tests {
         };
 
         let (status, body) = match route.as_str() {
-            "/v2/connector/info" => (200, connector_info_body()),
-            "/v3/connector/structure/get" => {
+            "/connector/info" => (200, connector_info_body()),
+            "/connector/structure/get" => {
                 let known_revision = payload
                     .get("request")
                     .and_then(|value| value.get("known_revision"))
@@ -2198,7 +2198,7 @@ mod tests {
                     )
                 }
             }
-            "/v3/connector/structure/refresh" => {
+            "/connector/structure/refresh" => {
                 let request = payload.get("request").cloned().unwrap_or_else(|| json!({}));
                 let target_scope = request
                     .get("target_scope")

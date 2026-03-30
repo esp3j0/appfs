@@ -37,8 +37,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(body["kind"], "internal")
 
-    def test_unknown_v2_route_returns_connector_error(self) -> None:
-        status, body = self._post("/v2/connector/unknown", "{}")
+    def test_unknown_connector_route_returns_connector_error(self) -> None:
+        status, body = self._post("/connector/unknown", "{}")
         self.assertEqual(status, 404)
         self.assertEqual(body["code"], "NOT_SUPPORTED")
         self.assertFalse(body["retryable"])
@@ -59,14 +59,14 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["kind"], "completed")
 
-    def test_v2_connector_info_success(self) -> None:
-        status, body = self._post("/v2/connector/info", "{}")
+    def test_connector_info_success(self) -> None:
+        status, body = self._post("/connector/info", "{}")
         self.assertEqual(status, 200)
         self.assertEqual(body["transport"], "http_bridge")
 
-    def test_v2_submit_action_success(self) -> None:
+    def test_connector_submit_action_success(self) -> None:
         status, body = self._post(
-            "/v2/connector/action/submit",
+            "/connector/action/submit",
             json.dumps(
                 {
                     "context": {
@@ -85,9 +85,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["outcome"]["kind"], "completed")
 
-    def test_v3_get_app_structure_success(self) -> None:
+    def test_get_app_structure_success(self) -> None:
         status, body = self._post(
-            "/v3/connector/structure/get",
+            "/connector/structure/get",
             json.dumps(
                 {
                     "context": {
@@ -106,9 +106,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["result"]["snapshot"]["app_id"], "aiim")
         self.assertIn("_app/enter_scope.act", [node["path"] for node in body["result"]["snapshot"]["nodes"]])
 
-    def test_v3_refresh_app_structure_success(self) -> None:
+    def test_refresh_app_structure_success(self) -> None:
         status, body = self._post(
-            "/v3/connector/structure/refresh",
+            "/connector/structure/refresh",
             json.dumps(
                 {
                     "context": {
@@ -129,9 +129,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["result"]["kind"], "snapshot")
         self.assertEqual(body["result"]["snapshot"]["active_scope"], "chat-long")
 
-    def test_v3_refresh_requires_reason(self) -> None:
+    def test_refresh_app_structure_requires_reason(self) -> None:
         status, body = self._post(
-            "/v3/connector/structure/refresh",
+            "/connector/structure/refresh",
             json.dumps(
                 {
                     "context": {
@@ -148,9 +148,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
 
-    def test_v3_refresh_unknown_scope_uses_structure_scope_invalid(self) -> None:
+    def test_refresh_app_structure_unknown_scope_uses_structure_scope_invalid(self) -> None:
         status, body = self._post(
-            "/v3/connector/structure/refresh",
+            "/connector/structure/refresh",
             json.dumps(
                 {
                     "context": {
@@ -170,22 +170,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "STRUCTURE_SCOPE_INVALID")
 
-    def test_v2_invalid_json_uses_connector_error_envelope(self) -> None:
-        status, body = self._post("/v2/connector/action/submit", "{")
+    def test_connector_invalid_json_uses_connector_error_envelope(self) -> None:
+        status, body = self._post("/connector/action/submit", "{")
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
         self.assertFalse(body["retryable"])
         self.assertNotIn("kind", body)
 
-    def test_v2_non_object_body_uses_connector_error_envelope(self) -> None:
-        status, body = self._post("/v2/connector/action/submit", "[]")
+    def test_connector_non_object_body_uses_connector_error_envelope(self) -> None:
+        status, body = self._post("/connector/action/submit", "[]")
         self.assertEqual(status, 400)
         self.assertEqual(body["code"], "INVALID_ARGUMENT")
         self.assertNotIn("kind", body)
 
-    def test_v2_invalid_content_length_uses_connector_error_envelope(self) -> None:
+    def test_connector_invalid_content_length_uses_connector_error_envelope(self) -> None:
         status, body = self._raw_post_with_invalid_content_length(
-            "/v2/connector/action/submit",
+            "/connector/action/submit",
             "{}",
         )
         self.assertEqual(status, 400)

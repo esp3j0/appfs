@@ -13,14 +13,14 @@ from .protocol import (
     connector_error,
     dispatch_submit_action,
     dispatch_submit_control,
-    dispatch_v2_connector_info,
-    dispatch_v2_health,
-    dispatch_v2_live_fetch_page,
-    dispatch_v2_snapshot_fetch_chunk,
-    dispatch_v2_snapshot_prewarm,
-    dispatch_v2_submit_action,
-    dispatch_v3_get_app_structure,
-    dispatch_v3_refresh_app_structure,
+    dispatch_connector_health,
+    dispatch_connector_info,
+    dispatch_connector_submit_action,
+    dispatch_get_app_structure,
+    dispatch_live_fetch_page,
+    dispatch_refresh_app_structure,
+    dispatch_snapshot_fetch_chunk,
+    dispatch_snapshot_prewarm,
 )
 
 
@@ -42,47 +42,47 @@ class BridgeApplication:
     ) -> None:
         self.backend = backend or MockAiimBackend()
         self.fault_injector = fault_injector or FaultInjector()
-        required_v2_methods = (
+        required_connector_methods = (
             "connector_info",
             "health",
             "prewarm_snapshot_meta",
             "fetch_snapshot_chunk",
             "fetch_live_page",
-            "submit_action_v2",
+            "connector_submit_action",
             "get_app_structure",
             "refresh_app_structure",
         )
-        missing = [name for name in required_v2_methods if not hasattr(self.backend, name)]
+        missing = [name for name in required_connector_methods if not hasattr(self.backend, name)]
         if missing:
             raise ValueError(
-                f"backend does not implement required v2 connector methods: {', '.join(missing)}"
+                f"backend does not implement required connector methods: {', '.join(missing)}"
             )
 
     def dispatch(self, route: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        if route == "/v2/connector/info":
-            return dispatch_v2_connector_info(self.backend)
-        if route == "/v2/connector/health":
-            return dispatch_v2_health(payload, self.backend)
-        if route == "/v2/connector/snapshot/prewarm":
-            return dispatch_v2_snapshot_prewarm(payload, self.backend)
-        if route == "/v2/connector/snapshot/fetch-chunk":
-            return dispatch_v2_snapshot_fetch_chunk(
+        if route == "/connector/info":
+            return dispatch_connector_info(self.backend)
+        if route == "/connector/health":
+            return dispatch_connector_health(payload, self.backend)
+        if route == "/connector/snapshot/prewarm":
+            return dispatch_snapshot_prewarm(payload, self.backend)
+        if route == "/connector/snapshot/fetch-chunk":
+            return dispatch_snapshot_fetch_chunk(
                 payload,
                 fault_injector=self.fault_injector,
                 backend=self.backend,
             )
-        if route == "/v2/connector/live/fetch-page":
-            return dispatch_v2_live_fetch_page(payload, self.backend)
-        if route == "/v2/connector/action/submit":
-            return dispatch_v2_submit_action(
+        if route == "/connector/live/fetch-page":
+            return dispatch_live_fetch_page(payload, self.backend)
+        if route == "/connector/action/submit":
+            return dispatch_connector_submit_action(
                 payload,
                 fault_injector=self.fault_injector,
                 backend=self.backend,
             )
-        if route == "/v3/connector/structure/get":
-            return dispatch_v3_get_app_structure(payload, self.backend)
-        if route == "/v3/connector/structure/refresh":
-            return dispatch_v3_refresh_app_structure(payload, self.backend)
+        if route == "/connector/structure/get":
+            return dispatch_get_app_structure(payload, self.backend)
+        if route == "/connector/structure/refresh":
+            return dispatch_refresh_app_structure(payload, self.backend)
 
         if route == "/v1/submit-action":
             return dispatch_submit_action(
@@ -92,7 +92,7 @@ class BridgeApplication:
             )
         if route == "/v1/submit-control-action":
             return dispatch_submit_control(payload, backend=self.backend)
-        if route.startswith("/v2/connector/") or route.startswith("/v3/connector/"):
+        if route.startswith("/connector/"):
             return (
                 404,
                 connector_error("NOT_SUPPORTED", f"unknown connector path: {route}", False),
@@ -104,7 +104,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     application: BridgeApplication
 
     def do_POST(self) -> None:
-        is_v2 = self.path.startswith("/v2/connector/") or self.path.startswith("/v3/connector/")
+        is_connector = self.path.startswith("/connector/")
         raw_len = self.headers.get("Content-Length", "0")
         try:
             payload_len = int(raw_len)
@@ -113,7 +113,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self,
                 400,
                 connector_error("INVALID_ARGUMENT", "invalid content-length header", False)
-                if is_v2
+                if is_connector
                 else rejected_error("INVALID_ARGUMENT", "invalid content-length header"),
             )
             return
@@ -126,7 +126,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self,
                 400,
                 connector_error("INVALID_ARGUMENT", "invalid json body", False)
-                if is_v2
+                if is_connector
                 else rejected_error("INVALID_ARGUMENT", "invalid json body"),
             )
             return
@@ -136,7 +136,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self,
                 400,
                 connector_error("INVALID_ARGUMENT", "json body must be an object", False)
-                if is_v2
+                if is_connector
                 else rejected_error("INVALID_ARGUMENT", "json body must be an object"),
             )
             return
@@ -178,7 +178,7 @@ def run_server() -> None:
         backend = HuoyanBackend()
     elif backend_mode in ("jsonplaceholder", "real_jsonplaceholder"):
         raise ValueError(
-            "APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder is v1-only and not supported for v0.3 HTTP connector v2 mode"
+            "APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder is v1-only and not supported for canonical connector mode"
         )
     else:
         raise ValueError(

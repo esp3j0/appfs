@@ -418,7 +418,7 @@ function Main {
     Wait-Until -Description "HTTP bridge startup" -TimeoutSec 15 -Condition {
         Ensure-ProcessRunning $script:BridgeHandle
         try {
-            $response = Invoke-RestMethod -Uri "$HttpEndpoint/v2/connector/info" -Method Post -ContentType "application/json" -Body "{}" -ErrorAction Stop
+            $response = Invoke-RestMethod -Uri "$HttpEndpoint/connector/info" -Method Post -ContentType "application/json" -Body "{}" -ErrorAction Stop
             return $response.app_id -eq "aiim"
         } catch {
             return $false

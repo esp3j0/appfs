@@ -201,7 +201,7 @@ impl AppAdapterV1 for HttpBridgeAdapterV1 {
 
 impl AppConnector for HttpBridgeConnector {
     fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
-        let url = format!("{}/{}", self.endpoint, "v2/connector/info");
+        let url = format!("{}/{}", self.endpoint, "connector/info");
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
         match agent.post(&url).send_json(serde_json::json!({})) {
             Ok(response) => response
@@ -232,7 +232,7 @@ impl AppConnector for HttpBridgeConnector {
         let request = ContextOnlyRequest {
             context: ctx.clone(),
         };
-        self.post_json("v2/connector/health", &request)
+        self.post_json("connector/health", &request)
     }
 
     fn prewarm_snapshot_meta(
@@ -249,7 +249,7 @@ impl AppConnector for HttpBridgeConnector {
                 timeout_ms,
             },
         };
-        self.post_json("v2/connector/snapshot/prewarm", &request)
+        self.post_json("connector/snapshot/prewarm", &request)
     }
 
     fn fetch_snapshot_chunk(
@@ -261,7 +261,7 @@ impl AppConnector for HttpBridgeConnector {
             context: ctx.clone(),
             request,
         };
-        self.post_json("v2/connector/snapshot/fetch-chunk", &wrapped)
+        self.post_json("connector/snapshot/fetch-chunk", &wrapped)
     }
 
     fn fetch_live_page(
@@ -273,7 +273,7 @@ impl AppConnector for HttpBridgeConnector {
             context: ctx.clone(),
             request,
         };
-        self.post_json("v2/connector/live/fetch-page", &wrapped)
+        self.post_json("connector/live/fetch-page", &wrapped)
     }
 
     fn submit_action(
@@ -285,7 +285,7 @@ impl AppConnector for HttpBridgeConnector {
             context: ctx.clone(),
             request,
         };
-        self.post_json("v2/connector/action/submit", &wrapped)
+        self.post_json("connector/action/submit", &wrapped)
     }
 
     fn get_app_structure(
@@ -297,7 +297,7 @@ impl AppConnector for HttpBridgeConnector {
             context: ctx.clone(),
             request,
         };
-        self.post_json("v3/connector/structure/get", &wrapped)
+        self.post_json("connector/structure/get", &wrapped)
     }
 
     fn refresh_app_structure(
@@ -309,7 +309,7 @@ impl AppConnector for HttpBridgeConnector {
             context: ctx.clone(),
             request,
         };
-        self.post_json("v3/connector/structure/refresh", &wrapped)
+        self.post_json("connector/structure/refresh", &wrapped)
     }
 }
 

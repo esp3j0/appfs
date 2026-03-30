@@ -43,7 +43,7 @@ class ConnectorBackend(Protocol):
     def fetch_live_page(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         ...
 
-    def submit_action_v2(
+    def connector_submit_action(
         self, request: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
         ...
@@ -174,14 +174,16 @@ def dispatch_submit_control(
     )
 
 
-def dispatch_v2_connector_info(backend: ConnectorBackend) -> tuple[int, dict[str, Any]]:
+def dispatch_connector_info(backend: ConnectorBackend) -> tuple[int, dict[str, Any]]:
     try:
         return (200, backend.connector_info())
     except Exception as err:
         return (500, connector_error("INTERNAL", f"backend connector_info failed: {err}", True))
 
 
-def dispatch_v2_health(payload: dict[str, Any], backend: ConnectorBackend) -> tuple[int, dict[str, Any]]:
+def dispatch_connector_health(
+    payload: dict[str, Any], backend: ConnectorBackend
+) -> tuple[int, dict[str, Any]]:
     context = payload.get("context")
     context_error = validate_context(context)
     if context_error is not None:
@@ -192,11 +194,11 @@ def dispatch_v2_health(payload: dict[str, Any], backend: ConnectorBackend) -> tu
         return (500, connector_error("UPSTREAM_UNAVAILABLE", f"health failed: {err}", True))
 
 
-def dispatch_v2_snapshot_prewarm(
+def dispatch_snapshot_prewarm(
     payload: dict[str, Any],
     backend: ConnectorBackend,
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -221,13 +223,13 @@ def dispatch_v2_snapshot_prewarm(
         return (500, connector_error("INTERNAL", f"prewarm failed: {err}", True))
 
 
-def dispatch_v2_snapshot_fetch_chunk(
+def dispatch_snapshot_fetch_chunk(
     payload: dict[str, Any],
     *,
     fault_injector: FaultInjector,
     backend: ConnectorBackend,
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -263,7 +265,9 @@ def dispatch_v2_snapshot_fetch_chunk(
     except ValueError as err:
         return (400, connector_error("INVALID_ARGUMENT", str(err), False))
     except Exception as err:
-        should_fail, remaining = fault_injector.maybe_fail_submit_action("/v2/connector/snapshot/fetch-chunk")
+        should_fail, remaining = fault_injector.maybe_fail_submit_action(
+            "/connector/snapshot/fetch-chunk"
+        )
         if should_fail:
             return (
                 fault_injector.fail_http_status,
@@ -276,10 +280,10 @@ def dispatch_v2_snapshot_fetch_chunk(
         return (500, connector_error("INTERNAL", f"fetch_snapshot_chunk failed: {err}", True))
 
 
-def dispatch_v2_live_fetch_page(
+def dispatch_live_fetch_page(
     payload: dict[str, Any], backend: ConnectorBackend
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -308,13 +312,13 @@ def dispatch_v2_live_fetch_page(
         return (500, connector_error("INTERNAL", f"fetch_live_page failed: {err}", True))
 
 
-def dispatch_v2_submit_action(
+def dispatch_connector_submit_action(
     payload: dict[str, Any],
     *,
     fault_injector: FaultInjector,
     backend: ConnectorBackend,
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -343,7 +347,7 @@ def dispatch_v2_submit_action(
         )
 
     try:
-        return (200, backend.submit_action_v2(request, context))
+        return (200, backend.connector_submit_action(request, context))
     except ValueError as err:
         return (400, connector_error("INVALID_PAYLOAD", str(err), False))
     except RuntimeError as err:
@@ -355,11 +359,11 @@ def dispatch_v2_submit_action(
         return (500, connector_error("INTERNAL", f"submit_action failed: {err}", True))
 
 
-def dispatch_v3_get_app_structure(
+def dispatch_get_app_structure(
     payload: dict[str, Any],
     backend: ConnectorBackend,
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -383,11 +387,11 @@ def dispatch_v3_get_app_structure(
         return (500, connector_error("INTERNAL", f"get_app_structure failed: {err}", True))
 
 
-def dispatch_v3_refresh_app_structure(
+def dispatch_refresh_app_structure(
     payload: dict[str, Any],
     backend: ConnectorBackend,
 ) -> tuple[int, dict[str, Any]]:
-    parsed = parse_v2_wrapped_request(payload)
+    parsed = parse_connector_wrapped_request(payload)
     if "error" in parsed:
         return parsed["error"]
     context = parsed["context"]
@@ -436,7 +440,7 @@ def dispatch_v3_refresh_app_structure(
         return (500, connector_error("INTERNAL", f"refresh_app_structure failed: {err}", True))
 
 
-def parse_v2_wrapped_request(
+def parse_connector_wrapped_request(
     payload: dict[str, Any]
 ) -> dict[str, Any]:
     context = payload.get("context")

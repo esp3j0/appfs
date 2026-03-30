@@ -451,7 +451,9 @@ class HuoyanBackend:
             },
         }
 
-    def submit_action_v2(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    def connector_submit_action(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         _ = (request, context)
         raise ValueError("huoyan backend does not expose custom action files yet")
 

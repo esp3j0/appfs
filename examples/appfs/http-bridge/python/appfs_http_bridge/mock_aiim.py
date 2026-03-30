@@ -391,7 +391,9 @@ class MockAiimBackend:
             },
         }
 
-    def submit_action_v2(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    def connector_submit_action(
+        self, request: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         path = str(request.get("path", ""))
         payload = request.get("payload", {})
         if "invalid_payload" in path:
