@@ -1,12 +1,9 @@
 use agentfs_sdk::{
-    connector_error_codes_v2, ActionExecutionModeV2, AppAdapterV1, AppConnector, AppConnectorV2,
-    AppStructureSyncReasonV3, AuthStatusV2, ConnectorContext, ConnectorContextV2, ConnectorError,
-    ConnectorErrorV2, ConnectorInfo, ConnectorInfoV2, ConnectorTransportV2, DemoAppConnectorV2,
-    FetchLivePageRequest, FetchLivePageRequestV2, FetchLivePageResponse, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponse,
-    FetchSnapshotChunkResponseV2, HealthStatus, HealthStatusV2, SnapshotMeta, SnapshotMetaV2,
-    SubmitActionOutcomeV2, SubmitActionRequest, SubmitActionRequestV2, SubmitActionResponse,
-    SubmitActionResponseV2,
+    connector_error_codes, ActionExecutionMode, AppAdapterV1, AppConnector, AppStructureSyncReason,
+    AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo, ConnectorTransport,
+    DemoAppConnector, FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
+    FetchSnapshotChunkResponse, HealthStatus, SnapshotMeta, SubmitActionOutcome,
+    SubmitActionRequest, SubmitActionResponse,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -20,8 +17,8 @@ use uuid::Uuid;
 
 use super::action_dispatcher;
 use super::errors::{is_transient_connector_failure, ERR_INVALID_PAYLOAD};
-use super::grpc_bridge_adapter::GrpcBridgeConnectorV2;
-use super::http_bridge_adapter::HttpBridgeConnectorV2;
+use super::grpc_bridge_adapter::GrpcBridgeConnector;
+use super::http_bridge_adapter::HttpBridgeConnector;
 use super::shared::{
     action_template_matches, boundary_probe_from_bytes, classify_multiline_json_payload,
     collect_files_with_suffix, decode_jsonl_line, env_flag_enabled, extract_client_token,
@@ -39,20 +36,16 @@ use super::{
 };
 
 #[cfg_attr(not(test), allow(dead_code))]
-struct LegacyAdapterConnectorV2 {
+struct LegacyAdapterConnector {
     app_id: String,
-    transport: ConnectorTransportV2,
+    transport: ConnectorTransport,
     adapter: Box<dyn AppAdapterV1>,
     live_page_state: HashMap<String, u32>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-impl LegacyAdapterConnectorV2 {
-    fn new(
-        app_id: String,
-        transport: ConnectorTransportV2,
-        adapter: Box<dyn AppAdapterV1>,
-    ) -> Self {
+impl LegacyAdapterConnector {
+    fn new(app_id: String, transport: ConnectorTransport, adapter: Box<dyn AppAdapterV1>) -> Self {
         Self {
             app_id,
             transport,
@@ -63,22 +56,20 @@ impl LegacyAdapterConnectorV2 {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn map_adapter_error_v1_to_connector_error_v2(
-    err: agentfs_sdk::AdapterErrorV1,
-) -> ConnectorErrorV2 {
+fn map_adapter_error_v1_to_connector_error(err: agentfs_sdk::AdapterErrorV1) -> ConnectorError {
     match err {
         agentfs_sdk::AdapterErrorV1::Rejected {
             code,
             message,
             retryable,
-        } => ConnectorErrorV2 {
+        } => ConnectorError {
             code,
             message,
             retryable,
             details: None,
         },
-        agentfs_sdk::AdapterErrorV1::Internal { message } => ConnectorErrorV2 {
-            code: connector_error_codes_v2::INTERNAL.to_string(),
+        agentfs_sdk::AdapterErrorV1::Internal { message } => ConnectorError {
+            code: connector_error_codes::INTERNAL.to_string(),
             message,
             retryable: true,
             details: None,
@@ -86,9 +77,9 @@ fn map_adapter_error_v1_to_connector_error_v2(
     }
 }
 
-impl AppConnectorV2 for LegacyAdapterConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfoV2, ConnectorErrorV2> {
-        Ok(ConnectorInfoV2 {
+impl AppConnector for LegacyAdapterConnector {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+        Ok(ConnectorInfo {
             connector_id: format!("legacy-v1-bridge-{}", self.app_id),
             version: "v1-compat".to_string(),
             app_id: self.app_id.clone(),
@@ -102,11 +93,11 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
 
     fn health(
         &mut self,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<HealthStatusV2, ConnectorErrorV2> {
-        Ok(HealthStatusV2 {
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<HealthStatus, ConnectorError> {
+        Ok(HealthStatus {
             healthy: true,
-            auth_status: AuthStatusV2::Valid,
+            auth_status: AuthStatus::Valid,
             message: Some("legacy v1 adapter compatibility connector".to_string()),
             checked_at: chrono::Utc::now().to_rfc3339(),
         })
@@ -116,13 +107,13 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
         &mut self,
         resource_path: &str,
         timeout: Duration,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
         let meta = self
             .adapter
             .prewarm_snapshot_meta(resource_path, timeout)
-            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
-        Ok(SnapshotMetaV2 {
+            .map_err(map_adapter_error_v1_to_connector_error)?;
+        Ok(SnapshotMeta {
             size_bytes: meta.size_bytes,
             revision: meta.revision,
             last_modified: None,
@@ -132,11 +123,11 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
 
     fn fetch_snapshot_chunk(
         &mut self,
-        _request: FetchSnapshotChunkRequestV2,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
-        Err(ConnectorErrorV2 {
-            code: connector_error_codes_v2::NOT_SUPPORTED.to_string(),
+        _request: FetchSnapshotChunkRequest,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
+        Err(ConnectorError {
+            code: connector_error_codes::NOT_SUPPORTED.to_string(),
             message: "legacy v1 adapter bridge does not support snapshot chunk fetch".to_string(),
             retryable: false,
             details: None,
@@ -145,11 +136,11 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
 
     fn fetch_live_page(
         &mut self,
-        request: FetchLivePageRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
-        let handle_id = request.handle_id.ok_or_else(|| ConnectorErrorV2 {
-            code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+        request: FetchLivePageRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
+        let handle_id = request.handle_id.ok_or_else(|| ConnectorError {
+            code: connector_error_codes::INVALID_ARGUMENT.to_string(),
             message: "handle_id is required for v1 live paging compatibility".to_string(),
             retryable: false,
             details: None,
@@ -181,7 +172,7 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
                 },
                 &request_ctx,
             )
-            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
+            .map_err(map_adapter_error_v1_to_connector_error)?;
 
         let agentfs_sdk::AdapterControlOutcomeV1::Completed { content } = outcome;
         let items = content
@@ -210,13 +201,13 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
             None
         };
 
-        Ok(FetchLivePageResponseV2 {
+        Ok(FetchLivePageResponse {
             items,
-            page: agentfs_sdk::LivePageInfoV2 {
+            page: agentfs_sdk::LivePageInfo {
                 handle_id,
                 page_no,
                 has_more,
-                mode: agentfs_sdk::LiveModeV2::Live,
+                mode: agentfs_sdk::LiveMode::Live,
                 expires_at: None,
                 next_cursor,
                 retry_after_ms: None,
@@ -226,11 +217,11 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
 
     fn submit_action(
         &mut self,
-        request: SubmitActionRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
-        let payload = serde_json::to_string(&request.payload).map_err(|err| ConnectorErrorV2 {
-            code: connector_error_codes_v2::INVALID_PAYLOAD.to_string(),
+        request: SubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
+        let payload = serde_json::to_string(&request.payload).map_err(|err| ConnectorError {
+            code: connector_error_codes::INVALID_PAYLOAD.to_string(),
             message: format!("failed to serialize action payload: {err}"),
             retryable: false,
             details: None,
@@ -242,8 +233,8 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
             client_token: ctx.client_token.clone(),
         };
         let exec_mode = match request.execution_mode {
-            ActionExecutionModeV2::Inline => agentfs_sdk::AdapterExecutionModeV1::Inline,
-            ActionExecutionModeV2::Streaming => agentfs_sdk::AdapterExecutionModeV1::Streaming,
+            ActionExecutionMode::Inline => agentfs_sdk::AdapterExecutionModeV1::Inline,
+            ActionExecutionMode::Streaming => agentfs_sdk::AdapterExecutionModeV1::Streaming,
         };
 
         let outcome = self
@@ -255,15 +246,15 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
                 exec_mode,
                 &request_ctx,
             )
-            .map_err(map_adapter_error_v1_to_connector_error_v2)?;
+            .map_err(map_adapter_error_v1_to_connector_error)?;
 
         let mapped = match outcome {
             agentfs_sdk::AdapterSubmitOutcomeV1::Completed { content } => {
-                SubmitActionOutcomeV2::Completed { content }
+                SubmitActionOutcome::Completed { content }
             }
             agentfs_sdk::AdapterSubmitOutcomeV1::Streaming { plan } => {
-                SubmitActionOutcomeV2::Streaming {
-                    plan: agentfs_sdk::ActionStreamingPlanV2 {
+                SubmitActionOutcome::Streaming {
+                    plan: agentfs_sdk::ActionStreamingPlan {
                         accepted_content: plan.accepted_content,
                         progress_content: plan.progress_content,
                         terminal_content: plan.terminal_content,
@@ -272,57 +263,11 @@ impl AppConnectorV2 for LegacyAdapterConnectorV2 {
             }
         };
 
-        Ok(SubmitActionResponseV2 {
+        Ok(SubmitActionResponse {
             request_id: ctx.request_id.clone(),
             estimated_duration_ms: None,
             outcome: mapped,
         })
-    }
-}
-
-impl AppConnector for LegacyAdapterConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
-        <Self as AppConnectorV2>::connector_id(self)
-    }
-
-    fn health(
-        &mut self,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<HealthStatus, ConnectorError> {
-        <Self as AppConnectorV2>::health(self, ctx)
-    }
-
-    fn prewarm_snapshot_meta(
-        &mut self,
-        resource_path: &str,
-        timeout: Duration,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
-        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
-    }
-
-    fn fetch_snapshot_chunk(
-        &mut self,
-        request: FetchSnapshotChunkRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
-    }
-
-    fn fetch_live_page(
-        &mut self,
-        request: FetchLivePageRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
-    }
-
-    fn submit_action(
-        &mut self,
-        request: SubmitActionRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
-        <Self as AppConnectorV2>::submit_action(self, request, ctx)
     }
 }
 
@@ -797,7 +742,7 @@ impl AppfsAdapter {
             }
         }
 
-        let request_ctx = ConnectorContextV2 {
+        let request_ctx = ConnectorContext {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.clone(),
@@ -805,22 +750,22 @@ impl AppfsAdapter {
             trace_id: None,
         };
         let execution_mode = match spec.execution_mode {
-            ExecutionMode::Inline => ActionExecutionModeV2::Inline,
-            ExecutionMode::Streaming => ActionExecutionModeV2::Streaming,
+            ExecutionMode::Inline => ActionExecutionMode::Inline,
+            ExecutionMode::Streaming => ActionExecutionMode::Streaming,
         };
         let payload_json: JsonValue =
             serde_json::from_str(payload).context("validated JSON payload must parse")?;
 
         match self.connector.submit_action(
-            SubmitActionRequestV2 {
+            SubmitActionRequest {
                 path: normalized_path.clone(),
                 payload: payload_json,
                 execution_mode,
             },
             &request_ctx,
         ) {
-            Ok(SubmitActionResponseV2 {
-                outcome: SubmitActionOutcomeV2::Completed { content },
+            Ok(SubmitActionResponse {
+                outcome: SubmitActionOutcome::Completed { content },
                 ..
             }) => {
                 self.emit_event(
@@ -833,8 +778,8 @@ impl AppfsAdapter {
                 )?;
                 Ok(ProcessOutcome::Consumed)
             }
-            Ok(SubmitActionResponseV2 {
-                outcome: SubmitActionOutcomeV2::Streaming { plan },
+            Ok(SubmitActionResponse {
+                outcome: SubmitActionOutcome::Streaming { plan },
                 ..
             }) => {
                 self.enqueue_streaming_job(
@@ -849,7 +794,7 @@ impl AppfsAdapter {
                 )?;
                 Ok(ProcessOutcome::Consumed)
             }
-            Err(ConnectorErrorV2 {
+            Err(ConnectorError {
                 code,
                 message,
                 retryable,
@@ -920,7 +865,7 @@ pub(super) fn build_app_connector(
     let connector: Box<dyn AppConnector> = if let Some(endpoint) = normalized_grpc_endpoint {
         eprintln!("AppFS adapter using gRPC bridge endpoint: {endpoint}");
         Box::new(
-            GrpcBridgeConnectorV2::new(
+            GrpcBridgeConnector::new(
                 app_id.to_string(),
                 endpoint,
                 Duration::from_millis(bridge_config.adapter_grpc_timeout_ms.max(1)),
@@ -936,14 +881,14 @@ pub(super) fn build_app_connector(
         )
     } else if let Some(endpoint) = normalized_http_endpoint {
         eprintln!("AppFS adapter using HTTP bridge endpoint: {endpoint}");
-        Box::new(HttpBridgeConnectorV2::new(
+        Box::new(HttpBridgeConnector::new(
             app_id.to_string(),
             endpoint,
             Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
             bridge_config.runtime_options,
         ))
     } else {
-        Box::new(DemoAppConnectorV2::new(app_id.to_string()))
+        Box::new(DemoAppConnector::new(app_id.to_string()))
     };
 
     let connector_info = connector
@@ -1292,7 +1237,7 @@ impl AppfsAdapter {
             &self.app_id,
             &self.session_id,
             &mut *self.connector,
-            AppStructureSyncReasonV3::EnterScope,
+            AppStructureSyncReason::EnterScope,
             Some(target_scope.to_string()),
             Some(action_path.to_string()),
         ) {
@@ -1313,11 +1258,11 @@ impl AppfsAdapter {
                 Ok(ProcessOutcome::Consumed)
             }
             Err(err) => {
-                let (code, retryable) = match err.downcast_ref::<ConnectorErrorV2>() {
+                let (code, retryable) = match err.downcast_ref::<ConnectorError>() {
                     Some(connector_err)
-                        if connector_err.code == connector_error_codes_v2::NOT_SUPPORTED =>
+                        if connector_err.code == connector_error_codes::NOT_SUPPORTED =>
                     {
-                        (connector_error_codes_v2::NOT_SUPPORTED, false)
+                        (connector_error_codes::NOT_SUPPORTED, false)
                     }
                     _ => ("STRUCTURE_SYNC_FAILED", true),
                 };
@@ -1350,7 +1295,7 @@ impl AppfsAdapter {
             &self.app_id,
             &self.session_id,
             &mut *self.connector,
-            AppStructureSyncReasonV3::Refresh,
+            AppStructureSyncReason::Refresh,
             target_scope.map(ToOwned::to_owned),
             Some(action_path.to_string()),
         ) {
@@ -1371,11 +1316,11 @@ impl AppfsAdapter {
                 Ok(ProcessOutcome::Consumed)
             }
             Err(err) => {
-                let (code, retryable) = match err.downcast_ref::<ConnectorErrorV2>() {
+                let (code, retryable) = match err.downcast_ref::<ConnectorError>() {
                     Some(connector_err)
-                        if connector_err.code == connector_error_codes_v2::NOT_SUPPORTED =>
+                        if connector_err.code == connector_error_codes::NOT_SUPPORTED =>
                     {
-                        (connector_error_codes_v2::NOT_SUPPORTED, false)
+                        (connector_error_codes::NOT_SUPPORTED, false)
                     }
                     _ => ("STRUCTURE_SYNC_FAILED", true),
                 };
@@ -1400,14 +1345,14 @@ impl AppfsAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_adapter_error_v1_to_connector_error_v2, LegacyAdapterConnectorV2};
+    use super::{map_adapter_error_v1_to_connector_error, LegacyAdapterConnector};
     use super::{AppfsAdapter, AppfsBridgeConfig};
     use crate::cmd::appfs::bridge_resilience::BridgeRuntimeOptions;
     use crate::cmd::appfs::{ACTION_CURSORS_FILENAME, SNAPSHOT_EXPAND_JOURNAL_FILENAME};
     use agentfs_sdk::{
         AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
-        AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnectorV2,
-        ConnectorContextV2, ConnectorTransportV2, FetchLivePageRequestV2, RequestContextV1,
+        AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, ConnectorContext,
+        ConnectorTransport, FetchLivePageRequest, RequestContextV1,
     };
     use serde_json::{json, Value as JsonValue};
     use std::fs::{self, OpenOptions};
@@ -1474,8 +1419,8 @@ mod tests {
         }
     }
 
-    fn ctx() -> ConnectorContextV2 {
-        ConnectorContextV2 {
+    fn ctx() -> ConnectorContext {
+        ConnectorContext {
             app_id: "aiim".to_string(),
             session_id: "sess-1".to_string(),
             request_id: "req-1".to_string(),
@@ -1489,15 +1434,15 @@ mod tests {
         let adapter: Box<dyn AppAdapterV1> = Box::new(PagingCompatAdapter {
             seen_pages: Vec::new(),
         });
-        let mut connector = LegacyAdapterConnectorV2::new(
+        let mut connector = LegacyAdapterConnector::new(
             "aiim".to_string(),
-            ConnectorTransportV2::HttpBridge,
+            ConnectorTransport::HttpBridge,
             adapter,
         );
 
         let first = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/chats/chat-001/messages.res.json".to_string(),
                     handle_id: Some("ph_abc".to_string()),
                     cursor: None,
@@ -1511,7 +1456,7 @@ mod tests {
 
         let second = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/chats/chat-001/messages.res.json".to_string(),
                     handle_id: Some("ph_abc".to_string()),
                     cursor: None,
@@ -1526,7 +1471,7 @@ mod tests {
 
     #[test]
     fn adapter_internal_maps_to_retryable_connector_internal() {
-        let err = map_adapter_error_v1_to_connector_error_v2(AdapterErrorV1::Internal {
+        let err = map_adapter_error_v1_to_connector_error(AdapterErrorV1::Internal {
             message: "transport disconnected".to_string(),
         });
         assert_eq!(err.code, "INTERNAL");

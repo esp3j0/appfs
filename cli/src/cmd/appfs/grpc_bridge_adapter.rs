@@ -2,24 +2,17 @@ use super::bridge_resilience::{
     is_retryable_grpc_code, BridgeCircuitBreaker, BridgeMetrics, BridgeRuntimeOptions,
 };
 use agentfs_sdk::{
-    connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1,
+    connector_error_codes, ActionExecutionMode, ActionStreamingPlan, AdapterControlActionV1,
     AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppConnectorV2,
-    AuthStatusV2, ConnectorContext, ConnectorContextV2, ConnectorError, ConnectorErrorV2,
-    ConnectorInfo, ConnectorInfoV2, ConnectorTransportV2, FetchLivePageRequest,
-    FetchLivePageRequestV2, FetchLivePageResponse, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponse,
-    FetchSnapshotChunkResponseV2, GetAppStructureRequest, GetAppStructureRequestV3,
-    GetAppStructureResponse, GetAppStructureResponseV3, HealthStatus, HealthStatusV2, LiveModeV2,
-    LivePageInfoV2, RefreshAppStructureRequest, RefreshAppStructureRequestV3,
-    RefreshAppStructureResponse, RefreshAppStructureResponseV3, RequestContextV1, SnapshotMeta,
-    SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2,
-    SubmitActionRequest as ConnectorSubmitActionRequest, SubmitActionRequestV2,
-    SubmitActionResponse as ConnectorSubmitActionResponse, SubmitActionResponseV2,
-};
-use agentfs_sdk::{
-    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
-    AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3, ConnectorErrorV3,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppStructureNode,
+    AppStructureNodeKind, AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult,
+    AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo, ConnectorTransport,
+    FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
+    FetchSnapshotChunkResponse, GetAppStructureRequest, GetAppStructureResponse, HealthStatus,
+    LiveMode, LivePageInfo, RefreshAppStructureRequest, RefreshAppStructureResponse,
+    RequestContextV1, SnapshotMeta, SnapshotRecord, SnapshotResume, SubmitActionOutcome,
+    SubmitActionRequest as ConnectorSubmitActionRequest,
+    SubmitActionResponse as ConnectorSubmitActionResponse,
 };
 use serde_json::Value as JsonValue;
 use std::future::Future;
@@ -56,7 +49,7 @@ pub(super) struct GrpcBridgeAdapterV1 {
     circuit_breaker: BridgeCircuitBreaker,
 }
 
-pub(super) struct GrpcBridgeConnectorV2 {
+pub(super) struct GrpcBridgeConnector {
     app_id: String,
     client: AppfsConnectorV2Client<Channel>,
     client_v3: AppfsConnectorV3Client<Channel>,
@@ -64,6 +57,41 @@ pub(super) struct GrpcBridgeConnectorV2 {
     metrics: BridgeMetrics,
     circuit_breaker: BridgeCircuitBreaker,
 }
+
+type ConnectorInfoV2 = ConnectorInfo;
+type ConnectorContextV2 = ConnectorContext;
+type ConnectorContextV3 = ConnectorContext;
+type ConnectorErrorV2 = ConnectorError;
+type ConnectorErrorV3 = ConnectorError;
+type ConnectorTransportV2 = ConnectorTransport;
+type AuthStatusV2 = AuthStatus;
+type HealthStatusV2 = HealthStatus;
+type SnapshotMetaV2 = SnapshotMeta;
+type SnapshotResumeV2 = SnapshotResume;
+type SnapshotRecordV2 = SnapshotRecord;
+type FetchSnapshotChunkRequestV2 = FetchSnapshotChunkRequest;
+type FetchSnapshotChunkResponseV2 = FetchSnapshotChunkResponse;
+type FetchLivePageRequestV2 = FetchLivePageRequest;
+type FetchLivePageResponseV2 = FetchLivePageResponse;
+type LiveModeV2 = LiveMode;
+type LivePageInfoV2 = LivePageInfo;
+type SubmitActionRequestV2 = ConnectorSubmitActionRequest;
+type SubmitActionResponseV2 = ConnectorSubmitActionResponse;
+type SubmitActionOutcomeV2 = SubmitActionOutcome;
+type ActionExecutionModeV2 = ActionExecutionMode;
+type ActionStreamingPlanV2 = ActionStreamingPlan;
+type GetAppStructureRequestV3 = GetAppStructureRequest;
+type GetAppStructureResponseV3 = GetAppStructureResponse;
+type RefreshAppStructureRequestV3 = RefreshAppStructureRequest;
+type RefreshAppStructureResponseV3 = RefreshAppStructureResponse;
+type AppStructureSyncReasonV3 = AppStructureSyncReason;
+type AppStructureSyncResultV3 = AppStructureSyncResult;
+type AppStructureSnapshotV3 = AppStructureSnapshot;
+type AppStructureNodeV3 = AppStructureNode;
+type AppStructureNodeKindV3 = AppStructureNodeKind;
+
+#[cfg(test)]
+type GrpcBridgeConnectorV2 = GrpcBridgeConnector;
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl GrpcBridgeAdapterV1 {
@@ -263,16 +291,16 @@ impl GrpcBridgeAdapterV1 {
     }
 }
 
-impl GrpcBridgeConnectorV2 {
+impl GrpcBridgeConnector {
     pub(super) fn new(
         app_id: String,
         endpoint: String,
         timeout: Duration,
         runtime_options: BridgeRuntimeOptions,
-    ) -> Result<Self, ConnectorErrorV2> {
+    ) -> Result<Self, ConnectorError> {
         let endpoint = endpoint.trim().trim_end_matches('/').to_string();
-        let endpoint = Endpoint::from_shared(endpoint.clone()).map_err(|err| ConnectorErrorV2 {
-            code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+        let endpoint = Endpoint::from_shared(endpoint.clone()).map_err(|err| ConnectorError {
+            code: connector_error_codes::INVALID_ARGUMENT.to_string(),
             message: format!("invalid grpc endpoint {endpoint}: {err}"),
             retryable: false,
             details: None,
@@ -295,14 +323,14 @@ impl GrpcBridgeConnectorV2 {
     }
 
     #[allow(clippy::result_large_err)]
-    fn run_v2_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorErrorV2>
+    fn run_v2_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorError>
     where
         F: FnMut(AppfsConnectorV2Client<Channel>) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
         if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
             self.metrics.record_short_circuit();
-            return Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+            return Err(ConnectorError {
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: format!(
                     "bridge grpc circuit open for {method}; retry_in_ms={} metrics={}",
                     remaining.as_millis(),
@@ -377,14 +405,14 @@ impl GrpcBridgeConnectorV2 {
     }
 
     #[allow(clippy::result_large_err)]
-    fn run_v3_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorErrorV3>
+    fn run_v3_rpc<Resp, F>(&mut self, method: &str, mut f: F) -> Result<Resp, ConnectorError>
     where
         F: FnMut(AppfsConnectorV3Client<Channel>) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
         if let Some(remaining) = self.circuit_breaker.check_open(Instant::now()) {
             self.metrics.record_short_circuit();
-            return Err(ConnectorErrorV3 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+            return Err(ConnectorError {
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: format!(
                     "bridge grpc circuit open for {method}; retry_in_ms={} metrics={}",
                     remaining.as_millis(),
@@ -445,10 +473,10 @@ impl GrpcBridgeConnectorV2 {
         }
     }
 
-    fn ensure_app_match(&self, app_id: &str) -> Result<(), ConnectorErrorV2> {
+    fn ensure_app_match(&self, app_id: &str) -> Result<(), ConnectorError> {
         if app_id != self.app_id {
-            return Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+            return Err(ConnectorError {
+                code: connector_error_codes::INVALID_ARGUMENT.to_string(),
                 message: format!(
                     "grpc connector app_id mismatch expected={} got={}",
                     self.app_id, app_id
@@ -573,8 +601,8 @@ impl AppAdapterV1 for GrpcBridgeAdapterV1 {
     }
 }
 
-impl AppConnectorV2 for GrpcBridgeConnectorV2 {
-    fn connector_id(&self) -> Result<ConnectorInfoV2, ConnectorErrorV2> {
+impl AppConnector for GrpcBridgeConnector {
+    fn connector_id(&self) -> Result<ConnectorInfo, ConnectorError> {
         let mut client = self.client.clone();
         let response = run_async(client.get_connector_info(proto_v2::GetConnectorInfoRequest {}))
             .map_err(|status| map_grpc_status_v2("GetConnectorInfo", status, 1, "n/a"))?
@@ -588,8 +616,8 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
             Some(proto_v2::get_connector_info_response::Result::Error(err)) => {
                 Err(from_proto_connector_error(err))
             }
-            None => Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+            None => Err(ConnectorError {
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: "bridge grpc GetConnectorInfo returned empty result".to_string(),
                 retryable: true,
                 details: None,
@@ -598,7 +626,7 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     }
 
     #[allow(clippy::result_large_err)]
-    fn health(&mut self, ctx: &ConnectorContextV2) -> Result<HealthStatusV2, ConnectorErrorV2> {
+    fn health(&mut self, ctx: &ConnectorContext) -> Result<HealthStatus, ConnectorError> {
         let req = proto_v2::HealthRequest {
             context: Some(to_proto_context_v2(ctx)),
         };
@@ -620,8 +648,8 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
         &mut self,
         resource_path: &str,
         timeout: Duration,
-        ctx: &ConnectorContextV2,
-    ) -> Result<SnapshotMetaV2, ConnectorErrorV2> {
+        ctx: &ConnectorContext,
+    ) -> Result<SnapshotMeta, ConnectorError> {
         let timeout_ms = timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64;
         let req = proto_v2::PrewarmSnapshotMetaRequest {
             context: Some(to_proto_context_v2(ctx)),
@@ -645,9 +673,9 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     #[allow(clippy::result_large_err)]
     fn fetch_snapshot_chunk(
         &mut self,
-        request: FetchSnapshotChunkRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+        request: FetchSnapshotChunkRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<FetchSnapshotChunkResponse, ConnectorError> {
         let req = proto_v2::FetchSnapshotChunkRequest {
             context: Some(to_proto_context_v2(ctx)),
             request: Some(to_proto_fetch_snapshot_chunk_request(request)),
@@ -669,9 +697,9 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     #[allow(clippy::result_large_err)]
     fn fetch_live_page(
         &mut self,
-        request: FetchLivePageRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+        request: FetchLivePageRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<FetchLivePageResponse, ConnectorError> {
         let req = proto_v2::FetchLivePageRequest {
             context: Some(to_proto_context_v2(ctx)),
             request: Some(to_proto_fetch_live_page_request(request)),
@@ -693,9 +721,9 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
     #[allow(clippy::result_large_err)]
     fn submit_action(
         &mut self,
-        request: SubmitActionRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> Result<SubmitActionResponseV2, ConnectorErrorV2> {
+        request: ConnectorSubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<ConnectorSubmitActionResponse, ConnectorError> {
         let req = proto_v2::SubmitActionRequest {
             context: Some(to_proto_context_v2(ctx)),
             request: Some(to_proto_submit_action_request(request)?),
@@ -713,18 +741,14 @@ impl AppConnectorV2 for GrpcBridgeConnectorV2 {
             None => Err(empty_result_error("SubmitAction")),
         }
     }
-}
-
-impl AppConnectorV3 for GrpcBridgeConnectorV2 {
-    #[allow(clippy::result_large_err)]
     fn get_app_structure(
         &mut self,
-        request: GetAppStructureRequestV3,
-        ctx: &ConnectorContextV3,
-    ) -> Result<GetAppStructureResponseV3, ConnectorErrorV3> {
+        request: GetAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<GetAppStructureResponse, ConnectorError> {
         if request.app_id != self.app_id {
-            return Err(ConnectorErrorV3 {
-                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+            return Err(ConnectorError {
+                code: connector_error_codes::INVALID_ARGUMENT.to_string(),
                 message: format!(
                     "grpc structure connector app_id mismatch expected={} got={}",
                     self.app_id, request.app_id
@@ -751,15 +775,14 @@ impl AppConnectorV3 for GrpcBridgeConnectorV2 {
         }
     }
 
-    #[allow(clippy::result_large_err)]
     fn refresh_app_structure(
         &mut self,
-        request: RefreshAppStructureRequestV3,
-        ctx: &ConnectorContextV3,
-    ) -> Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
+        request: RefreshAppStructureRequest,
+        ctx: &ConnectorContext,
+    ) -> Result<RefreshAppStructureResponse, ConnectorError> {
         if request.app_id != self.app_id {
-            return Err(ConnectorErrorV3 {
-                code: connector_error_codes_v2::INVALID_ARGUMENT.to_string(),
+            return Err(ConnectorError {
+                code: connector_error_codes::INVALID_ARGUMENT.to_string(),
                 message: format!(
                     "grpc structure connector app_id mismatch expected={} got={}",
                     self.app_id, request.app_id
@@ -784,65 +807,6 @@ impl AppConnectorV3 for GrpcBridgeConnectorV2 {
             }
             None => Err(empty_result_error_v3("RefreshAppStructure")),
         }
-    }
-}
-
-impl AppConnector for GrpcBridgeConnectorV2 {
-    fn connector_id(&self) -> Result<ConnectorInfo, ConnectorError> {
-        <Self as AppConnectorV2>::connector_id(self)
-    }
-
-    fn health(&mut self, ctx: &ConnectorContext) -> Result<HealthStatus, ConnectorError> {
-        <Self as AppConnectorV2>::health(self, ctx)
-    }
-
-    fn prewarm_snapshot_meta(
-        &mut self,
-        resource_path: &str,
-        timeout: Duration,
-        ctx: &ConnectorContext,
-    ) -> Result<SnapshotMeta, ConnectorError> {
-        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
-    }
-
-    fn fetch_snapshot_chunk(
-        &mut self,
-        request: FetchSnapshotChunkRequest,
-        ctx: &ConnectorContext,
-    ) -> Result<FetchSnapshotChunkResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
-    }
-
-    fn fetch_live_page(
-        &mut self,
-        request: FetchLivePageRequest,
-        ctx: &ConnectorContext,
-    ) -> Result<FetchLivePageResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
-    }
-
-    fn submit_action(
-        &mut self,
-        request: ConnectorSubmitActionRequest,
-        ctx: &ConnectorContext,
-    ) -> Result<ConnectorSubmitActionResponse, ConnectorError> {
-        <Self as AppConnectorV2>::submit_action(self, request, ctx)
-    }
-
-    fn get_app_structure(
-        &mut self,
-        request: GetAppStructureRequest,
-        ctx: &ConnectorContext,
-    ) -> Result<GetAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::get_app_structure(self, request, ctx)
-    }
-
-    fn refresh_app_structure(
-        &mut self,
-        request: RefreshAppStructureRequest,
-        ctx: &ConnectorContext,
-    ) -> Result<RefreshAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::refresh_app_structure(self, request, ctx)
     }
 }
 
@@ -907,9 +871,9 @@ fn map_grpc_status_v2(
 ) -> ConnectorErrorV2 {
     ConnectorErrorV2 {
         code: if is_retryable_grpc_code(status.code()) {
-            connector_error_codes_v2::UPSTREAM_UNAVAILABLE.to_string()
+            connector_error_codes::UPSTREAM_UNAVAILABLE.to_string()
         } else {
-            connector_error_codes_v2::INTERNAL.to_string()
+            connector_error_codes::INTERNAL.to_string()
         },
         message: format!(
             "bridge grpc {} error: code={} message={} attempts={} metrics={}",
@@ -926,7 +890,7 @@ fn map_grpc_status_v2(
 
 fn empty_result_error(method: &str) -> ConnectorErrorV2 {
     ConnectorErrorV2 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc {} returned empty result", method),
         retryable: true,
         details: None,
@@ -935,7 +899,7 @@ fn empty_result_error(method: &str) -> ConnectorErrorV2 {
 
 fn empty_result_error_v3(method: &str) -> ConnectorErrorV3 {
     ConnectorErrorV3 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc {} returned empty result", method),
         retryable: true,
         details: None,
@@ -950,9 +914,9 @@ fn map_grpc_status_v3(
 ) -> ConnectorErrorV3 {
     ConnectorErrorV3 {
         code: if is_retryable_grpc_code(status.code()) {
-            connector_error_codes_v2::UPSTREAM_UNAVAILABLE.to_string()
+            connector_error_codes::UPSTREAM_UNAVAILABLE.to_string()
         } else {
-            connector_error_codes_v2::INTERNAL.to_string()
+            connector_error_codes::INTERNAL.to_string()
         },
         message: format!(
             "bridge grpc {} error: code={} message={} attempts={} metrics={}",
@@ -1116,7 +1080,7 @@ fn from_proto_fetch_snapshot_chunk_response(
     for record in response.records {
         if record.line_json.trim().is_empty() {
             return Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: "snapshot record missing line".to_string(),
                 retryable: true,
                 details: None,
@@ -1152,7 +1116,7 @@ fn from_proto_fetch_live_page_response(
     response: proto_v2::FetchLivePageResponseV2,
 ) -> Result<FetchLivePageResponseV2, ConnectorErrorV2> {
     let page = response.page.ok_or_else(|| ConnectorErrorV2 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: "live page response missing page".to_string(),
         retryable: true,
         details: None,
@@ -1194,7 +1158,7 @@ fn to_proto_submit_action_request(
     Ok(proto_v2::SubmitActionRequestV2 {
         path: request.path,
         payload_json: serde_json::to_string(&request.payload).map_err(|err| ConnectorErrorV2 {
-            code: connector_error_codes_v2::INVALID_PAYLOAD.to_string(),
+            code: connector_error_codes::INVALID_PAYLOAD.to_string(),
             message: format!("invalid submit_action payload: {err}"),
             retryable: false,
             details: None,
@@ -1210,7 +1174,7 @@ fn from_proto_submit_action_response(
     response: proto_v2::SubmitActionResponseV2,
 ) -> Result<SubmitActionResponseV2, ConnectorErrorV2> {
     let outcome = response.outcome.ok_or_else(|| ConnectorErrorV2 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: "submit action response missing outcome".to_string(),
         retryable: true,
         details: None,
@@ -1224,7 +1188,7 @@ fn from_proto_submit_action_response(
         Some(proto_v2::submit_action_outcome_v2::Kind::StreamingPlan(plan)) => {
             if plan.terminal_content_json.trim().is_empty() {
                 return Err(ConnectorErrorV2 {
-                    code: connector_error_codes_v2::INTERNAL.to_string(),
+                    code: connector_error_codes::INTERNAL.to_string(),
                     message: "streaming plan missing terminal_content_json".to_string(),
                     retryable: true,
                     details: None,
@@ -1260,7 +1224,7 @@ fn from_proto_submit_action_response(
         }
         None => {
             return Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: "submit action outcome kind is empty".to_string(),
                 retryable: true,
                 details: None,
@@ -1418,7 +1382,7 @@ fn from_proto_structure_node_v3(
 
 fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
     serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV2 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc invalid json in {field}: {err}"),
         retryable: true,
         details: None,
@@ -1427,7 +1391,7 @@ fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErr
 
 fn parse_json_text_v3(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV3> {
     serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV3 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc invalid json in {field}: {err}"),
         retryable: true,
         details: None,
@@ -1461,7 +1425,7 @@ fn parse_optional_cursor_v2(
 
 fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV2 {
     ConnectorErrorV2 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc malformed payload in {field}: {reason}"),
         retryable: false,
         details: None,
@@ -1470,7 +1434,7 @@ fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorEr
 
 fn malformed_payload_v3(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV3 {
     ConnectorErrorV3 {
-        code: connector_error_codes_v2::INTERNAL.to_string(),
+        code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc malformed payload in {field}: {reason}"),
         retryable: false,
         details: None,
@@ -1498,10 +1462,9 @@ mod tests {
     use agentfs_sdk::{
         ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
         AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-        AppConnectorV2, AppConnectorV3, AppStructureSyncReasonV3, ConnectorContextV2,
-        FetchLivePageRequestV2, FetchSnapshotChunkRequestV2, GetAppStructureRequestV3,
-        RefreshAppStructureRequestV3, RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2,
-        SubmitActionRequestV2,
+        AppConnector, AppStructureSyncReasonV3, ConnectorContextV2, FetchLivePageRequestV2,
+        FetchSnapshotChunkRequestV2, GetAppStructureRequestV3, RefreshAppStructureRequestV3,
+        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
     };
     use std::net::SocketAddr;
     use std::time::Duration;

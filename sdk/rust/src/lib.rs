@@ -59,9 +59,7 @@ pub use appfs_connector_v3::{
     HealthStatusV3, RefreshAppStructureRequestV3, RefreshAppStructureResponseV3, SnapshotMetaV3,
     SubmitActionRequestV3, SubmitActionResponseV3, APPFS_CONNECTOR_SDK_V3_VERSION,
 };
-pub use appfs_demo_adapter::{
-    DemoAppAdapterV1, DemoAppConnectorV2, DemoAppConnectorV2 as DemoAppConnector,
-};
+pub use appfs_demo_adapter::{DemoAppAdapterV1, DemoAppConnector};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
