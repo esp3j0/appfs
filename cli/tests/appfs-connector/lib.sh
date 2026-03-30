@@ -21,7 +21,7 @@ persist_case_evidence() {
     case_id="$1"
     artifact_name="$2"
     src_path="$3"
-    evidence_dir="${APPFS_CONNECTOR_EVIDENCE_DIR:-}"
+    evidence_dir="${APPFS_CONNECTOR_EVIDENCE_DIR:-${APPFS_STRUCTURE_EVIDENCE_DIR:-}}"
     [ -n "$evidence_dir" ] || return 0
     [ -f "$src_path" ] || return 0
     mkdir -p "$evidence_dir"

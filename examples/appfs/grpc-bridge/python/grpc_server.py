@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 
 import grpc
 
-import appfs_adapter_v1_pb as pb1
-import appfs_adapter_v1_pb_grpc as pb1_grpc
-import appfs_connector_pb as connector_pb
-import appfs_connector_pb_grpc as connector_pb_grpc
-import appfs_structure_pb as structure_pb
-import appfs_structure_pb_grpc as structure_pb_grpc
+import appfs_adapter_v1_pb2 as pb1
+import appfs_adapter_v1_pb2_grpc as pb1_grpc
+import appfs_connector_pb2 as connector_pb
+import appfs_connector_pb2_grpc as connector_pb_grpc
+import appfs_structure_pb2 as structure_pb
+import appfs_structure_pb2_grpc as structure_pb_grpc
 
 
 def _env_int(name: str, default: int) -> int:

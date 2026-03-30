@@ -729,6 +729,7 @@ impl AppConnector for GrpcBridgeConnector {
             context: Some(to_structure_proto_context(ctx)),
             request: Some(to_structure_get_app_structure_request(request)),
         };
+        #[allow(clippy::result_large_err)]
         let response = self.run_structure_rpc("GetAppStructure", |mut client| {
             run_async(client.get_app_structure(req.clone()))
         })?;
@@ -763,6 +764,7 @@ impl AppConnector for GrpcBridgeConnector {
             context: Some(to_structure_proto_context(ctx)),
             request: Some(to_structure_refresh_app_structure_request(request)),
         };
+        #[allow(clippy::result_large_err)]
         let response = self.run_structure_rpc("RefreshAppStructure", |mut client| {
             run_async(client.refresh_app_structure(req.clone()))
         })?;
