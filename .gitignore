@@ -26,3 +26,5 @@ Temporary Items
 .apdisk
 
 .agentfs
+__pycache__/
+*.py[cod]
