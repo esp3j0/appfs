@@ -191,13 +191,12 @@ uv run ruff format .
 
 推荐先看这些入口：
 
-- [Connectorization ADR](docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md)
-- [Connector 接口](docs/v3/APPFS-v0.3-Connector接口.zh-CN.md)
-- [Connectorization 完成总结](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
-- [docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md](docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md)
-- [docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md](docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md)
+- [文档总索引](docs/README.md)
+- [当前 AppFS 文档主入口（v4）](docs/v4/README.md)
+- [Connectorization 里程碑（v3）](docs/v3/README.md)
+- [Backend-native 里程碑（v2）](docs/v2/README.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
-- [docs/plans/2026-03-26-appfs-runtime-closure-design.md](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
+- [Runtime 收口设计计划](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
 
 ## 架构
 

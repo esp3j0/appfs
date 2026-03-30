@@ -191,13 +191,12 @@ uv run ruff format .
 
 Key entry points:
 
-- [Connectorization ADR](docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md)
-- [Connector Interface](docs/v3/APPFS-v0.3-Connector接口.zh-CN.md)
-- [Connectorization Completion Summary](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
-- [docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md](docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md)
-- [docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md](docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md)
+- [Documentation Index](docs/README.md)
+- [Current AppFS milestone (v4)](docs/v4/README.md)
+- [Connectorization milestone (v3)](docs/v3/README.md)
+- [Backend-native milestone (v2)](docs/v2/README.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
-- [docs/plans/2026-03-26-appfs-runtime-closure-design.md](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
+- [Runtime closure design plan](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
 
 ## Architecture
 

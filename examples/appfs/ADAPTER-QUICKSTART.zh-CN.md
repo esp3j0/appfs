@@ -5,8 +5,9 @@
 
 主参考文档：
 
-1. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
-2. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
+1. `docs/v4/README.md`
+2. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
+3. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
 
 ## 1. 选择 Connector 路径
 
