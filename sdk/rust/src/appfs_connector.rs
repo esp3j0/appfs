@@ -1,8 +1,10 @@
 use crate::appfs_connector_v2::{
-    connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, ConnectorContextV2,
-    ConnectorErrorV2, ConnectorInfoV2, FetchLivePageRequestV2, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2, HealthStatusV2, SnapshotMetaV2,
-    SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
+    connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, AuthStatusV2,
+    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
+    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
+    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, SnapshotMetaV2,
+    SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+    SubmitActionResponseV2,
 };
 use crate::appfs_connector_v3::{
     AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3, AppStructureSyncReasonV3,
@@ -13,15 +15,29 @@ use crate::appfs_connector_v3::{
 /// Canonical AppFS connector SDK surface version after runtime closure cleanup.
 pub const APPFS_CONNECTOR_SDK_VERSION: &str = "0.4.0";
 
+pub mod connector_error_codes {
+    pub use crate::appfs_connector_v2::connector_error_codes_v2::{
+        AUTH_EXPIRED, CACHE_MISS_EXPAND_FAILED, CURSOR_EXPIRED, CURSOR_INVALID, INTERNAL,
+        INVALID_ARGUMENT, INVALID_PAYLOAD, NOT_SUPPORTED, PERMISSION_DENIED, RATE_LIMITED,
+        RESOURCE_EXHAUSTED, SNAPSHOT_TOO_LARGE, TIMEOUT, UPSTREAM_UNAVAILABLE,
+    };
+}
+
 pub type ConnectorInfo = ConnectorInfoV2;
 pub type ConnectorContext = ConnectorContextV2;
 pub type ConnectorError = ConnectorErrorV2;
+pub type ConnectorTransport = ConnectorTransportV2;
+pub type AuthStatus = AuthStatusV2;
 pub type HealthStatus = HealthStatusV2;
 pub type SnapshotMeta = SnapshotMetaV2;
+pub type SnapshotResume = SnapshotResumeV2;
+pub type SnapshotRecord = SnapshotRecordV2;
 pub type FetchSnapshotChunkRequest = FetchSnapshotChunkRequestV2;
 pub type FetchSnapshotChunkResponse = FetchSnapshotChunkResponseV2;
 pub type FetchLivePageRequest = FetchLivePageRequestV2;
 pub type FetchLivePageResponse = FetchLivePageResponseV2;
+pub type LiveMode = LiveModeV2;
+pub type LivePageInfo = LivePageInfoV2;
 pub type SubmitActionRequest = SubmitActionRequestV2;
 pub type SubmitActionResponse = SubmitActionResponseV2;
 pub type SubmitActionOutcome = SubmitActionOutcomeV2;

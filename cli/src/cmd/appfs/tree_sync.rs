@@ -4,9 +4,9 @@ use super::{
     DEFAULT_RETENTION_HINT_SEC, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 use agentfs_sdk::{
-    AppConnector, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
-    AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3,
-    GetAppStructureRequestV3, RefreshAppStructureRequestV3,
+    AppConnector, AppStructureNode, AppStructureNodeKind, AppStructureSnapshot,
+    AppStructureSyncReason, AppStructureSyncResult, ConnectorContext, GetAppStructureRequest,
+    RefreshAppStructureRequest,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub(super) fn refresh_app_structure(
     app_id: &str,
     session_id: &str,
     connector: &mut dyn AppConnector,
-    reason: AppStructureSyncReasonV3,
+    reason: AppStructureSyncReason,
     target_scope: Option<String>,
     trigger_action_path: Option<String>,
 ) -> Result<StructureSyncOutcome> {
@@ -99,7 +99,7 @@ impl AppTreeSyncService {
             state.revision.as_deref().unwrap_or("<none>")
         );
         let response = connector.get_app_structure(
-            GetAppStructureRequestV3 {
+            GetAppStructureRequest {
                 app_id: self.app_id.clone(),
                 known_revision: state.revision.clone(),
             },
@@ -107,7 +107,7 @@ impl AppTreeSyncService {
         )?;
 
         match response.result {
-            AppStructureSyncResultV3::Unchanged { .. } => {
+            AppStructureSyncResult::Unchanged { .. } => {
                 bootstrap_runtime_scaffolding(&self.root, &self.app_id)?;
                 eprintln!(
                     "[structure.sync] result app={} changed=false revision={} active_scope={}",
@@ -116,7 +116,7 @@ impl AppTreeSyncService {
                     state.active_scope.as_deref().unwrap_or("<none>")
                 );
             }
-            AppStructureSyncResultV3::Snapshot { snapshot } => {
+            AppStructureSyncResult::Snapshot { snapshot } => {
                 let revision = snapshot.revision.clone();
                 let active_scope = snapshot.active_scope.clone();
                 self.apply_snapshot(snapshot)?;
@@ -135,7 +135,7 @@ impl AppTreeSyncService {
     fn refresh(
         &mut self,
         connector: &mut dyn AppConnector,
-        reason: AppStructureSyncReasonV3,
+        reason: AppStructureSyncReason,
         target_scope: Option<String>,
         trigger_action_path: Option<String>,
     ) -> Result<StructureSyncOutcome> {
@@ -150,7 +150,7 @@ impl AppTreeSyncService {
             state.revision.as_deref().unwrap_or("<none>")
         );
         let response = connector.refresh_app_structure(
-            RefreshAppStructureRequestV3 {
+            RefreshAppStructureRequest {
                 app_id: self.app_id.clone(),
                 known_revision: state.revision.clone(),
                 reason,
@@ -161,7 +161,7 @@ impl AppTreeSyncService {
         )?;
 
         match response.result {
-            AppStructureSyncResultV3::Unchanged {
+            AppStructureSyncResult::Unchanged {
                 revision,
                 active_scope,
                 ..
@@ -178,7 +178,7 @@ impl AppTreeSyncService {
                     active_scope,
                 })
             }
-            AppStructureSyncResultV3::Snapshot { snapshot } => {
+            AppStructureSyncResult::Snapshot { snapshot } => {
                 let revision = snapshot.revision.clone();
                 let active_scope = snapshot.active_scope.clone();
                 self.apply_snapshot(snapshot)?;
@@ -197,7 +197,7 @@ impl AppTreeSyncService {
         }
     }
 
-    fn apply_snapshot(&mut self, snapshot: AppStructureSnapshotV3) -> Result<()> {
+    fn apply_snapshot(&mut self, snapshot: AppStructureSnapshot) -> Result<()> {
         if snapshot.app_id != self.app_id {
             anyhow::bail!(
                 "structure snapshot app_id mismatch: snapshot={} runtime={}",
@@ -220,7 +220,7 @@ impl AppTreeSyncService {
         Ok(())
     }
 
-    fn materialize_snapshot(&self, snapshot: &AppStructureSnapshotV3) -> Result<()> {
+    fn materialize_snapshot(&self, snapshot: &AppStructureSnapshot) -> Result<()> {
         let app_dir = self.app_dir();
         fs::create_dir_all(&app_dir)
             .with_context(|| format!("Failed to create app directory {}", app_dir.display()))?;
@@ -238,7 +238,7 @@ impl AppTreeSyncService {
                     dir_paths.insert(rel);
                 }
             }
-            if matches!(node.kind, AppStructureNodeKindV3::Directory) {
+            if matches!(node.kind, AppStructureNodeKind::Directory) {
                 dir_paths.insert(node.path.clone());
             }
             if let Some(entry) = &node.manifest_entry {
@@ -279,14 +279,14 @@ impl AppTreeSyncService {
         Ok(())
     }
 
-    fn materialize_node(&self, node: &AppStructureNodeV3) -> Result<()> {
+    fn materialize_node(&self, node: &AppStructureNode) -> Result<()> {
         let full = self.app_dir().join(&node.path);
         match node.kind {
-            AppStructureNodeKindV3::Directory => {
+            AppStructureNodeKind::Directory => {
                 fs::create_dir_all(&full)
                     .with_context(|| format!("Failed to create directory {}", full.display()))?;
             }
-            AppStructureNodeKindV3::ActionFile => {
+            AppStructureNodeKind::ActionFile => {
                 ensure_parent_dir(&full)?;
                 if !full.exists() {
                     fs::write(&full, b"").with_context(|| {
@@ -294,12 +294,12 @@ impl AppTreeSyncService {
                     })?;
                 }
             }
-            AppStructureNodeKindV3::LiveResource | AppStructureNodeKindV3::StaticJsonResource => {
+            AppStructureNodeKind::LiveResource | AppStructureNodeKind::StaticJsonResource => {
                 ensure_parent_dir(&full)?;
                 let content = node.seed_content.clone().unwrap_or_else(|| json!({}));
                 write_json_file(&full, &content)?;
             }
-            AppStructureNodeKindV3::SnapshotResource => {
+            AppStructureNodeKind::SnapshotResource => {
                 ensure_parent_dir(&full)?;
                 if !full.exists() {
                     fs::write(&full, b"").with_context(|| {
@@ -340,7 +340,7 @@ impl AppTreeSyncService {
         Ok(())
     }
 
-    fn desired_owned_paths(&self, snapshot: &AppStructureSnapshotV3) -> BTreeSet<String> {
+    fn desired_owned_paths(&self, snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
         let mut owned = BTreeSet::new();
         owned.insert("_meta".to_string());
         owned.insert("_meta/manifest.res.json".to_string());
@@ -364,7 +364,7 @@ impl AppTreeSyncService {
 
     fn ensure_snapshot_paths_visible(
         &self,
-        snapshot: &AppStructureSnapshotV3,
+        snapshot: &AppStructureSnapshot,
         desired_owned_paths: &BTreeSet<String>,
     ) -> Result<()> {
         #[cfg(not(target_os = "windows"))]
@@ -392,17 +392,17 @@ impl AppTreeSyncService {
     }
 
     #[cfg(target_os = "windows")]
-    fn snapshot_file_paths(&self, snapshot: &AppStructureSnapshotV3) -> BTreeSet<String> {
+    fn snapshot_file_paths(&self, snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
         let mut file_paths = BTreeSet::from(["_meta/manifest.res.json".to_string()]);
         for node in &snapshot.nodes {
-            if !matches!(node.kind, AppStructureNodeKindV3::Directory) {
+            if !matches!(node.kind, AppStructureNodeKind::Directory) {
                 file_paths.insert(node.path.clone());
             }
         }
         file_paths
     }
 
-    fn validate_node(&self, node: &AppStructureNodeV3) -> Result<()> {
+    fn validate_node(&self, node: &AppStructureNode) -> Result<()> {
         if node.path.trim().is_empty() {
             anyhow::bail!("structure node path cannot be empty");
         }
@@ -426,8 +426,8 @@ impl AppTreeSyncService {
         Ok(())
     }
 
-    fn context(&self, request_id: &str) -> ConnectorContextV3 {
-        ConnectorContextV3 {
+    fn context(&self, request_id: &str) -> ConnectorContext {
+        ConnectorContext {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.to_string(),
@@ -675,19 +675,19 @@ fn is_runtime_protected_path(rel: &str) -> bool {
         || rel == format!("_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}")
 }
 
-fn structure_reason_label(reason: AppStructureSyncReasonV3) -> &'static str {
+fn structure_reason_label(reason: AppStructureSyncReason) -> &'static str {
     match reason {
-        AppStructureSyncReasonV3::Initialize => "initialize",
-        AppStructureSyncReasonV3::EnterScope => "enter_scope",
-        AppStructureSyncReasonV3::Refresh => "refresh",
-        AppStructureSyncReasonV3::Recover => "recover",
+        AppStructureSyncReason::Initialize => "initialize",
+        AppStructureSyncReason::EnterScope => "enter_scope",
+        AppStructureSyncReason::Refresh => "refresh",
+        AppStructureSyncReason::Recover => "recover",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_runtime_scaffolding, AppTreeSyncService};
-    use agentfs_sdk::DemoAppConnectorV2;
+    use agentfs_sdk::DemoAppConnector;
     use std::fs;
     use tempfile::TempDir;
 
@@ -699,7 +699,7 @@ mod tests {
             "aiim".to_string(),
             "sess-test".to_string(),
         );
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         service
             .sync_initial(&mut connector)
             .expect("initial structure sync should succeed");
@@ -724,7 +724,7 @@ mod tests {
             "aiim".to_string(),
             "sess-test".to_string(),
         );
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         service
             .sync_initial(&mut connector)
             .expect("initial structure sync should succeed");
@@ -735,7 +735,7 @@ mod tests {
         service
             .refresh(
                 &mut connector,
-                agentfs_sdk::AppStructureSyncReasonV3::EnterScope,
+                agentfs_sdk::AppStructureSyncReason::EnterScope,
                 Some("chat-long".to_string()),
                 Some("/_app/enter_scope.act".to_string()),
             )
@@ -762,7 +762,7 @@ mod tests {
             "aiim".to_string(),
             "sess-test".to_string(),
         );
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         service
             .sync_initial(&mut connector)
             .expect("initial structure sync should succeed");
@@ -773,7 +773,7 @@ mod tests {
         let err = service
             .refresh(
                 &mut connector,
-                agentfs_sdk::AppStructureSyncReasonV3::EnterScope,
+                agentfs_sdk::AppStructureSyncReason::EnterScope,
                 Some("missing-scope".to_string()),
                 Some("/_app/enter_scope.act".to_string()),
             )

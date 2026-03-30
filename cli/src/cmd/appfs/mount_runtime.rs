@@ -1,6 +1,6 @@
 use agentfs_sdk::{
-    BoxedFile, ConnectorContextV2, DirEntry, FetchSnapshotChunkRequestV2, FileSystem, FsError,
-    SnapshotResumeV2, Stats, TimeChange, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
+    BoxedFile, ConnectorContext, DirEntry, FetchSnapshotChunkRequest, FileSystem, FsError,
+    SnapshotResume, Stats, TimeChange, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -109,8 +109,8 @@ impl MountSnapshotRuntime {
         )
     }
 
-    fn request_context(&self, request_id: &str) -> ConnectorContextV2 {
-        ConnectorContextV2 {
+    fn request_context(&self, request_id: &str) -> ConnectorContext {
+        ConnectorContext {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.to_string(),
@@ -531,13 +531,13 @@ impl MountSnapshotReadThroughFs {
             resource_rel
         );
         let mut out = Vec::new();
-        let mut resume = SnapshotResumeV2::Start;
+        let mut resume = SnapshotResume::Start;
         let budget_bytes = 1_048_576_u64;
         loop {
             let response = runtime
                 .connector
                 .fetch_snapshot_chunk(
-                    FetchSnapshotChunkRequestV2 {
+                    FetchSnapshotChunkRequest {
                         resource_path: format!("/{}", resource_rel),
                         resume,
                         budget_bytes,
@@ -567,7 +567,7 @@ impl MountSnapshotReadThroughFs {
                     "connector response missing next_cursor while has_more=true".to_string(),
                 )
             })?;
-            resume = SnapshotResumeV2::Cursor(next_cursor);
+            resume = SnapshotResume::Cursor(next_cursor);
         }
         if out.is_empty() {
             return Err(io_error(

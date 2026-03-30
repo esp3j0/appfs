@@ -1,6 +1,6 @@
 use agentfs_sdk::{
-    connector_error_codes_v2, ConnectorContextV2, ConnectorErrorV2, FetchSnapshotChunkRequestV2,
-    SnapshotResumeV2,
+    connector_error_codes, ConnectorContext, ConnectorError, FetchSnapshotChunkRequest,
+    SnapshotResume,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -46,7 +46,7 @@ impl AppfsAdapter {
             let resource_path = format!("/{}", spec.template);
             let timeout = Duration::from_millis(spec.prewarm_timeout_ms.max(1));
             let request_id = format!("prewarm-{}", uuid::Uuid::new_v4());
-            let ctx = ConnectorContextV2 {
+            let ctx = ConnectorContext {
                 app_id: self.app_id.clone(),
                 session_id: self.session_id.clone(),
                 request_id,
@@ -683,12 +683,12 @@ impl AppfsAdapter {
             resource_rel
         );
         let mut out = String::new();
-        let mut resume = SnapshotResumeV2::Start;
+        let mut resume = SnapshotResume::Start;
         let mut total_bytes = 0usize;
         let budget_bytes = 1_048_576_u64;
 
         loop {
-            let ctx = ConnectorContextV2 {
+            let ctx = ConnectorContext {
                 app_id: self.app_id.clone(),
                 session_id: self.session_id.clone(),
                 request_id: request_id.to_string(),
@@ -698,7 +698,7 @@ impl AppfsAdapter {
             let response = self
                 .connector
                 .fetch_snapshot_chunk(
-                    FetchSnapshotChunkRequestV2 {
+                    FetchSnapshotChunkRequest {
                         resource_path: format!("/{}", resource_rel),
                         resume,
                         budget_bytes,
@@ -725,7 +725,7 @@ impl AppfsAdapter {
                     "connector_response_invalid missing_next_cursor_when_has_more".to_string(),
                 );
             };
-            resume = SnapshotResumeV2::Cursor(next_cursor);
+            resume = SnapshotResume::Cursor(next_cursor);
         }
 
         if total_bytes == 0 {
@@ -803,16 +803,16 @@ impl AppfsAdapter {
     }
 }
 
-fn is_prewarm_timeout(err: &ConnectorErrorV2) -> bool {
+fn is_prewarm_timeout(err: &ConnectorError) -> bool {
     err.code
-        .eq_ignore_ascii_case(connector_error_codes_v2::TIMEOUT)
+        .eq_ignore_ascii_case(connector_error_codes::TIMEOUT)
         || err
             .message
             .split_whitespace()
             .any(|segment| segment.eq_ignore_ascii_case("timeout"))
 }
 
-fn prewarm_error_summary(err: &ConnectorErrorV2) -> String {
+fn prewarm_error_summary(err: &ConnectorError) -> String {
     format!(
         "code={} retryable={} message={} details={}",
         err.code,
@@ -822,7 +822,7 @@ fn prewarm_error_summary(err: &ConnectorErrorV2) -> String {
     )
 }
 
-fn snapshot_expand_error_summary(err: ConnectorErrorV2) -> String {
+fn snapshot_expand_error_summary(err: ConnectorError) -> String {
     format!(
         "connector_error code={} retryable={} message={} details={}",
         err.code,

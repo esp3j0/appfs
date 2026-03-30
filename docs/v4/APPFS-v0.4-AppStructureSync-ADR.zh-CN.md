@@ -114,31 +114,29 @@ runtime 继续作为以下内容的真相源：
 
 ## 4. 兼容性决策
 
-### 4.1 `AppConnectorV3` 作为扩展阶段存在，运行时收口为统一 `AppConnector`
+### 4.1 统一 `AppConnector` 成为唯一当前 connector 概念
 
-`v0.3` 冻结时不应直接把结构同步塞进 `AppConnectorV2`，因此 `v0.4` 先引入了：
+`v0.3` 冻结时不应直接把结构同步塞进 `AppConnectorV2`，因此 `v0.4` 第一阶段曾引入：
 
 `AppConnectorV3`
 
-这一步仍然成立，它解释了结构同步为何作为独立 shipping surface 引入。
+这一步作为 rollout 历史仍然成立，它解释了结构同步为何最初以扩展 surface 进入实现。
 
-但在后续收口阶段，运行时与 Rust SDK 的 canonical surface 改为：
+但在当前收口阶段，正式决策改为：
 
-`AppConnector`
+1. `AppConnector` 是唯一当前 canonical connector trait；
+2. `AppConnectorV2` / `AppConnectorV3` 不再保留为 shipping 概念；
+3. connector request/response / context / error / structure types 全部收成无版本后缀命名。
 
-约束：
+### 4.2 transport 也不再保留 `v2` / `v3` 命名
 
-1. HTTP / gRPC wire contract 仍可继续使用 `v2` / `v3` 名称；
-2. adapter 层负责把现有 wire shape 映射到统一 `AppConnector`；
-3. runtime 不再持有“business connector + structure connector”双概念。
+由于当前阶段不要求 backward compatibility，收口要求也覆盖 transport surface：
 
-### 4.2 迁移窗口
+1. HTTP bridge 不再暴露 `/v2/connector/*` 或 `/v3/connector/structure/*`；
+2. gRPC bridge 不再保留 `appfs.connector.v2` / `appfs.connector.v3` service；
+3. adapter、proto、测试与文档统一改为无版本命名。
 
-1. `AppConnectorV2` / `AppConnectorV3` 继续保留为 adapter/wire 兼容层。
-2. canonical Rust SDK/runtime surface 使用统一 `AppConnector`。
-3. 在 `v0.4` 收口后，README 与实现应明确区分：
-   - low-level transport versioning
-   - runtime-facing canonical connector
+历史文档仍可提到 `v0.3` / `v0.4` 作为架构里程碑，但它们不再是当前 connector API 命名的一部分。
 
 ### 4.3 `managed-first` 成为默认启动流
 
