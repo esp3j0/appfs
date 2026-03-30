@@ -281,12 +281,14 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
-  # Publish TypeScript SDK to npm
+  # Publish TypeScript SDK to npm.
+  # Disabled by default for this repository; enable with
+  # repository variable RELEASE_PUBLISH_REGISTRIES=true.
   publish-npm:
     needs:
       - plan
       - host
-    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' && vars.RELEASE_PUBLISH_REGISTRIES == 'true' }}
     runs-on: "ubuntu-22.04"
     steps:
       - uses: actions/checkout@v4
@@ -311,12 +313,14 @@ jobs:
           TAG_FLAG: "${{ fromJson(needs.host.outputs.val).announcement_is_prerelease && '--tag next' || '' }}"
         run: npm publish --provenance --access public $TAG_FLAG
 
-  # Publish Rust SDK to crates.io
+  # Publish Rust SDK to crates.io.
+  # Disabled by default for this repository; enable with
+  # repository variable RELEASE_PUBLISH_REGISTRIES=true.
   publish-cargo:
     needs:
       - plan
       - host
-    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' && vars.RELEASE_PUBLISH_REGISTRIES == 'true' }}
     runs-on: "ubuntu-22.04"
     steps:
       - uses: actions/checkout@v4
@@ -331,12 +335,14 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # Publish Python SDK to PyPI
+  # Publish Python SDK to PyPI.
+  # Disabled by default for this repository; enable with
+  # repository variable RELEASE_PUBLISH_REGISTRIES=true.
   publish-pypi:
     needs:
       - plan
       - host
-    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' && vars.RELEASE_PUBLISH_REGISTRIES == 'true' }}
     runs-on: "ubuntu-22.04"
     env:
       UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
