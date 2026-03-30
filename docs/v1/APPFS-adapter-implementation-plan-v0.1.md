@@ -35,7 +35,7 @@
 4. SDK module now includes reusable matrix-style conformance tests (required-case matrix + error-case matrix), with multiple adapter implementations plugged into the same fixture runner.
 5. Demo adapter behavior has been split out of `cli/src/cmd/appfs.rs` into a reusable SDK module (`sdk/rust/src/appfs_demo_adapter.rs`) to keep runtime orchestration separate from business logic.
 6. Requirements checklist item 1-17 are marked `PASS` in `APPFS-adapter-requirements-v0.1.md`.
-7. Optional language bridge reference is now available via HTTP adapter mode in runtime (`--adapter-http-endpoint`), with mapping documented in `APPFS-adapter-http-bridge-v0.1.md` and Python sample at `examples/appfs/http-bridge/python/`.
+7. Optional language bridge reference is now available via HTTP adapter mode in runtime (`--adapter-http-endpoint`), with mapping documented in `APPFS-adapter-http-bridge-v0.1.md` and Python sample at `examples/appfs/bridges/http-python/`.
 8. Second transport example (gRPC bridge) is now documented and sampled with proto + Python gRPC service + HTTP gateway at `examples/appfs/grpc-bridge/`.
 9. Runtime native gRPC bridge mode is implemented (`--adapter-grpc-endpoint`, `--adapter-grpc-timeout-ms`) for direct out-of-process adapter dispatch.
 10. SDK now exposes reusable adapter matrix runners (`sdk/rust/src/appfs_adapter_testkit.rs`) so adapter authors can validate implementations against the frozen trait contract without runtime internals.
@@ -289,7 +289,7 @@ git commit -m "test(appfs): add live adapter contract harness"
 - Modify: `APPFS-v0.1.md`
 - Modify: `APPFS-adapter-requirements-v0.1.md`
 - Modify: `APPFS-conformance-v0.1.md`
-- Modify: `examples/appfs/aiim/_meta/manifest.res.json`
+- Modify: `examples/appfs/fixtures/aiim/_meta/manifest.res.json`
 
 **Step 1: Add conformance metadata sample**
 
@@ -306,7 +306,7 @@ Expected: third-party implementers can self-check Core compatibility.
 **Step 3: Commit**
 
 ```bash
-git add APPFS-v0.1.md APPFS-adapter-requirements-v0.1.md APPFS-conformance-v0.1.md examples/appfs/aiim/_meta/manifest.res.json
+git add APPFS-v0.1.md APPFS-adapter-requirements-v0.1.md APPFS-conformance-v0.1.md examples/appfs/fixtures/aiim/_meta/manifest.res.json
 git commit -m "docs(appfs): publish conformance declaration examples"
 ```
 

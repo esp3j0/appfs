@@ -47,10 +47,10 @@ const MAX_RECOVERY_BYTES: usize = 65536;
 const DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS: u64 = 10_000;
-const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS";
-const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND";
-const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_V2_SNAPSHOT_COALESCE_WINDOW_MS";
-const SNAPSHOT_PUBLISH_DELAY_ENV: &str = "APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS";
+const SNAPSHOT_EXPAND_DELAY_ENV: &str = "APPFS_SNAPSHOT_EXPAND_DELAY_MS";
+const SNAPSHOT_FORCE_EXPAND_ON_REFRESH_ENV: &str = "APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND";
+const SNAPSHOT_COALESCE_WINDOW_ENV: &str = "APPFS_SNAPSHOT_COALESCE_WINDOW_MS";
+const SNAPSHOT_PUBLISH_DELAY_ENV: &str = "APPFS_SNAPSHOT_PUBLISH_DELAY_MS";
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
 const SNAPSHOT_EXPAND_JOURNAL_FILENAME: &str = "snapshot-expand.state.res.json";
 const APP_STRUCTURE_SYNC_STATE_FILENAME: &str = "app-structure-sync.state.res.json";
@@ -449,7 +449,7 @@ struct AppfsAdapter {
     snapshot_recent_expands: HashMap<String, Instant>,
     snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
     streaming_jobs: Vec<StreamingJob>,
-    actionline_v2_strict: bool,
+    actionline_strict: bool,
     connector: Box<dyn AppConnector>,
 }
 

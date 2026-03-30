@@ -1,4 +1,4 @@
-use agentfs_sdk::{ConnectorContextV2, FetchLivePageRequestV2};
+use agentfs_sdk::{ConnectorContext, FetchLivePageRequest};
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::Value as JsonValue;
@@ -90,7 +90,7 @@ impl AppfsAdapter {
                 .expect("paging handle should exist after precheck");
             (handle.upstream_cursor.clone(), handle.resource_path.clone())
         };
-        let request_ctx = ConnectorContextV2 {
+        let request_ctx = ConnectorContext {
             app_id: self.app_id.clone(),
             session_id: self.session_id.clone(),
             request_id: request_id.to_string(),
@@ -98,7 +98,7 @@ impl AppfsAdapter {
             trace_id: None,
         };
         match self.connector.fetch_live_page(
-            FetchLivePageRequestV2 {
+            FetchLivePageRequest {
                 resource_path,
                 handle_id: Some(handle_key.clone()),
                 cursor: upstream_cursor,

@@ -34,7 +34,7 @@ impl AppfsRuntimeSupervisor {
         Ok(Self {
             control_plane: supervisor_control::SupervisorControlPlane::new(
                 root.clone(),
-                std::env::var("APPFS_V2_ACTIONLINE_STRICT")
+                std::env::var("APPFS_ACTIONLINE_STRICT")
                     .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "True"))
                     .unwrap_or(false),
             )?,

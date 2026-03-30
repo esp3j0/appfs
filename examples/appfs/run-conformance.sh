@@ -14,8 +14,8 @@ Usage:
 
 Modes:
   inprocess   Run live AppFS contract suite with built-in demo adapter
-  http-python Run live AppFS contract suite with Python HTTP bridge adapter
-  grpc-python Run live AppFS contract suite with Python gRPC bridge adapter
+  http-python Run live AppFS contract suite with Python HTTP bridge connector
+  grpc-python Run live AppFS contract suite with Python gRPC bridge connector
 EOF
 }
 
@@ -24,10 +24,10 @@ case "$mode" in
         APPFS_CONTRACT_TESTS=1 sh "$CLI_DIR/tests/appfs/run-live-with-adapter.sh"
         ;;
     http-python)
-        sh "$SCRIPT_DIR/http-bridge/python/run-conformance.sh"
+        sh "$SCRIPT_DIR/bridges/http-python/run-conformance.sh"
         ;;
     grpc-python)
-        sh "$SCRIPT_DIR/grpc-bridge/python/run-conformance.sh"
+        sh "$SCRIPT_DIR/bridges/grpc-python/run-conformance.sh"
         ;;
     -h|--help|help)
         usage

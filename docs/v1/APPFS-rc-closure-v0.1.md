@@ -22,8 +22,8 @@ Decision basis:
 
 1. Shell + Python syntax checks:
    - `bash -n cli/tests/appfs/run-live-with-adapter.sh`
-   - `python -m py_compile examples/appfs/http-bridge/python/bridge_server.py`
-   - `python -m py_compile examples/appfs/grpc-bridge/python/grpc_server.py`
+   - `python -m py_compile examples/appfs/bridges/http-python/bridge_server.py`
+   - `python -m py_compile examples/appfs/bridges/grpc-python/grpc_server.py`
 2. Targeted Rust bridge resilience tests:
    - `cargo test --package agentfs bridge_resilience --quiet`
 

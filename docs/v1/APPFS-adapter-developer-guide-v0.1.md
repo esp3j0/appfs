@@ -63,7 +63,7 @@ References:
 
 1. `sdk/rust/src/appfs_adapter.rs`
 2. `sdk/rust/src/appfs_demo_adapter.rs`
-3. `examples/appfs/adapter-template/rust-minimal/`
+3. `examples/appfs/legacy/v1/templates/rust-minimal/`
 
 ## 4.2 Out-of-Process HTTP Bridge
 
@@ -74,7 +74,7 @@ Use when:
 
 Reference:
 
-1. `examples/appfs/http-bridge/python/`
+1. `examples/appfs/bridges/http-python/`
 2. `docs/v1/APPFS-adapter-http-bridge-v0.1.md`
 
 ## 4.3 Out-of-Process gRPC Bridge
@@ -86,7 +86,7 @@ Use when:
 
 Reference:
 
-1. `examples/appfs/grpc-bridge/python/`
+1. `examples/appfs/bridges/grpc-python/`
 2. `docs/v1/APPFS-adapter-grpc-bridge-v0.1.md`
 
 ## 4.4 Define App Structure and Handler Mapping First
@@ -233,9 +233,9 @@ Before claiming `AppFS v0.1 Core`:
 Current reference implementations:
 
 1. Real-upstream backend mode:
-   - `examples/appfs/http-bridge/python/appfs_http_bridge/jsonplaceholder_backend.py`
+   - `examples/appfs/bridges/http-python/appfs_http_bridge/jsonplaceholder_backend.py`
    - Enable by `APPFS_HTTP_BRIDGE_BACKEND=jsonplaceholder`
 2. Scaffold generator:
-   - `examples/appfs/new-adapter.sh <adapter_id>`
+   - `examples/appfs/legacy/v1/new-adapter.sh <adapter_id>`
    - Generates `examples/appfs/adapters/<adapter_id>/python`
 

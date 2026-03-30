@@ -42,23 +42,24 @@ fn main() {
 }
 
 fn compile_appfs_grpc_bridge_proto() {
-    let proto_v1 = "../examples/appfs/grpc-bridge/proto/appfs_adapter_v1.proto";
-    let proto_v2 = "../examples/appfs/grpc-bridge/proto/appfs_connector_v2.proto";
-    let proto_v3 = "../examples/appfs/grpc-bridge/proto/appfs_connector_v3.proto";
-    let include_dir = "../examples/appfs/grpc-bridge/proto";
+    let proto_v1 = "../examples/appfs/legacy/v1/grpc/proto/appfs_adapter_v1.proto";
+    let connector_proto = "../examples/appfs/bridges/grpc-python/proto/appfs_connector.proto";
+    let structure_proto = "../examples/appfs/bridges/grpc-python/proto/appfs_structure.proto";
+    let legacy_include_dir = "../examples/appfs/legacy/v1/grpc/proto";
+    let connector_include_dir = "../examples/appfs/bridges/grpc-python/proto";
 
     println!("cargo:rerun-if-changed={proto_v1}");
-    println!("cargo:rerun-if-changed={proto_v2}");
-    println!("cargo:rerun-if-changed={proto_v3}");
+    println!("cargo:rerun-if-changed={connector_proto}");
+    println!("cargo:rerun-if-changed={structure_proto}");
 
     if let Ok(protoc) = protoc_bin_vendored::protoc_bin_path() {
         std::env::set_var("PROTOC", protoc);
     }
 
     let v1_exists = std::path::Path::new(proto_v1).exists();
-    let v2_exists = std::path::Path::new(proto_v2).exists();
-    let v3_exists = std::path::Path::new(proto_v3).exists();
-    if !v1_exists && !v2_exists && !v3_exists {
+    let connector_exists = std::path::Path::new(connector_proto).exists();
+    let structure_exists = std::path::Path::new(structure_proto).exists();
+    if !v1_exists && !connector_exists && !structure_exists {
         return;
     }
 
@@ -66,21 +67,21 @@ fn compile_appfs_grpc_bridge_proto() {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[proto_v1], &[include_dir])
+            .compile_protos(&[proto_v1], &[legacy_include_dir])
             .expect("failed to compile AppFS gRPC bridge v1 proto");
     }
-    if v2_exists {
+    if connector_exists {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[proto_v2], &[include_dir])
-            .expect("failed to compile AppFS gRPC bridge v2 proto");
+            .compile_protos(&[connector_proto], &[connector_include_dir])
+            .expect("failed to compile AppFS connector proto");
     }
-    if v3_exists {
+    if structure_exists {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[proto_v3], &[include_dir])
-            .expect("failed to compile AppFS gRPC bridge v3 proto");
+            .compile_protos(&[structure_proto], &[connector_include_dir])
+            .expect("failed to compile AppFS structure proto");
     }
 }

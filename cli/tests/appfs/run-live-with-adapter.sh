@@ -5,7 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 CLI_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$CLI_DIR/.." && pwd)"
 
-APPFS_FIXTURE_DIR="${APPFS_FIXTURE_DIR:-$REPO_DIR/examples/appfs}"
+APPFS_FIXTURE_DIR="${APPFS_FIXTURE_DIR:-$REPO_DIR/examples/appfs/fixtures}"
 APPFS_LIVE_AGENT_ID="${APPFS_LIVE_AGENT_ID:-appfs-live-$$}"
 APPFS_LIVE_MOUNTPOINT="${APPFS_LIVE_MOUNTPOINT:-/tmp/agentfs-appfs-live-$$}"
 APPFS_APP_ID="${APPFS_APP_ID:-aiim}"

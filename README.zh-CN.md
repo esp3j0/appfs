@@ -99,7 +99,7 @@ Add-Content C:\mnt\appfs-managed-http\aiim\contacts\zhangsan\send_message.act '{
 启动参考 HTTP bridge：
 
 ```bash
-cd /path/to/agentfs/examples/appfs/http-bridge/python
+cd /path/to/agentfs/examples/appfs/bridges/http-python
 uv run python bridge_server.py
 ```
 
@@ -191,13 +191,12 @@ uv run ruff format .
 
 推荐先看这些入口：
 
-- [docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md](docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md)
-- [docs/v3/APPFS-v0.3-Connector接口.zh-CN.md](docs/v3/APPFS-v0.3-Connector接口.zh-CN.md)
-- [docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
-- [docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md](docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md)
-- [docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md](docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md)
+- [文档总索引](docs/README.md)
+- [当前 AppFS 文档主入口（v4）](docs/v4/README.md)
+- [Connectorization 里程碑（v3）](docs/v3/README.md)
+- [Backend-native 里程碑（v2）](docs/v2/README.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
-- [docs/plans/2026-03-26-appfs-runtime-closure-design.md](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
+- [Runtime 收口设计计划](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
 
 ## 架构
 
@@ -245,7 +244,7 @@ flowchart TD
 
 - Rust CLI 测试：`cargo test --manifest-path cli/Cargo.toml --package agentfs`
 - Rust SDK 测试：`cargo test --manifest-path sdk/rust/Cargo.toml`
-- Linux 合同测试：`cli/tests/test-appfs-v2-contract.sh`
+- Linux 合同测试：`cli/tests/test-appfs-connector-contract.sh`
 - Windows managed lifecycle 回归：`cli/test-windows-appfs-managed.ps1`
 
 Linux 仍然是主要 required CI 平台；Windows 已补齐 managed AppFS 流程的专门手动回归脚本。

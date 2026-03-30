@@ -2,22 +2,17 @@ use super::bridge_resilience::{
     is_retryable_http_status, BridgeCircuitBreaker, BridgeMetrics, BridgeRuntimeOptions,
 };
 use agentfs_sdk::{
-    connector_error_codes_v2, AppConnector, AppConnectorV2, ConnectorContext, ConnectorContextV2,
-    ConnectorError, ConnectorErrorV2, ConnectorInfo, ConnectorInfoV2, FetchLivePageRequest,
-    FetchLivePageRequestV2, FetchLivePageResponse, FetchLivePageResponseV2,
-    FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponse,
-    FetchSnapshotChunkResponseV2, GetAppStructureRequest, GetAppStructureRequestV3,
-    GetAppStructureResponse, GetAppStructureResponseV3, HealthStatus, HealthStatusV2,
-    RefreshAppStructureRequest, RefreshAppStructureRequestV3, RefreshAppStructureResponse,
-    RefreshAppStructureResponseV3, SnapshotMeta, SnapshotMetaV2,
-    SubmitActionRequest as ConnectorSubmitActionRequest, SubmitActionRequestV2,
-    SubmitActionResponse as ConnectorSubmitActionResponse, SubmitActionResponseV2,
+    connector_error_codes, AppConnector, ConnectorContext, ConnectorError, ConnectorInfo,
+    FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
+    FetchSnapshotChunkResponse, GetAppStructureRequest, GetAppStructureResponse, HealthStatus,
+    RefreshAppStructureRequest, RefreshAppStructureResponse, SnapshotMeta,
+    SubmitActionRequest as ConnectorSubmitActionRequest,
+    SubmitActionResponse as ConnectorSubmitActionResponse,
 };
 use agentfs_sdk::{
     AdapterControlActionV1, AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1,
     AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1, RequestContextV1,
 };
-use agentfs_sdk::{AppConnectorV3, ConnectorContextV3, ConnectorErrorV3};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -31,7 +26,7 @@ pub(super) struct HttpBridgeAdapterV1 {
     circuit_breaker: BridgeCircuitBreaker,
 }
 
-pub(super) struct HttpBridgeConnectorV2 {
+pub(super) struct HttpBridgeConnector {
     endpoint: String,
     timeout: Duration,
     runtime_options: BridgeRuntimeOptions,
@@ -60,18 +55,18 @@ struct SubmitControlRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct ContextOnlyV2Request {
-    context: ConnectorContextV2,
+struct ContextOnlyRequest {
+    context: ConnectorContext,
 }
 
 #[derive(Debug, Serialize)]
-struct WrappedV2Request<T> {
-    context: ConnectorContextV2,
+struct WrappedRequest<T> {
+    context: ConnectorContext,
     request: T,
 }
 
 #[derive(Debug, Serialize)]
-struct PrewarmRequestV2 {
+struct PrewarmRequest {
     resource_path: String,
     timeout_ms: u64,
 }
@@ -126,7 +121,7 @@ impl HttpBridgeAdapterV1 {
     }
 }
 
-impl HttpBridgeConnectorV2 {
+impl HttpBridgeConnector {
     pub(super) fn new(
         _app_id: String,
         endpoint: String,
@@ -146,12 +141,12 @@ impl HttpBridgeConnectorV2 {
         &mut self,
         route: &str,
         req: &Req,
-    ) -> std::result::Result<Resp, ConnectorErrorV2>
+    ) -> std::result::Result<Resp, ConnectorError>
     where
         Req: Serialize,
         Resp: DeserializeOwned,
     {
-        post_json_v2(
+        post_json_connector(
             &self.endpoint,
             self.timeout,
             self.runtime_options,
@@ -159,7 +154,7 @@ impl HttpBridgeConnectorV2 {
             &mut self.circuit_breaker,
             route,
             req,
-            map_status_error_v2,
+            map_status_error_connector,
         )
     }
 }
@@ -204,27 +199,25 @@ impl AppAdapterV1 for HttpBridgeAdapterV1 {
     }
 }
 
-impl AppConnectorV2 for HttpBridgeConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfoV2, ConnectorErrorV2> {
-        let url = format!("{}/{}", self.endpoint, "v2/connector/info");
+impl AppConnector for HttpBridgeConnector {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+        let url = format!("{}/{}", self.endpoint, "connector/info");
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
         match agent.post(&url).send_json(serde_json::json!({})) {
-            Ok(response) => {
-                response
-                    .into_json::<ConnectorInfoV2>()
-                    .map_err(|err| ConnectorErrorV2 {
-                        code: connector_error_codes_v2::INTERNAL.to_string(),
-                        message: format!("bridge decode error for {url}: {err}"),
-                        retryable: true,
-                        details: None,
-                    })
-            }
+            Ok(response) => response
+                .into_json::<ConnectorInfo>()
+                .map_err(|err| ConnectorError {
+                    code: connector_error_codes::INTERNAL.to_string(),
+                    message: format!("bridge decode error for {url}: {err}"),
+                    retryable: true,
+                    details: None,
+                }),
             Err(ureq::Error::Status(status, response)) => {
                 let body = response.into_string().unwrap_or_default();
-                Err(map_status_error_v2(status, &body))
+                Err(map_status_error_connector(status, &body))
             }
-            Err(ureq::Error::Transport(err)) => Err(ConnectorErrorV2 {
-                code: connector_error_codes_v2::INTERNAL.to_string(),
+            Err(ureq::Error::Transport(err)) => Err(ConnectorError {
+                code: connector_error_codes::INTERNAL.to_string(),
                 message: format!("bridge transport error for {url}: {err}"),
                 retryable: true,
                 details: None,
@@ -234,104 +227,12 @@ impl AppConnectorV2 for HttpBridgeConnectorV2 {
 
     fn health(
         &mut self,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<HealthStatusV2, ConnectorErrorV2> {
-        let request = ContextOnlyV2Request {
-            context: ctx.clone(),
-        };
-        self.post_json("v2/connector/health", &request)
-    }
-
-    fn prewarm_snapshot_meta(
-        &mut self,
-        resource_path: &str,
-        timeout: Duration,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
-        let timeout_ms = timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64;
-        let request = WrappedV2Request {
-            context: ctx.clone(),
-            request: PrewarmRequestV2 {
-                resource_path: resource_path.to_string(),
-                timeout_ms,
-            },
-        };
-        self.post_json("v2/connector/snapshot/prewarm", &request)
-    }
-
-    fn fetch_snapshot_chunk(
-        &mut self,
-        request: FetchSnapshotChunkRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
-        let wrapped = WrappedV2Request {
-            context: ctx.clone(),
-            request,
-        };
-        self.post_json("v2/connector/snapshot/fetch-chunk", &wrapped)
-    }
-
-    fn fetch_live_page(
-        &mut self,
-        request: FetchLivePageRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
-        let wrapped = WrappedV2Request {
-            context: ctx.clone(),
-            request,
-        };
-        self.post_json("v2/connector/live/fetch-page", &wrapped)
-    }
-
-    fn submit_action(
-        &mut self,
-        request: SubmitActionRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
-        let wrapped = WrappedV2Request {
-            context: ctx.clone(),
-            request,
-        };
-        self.post_json("v2/connector/action/submit", &wrapped)
-    }
-}
-
-impl AppConnectorV3 for HttpBridgeConnectorV2 {
-    fn get_app_structure(
-        &mut self,
-        request: GetAppStructureRequestV3,
-        ctx: &ConnectorContextV3,
-    ) -> std::result::Result<GetAppStructureResponseV3, ConnectorErrorV3> {
-        let wrapped = WrappedV2Request {
-            context: ctx.clone(),
-            request,
-        };
-        self.post_json("v3/connector/structure/get", &wrapped)
-    }
-
-    fn refresh_app_structure(
-        &mut self,
-        request: RefreshAppStructureRequestV3,
-        ctx: &ConnectorContextV3,
-    ) -> std::result::Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
-        let wrapped = WrappedV2Request {
-            context: ctx.clone(),
-            request,
-        };
-        self.post_json("v3/connector/structure/refresh", &wrapped)
-    }
-}
-
-impl AppConnector for HttpBridgeConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
-        <Self as AppConnectorV2>::connector_id(self)
-    }
-
-    fn health(
-        &mut self,
         ctx: &ConnectorContext,
     ) -> std::result::Result<HealthStatus, ConnectorError> {
-        <Self as AppConnectorV2>::health(self, ctx)
+        let request = ContextOnlyRequest {
+            context: ctx.clone(),
+        };
+        self.post_json("connector/health", &request)
     }
 
     fn prewarm_snapshot_meta(
@@ -340,7 +241,15 @@ impl AppConnector for HttpBridgeConnectorV2 {
         timeout: Duration,
         ctx: &ConnectorContext,
     ) -> std::result::Result<SnapshotMeta, ConnectorError> {
-        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
+        let timeout_ms = timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64;
+        let request = WrappedRequest {
+            context: ctx.clone(),
+            request: PrewarmRequest {
+                resource_path: resource_path.to_string(),
+                timeout_ms,
+            },
+        };
+        self.post_json("connector/snapshot/prewarm", &request)
     }
 
     fn fetch_snapshot_chunk(
@@ -348,7 +257,11 @@ impl AppConnector for HttpBridgeConnectorV2 {
         request: FetchSnapshotChunkRequest,
         ctx: &ConnectorContext,
     ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
+        let wrapped = WrappedRequest {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("connector/snapshot/fetch-chunk", &wrapped)
     }
 
     fn fetch_live_page(
@@ -356,7 +269,11 @@ impl AppConnector for HttpBridgeConnectorV2 {
         request: FetchLivePageRequest,
         ctx: &ConnectorContext,
     ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
+        let wrapped = WrappedRequest {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("connector/live/fetch-page", &wrapped)
     }
 
     fn submit_action(
@@ -364,7 +281,11 @@ impl AppConnector for HttpBridgeConnectorV2 {
         request: ConnectorSubmitActionRequest,
         ctx: &ConnectorContext,
     ) -> std::result::Result<ConnectorSubmitActionResponse, ConnectorError> {
-        <Self as AppConnectorV2>::submit_action(self, request, ctx)
+        let wrapped = WrappedRequest {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("connector/action/submit", &wrapped)
     }
 
     fn get_app_structure(
@@ -372,7 +293,11 @@ impl AppConnector for HttpBridgeConnectorV2 {
         request: GetAppStructureRequest,
         ctx: &ConnectorContext,
     ) -> std::result::Result<GetAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::get_app_structure(self, request, ctx)
+        let wrapped = WrappedRequest {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("connector/structure/get", &wrapped)
     }
 
     fn refresh_app_structure(
@@ -380,7 +305,11 @@ impl AppConnector for HttpBridgeConnectorV2 {
         request: RefreshAppStructureRequest,
         ctx: &ConnectorContext,
     ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::refresh_app_structure(self, request, ctx)
+        let wrapped = WrappedRequest {
+            context: ctx.clone(),
+            request,
+        };
+        self.post_json("connector/structure/refresh", &wrapped)
     }
 }
 
@@ -485,7 +414,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn post_json_v2<Req, Resp>(
+fn post_json_connector<Req, Resp>(
     endpoint: &str,
     timeout: Duration,
     runtime_options: BridgeRuntimeOptions,
@@ -493,16 +422,16 @@ fn post_json_v2<Req, Resp>(
     circuit_breaker: &mut BridgeCircuitBreaker,
     route: &str,
     req: &Req,
-    map_status_error: fn(u16, &str) -> ConnectorErrorV2,
-) -> std::result::Result<Resp, ConnectorErrorV2>
+    map_status_error: fn(u16, &str) -> ConnectorError,
+) -> std::result::Result<Resp, ConnectorError>
 where
     Req: Serialize,
     Resp: DeserializeOwned,
 {
     if let Some(remaining) = circuit_breaker.check_open(Instant::now()) {
         metrics.record_short_circuit();
-        return Err(ConnectorErrorV2 {
-            code: connector_error_codes_v2::INTERNAL.to_string(),
+        return Err(ConnectorError {
+            code: connector_error_codes::INTERNAL.to_string(),
             message: format!(
                 "bridge circuit open for route={route}; retry_in_ms={} metrics={}",
                 remaining.as_millis(),
@@ -533,15 +462,15 @@ where
                         if opened {
                             eprintln!(
                                 "AppFS bridge http circuit opened after {} decode failure route={} {}",
-                                connector_error_codes_v2::INTERNAL,
+                                connector_error_codes::INTERNAL,
                                 route,
                                 metrics.snapshot()
                             );
                         }
                         metrics.record_request(attempt, false);
                         log_observation(metrics, route, attempt, started.elapsed(), "failed");
-                        return Err(ConnectorErrorV2 {
-                            code: connector_error_codes_v2::INTERNAL.to_string(),
+                        return Err(ConnectorError {
+                            code: connector_error_codes::INTERNAL.to_string(),
                             message: format!(
                                 "bridge decode error for {url}: {err} (attempts={} circuit_opened={} metrics={})",
                                 attempt,
@@ -600,8 +529,8 @@ where
                 }
                 metrics.record_request(attempt, false);
                 log_observation(metrics, route, attempt, started.elapsed(), "failed");
-                return Err(ConnectorErrorV2 {
-                    code: connector_error_codes_v2::INTERNAL.to_string(),
+                return Err(ConnectorError {
+                    code: connector_error_codes::INTERNAL.to_string(),
                     message: format!(
                         "bridge transport error for {url}: {err} (attempts={} circuit_opened={} metrics={})",
                         attempt,
@@ -656,12 +585,12 @@ fn map_status_error_v1(status: u16, body: &str) -> AdapterErrorV1 {
     }
 }
 
-fn map_status_error_v2(status: u16, body: &str) -> ConnectorErrorV2 {
-    if let Ok(err) = serde_json::from_str::<ConnectorErrorV2>(body) {
+fn map_status_error_connector(status: u16, body: &str) -> ConnectorError {
+    if let Ok(err) = serde_json::from_str::<ConnectorError>(body) {
         return err;
     }
     if let Ok(payload) = serde_json::from_str::<BridgeErrorPayload>(body) {
-        return ConnectorErrorV2 {
+        return ConnectorError {
             code: payload.code,
             message: payload.message,
             retryable: payload.retryable,
@@ -675,7 +604,7 @@ fn map_status_error_v2(status: u16, body: &str) -> ConnectorErrorV2 {
                 message,
                 retryable,
             } => {
-                return ConnectorErrorV2 {
+                return ConnectorError {
                     code,
                     message,
                     retryable,
@@ -683,8 +612,8 @@ fn map_status_error_v2(status: u16, body: &str) -> ConnectorErrorV2 {
                 };
             }
             AdapterErrorV1::Internal { message } => {
-                return ConnectorErrorV2 {
-                    code: connector_error_codes_v2::INTERNAL.to_string(),
+                return ConnectorError {
+                    code: connector_error_codes::INTERNAL.to_string(),
                     message,
                     retryable: true,
                     details: None,
@@ -693,11 +622,11 @@ fn map_status_error_v2(status: u16, body: &str) -> ConnectorErrorV2 {
         }
     }
 
-    ConnectorErrorV2 {
+    ConnectorError {
         code: if is_retryable_http_status(status) {
-            connector_error_codes_v2::UPSTREAM_UNAVAILABLE.to_string()
+            connector_error_codes::UPSTREAM_UNAVAILABLE.to_string()
         } else {
-            connector_error_codes_v2::INTERNAL.to_string()
+            connector_error_codes::INTERNAL.to_string()
         },
         message: if body.trim().is_empty() {
             format!("bridge http status {status}")
@@ -711,8 +640,8 @@ fn map_status_error_v2(status: u16, body: &str) -> ConnectorErrorV2 {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_status_error_v1, map_status_error_v2};
-    use agentfs_sdk::{connector_error_codes_v2, AdapterErrorV1};
+    use super::{map_status_error_connector, map_status_error_v1};
+    use agentfs_sdk::{connector_error_codes, AdapterErrorV1};
 
     #[test]
     fn map_status_error_v1_accepts_adapter_error_shape() {
@@ -735,8 +664,8 @@ mod tests {
     }
 
     #[test]
-    fn map_status_error_v2_accepts_connector_shape() {
-        let err = map_status_error_v2(
+    fn map_status_error_connector_accepts_connector_shape() {
+        let err = map_status_error_connector(
             429,
             r#"{"code":"RATE_LIMITED","message":"limited","retryable":true,"details":"x"}"#,
         );
@@ -747,9 +676,9 @@ mod tests {
     }
 
     #[test]
-    fn map_status_error_v2_fallback_sets_retryable_for_503() {
-        let err = map_status_error_v2(503, "upstream down");
-        assert_eq!(err.code, connector_error_codes_v2::UPSTREAM_UNAVAILABLE);
+    fn map_status_error_connector_fallback_sets_retryable_for_503() {
+        let err = map_status_error_connector(503, "upstream down");
+        assert_eq!(err.code, connector_error_codes::UPSTREAM_UNAVAILABLE);
         assert!(err.retryable);
     }
 }

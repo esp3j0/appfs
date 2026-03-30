@@ -1,19 +1,14 @@
 use crate::{
-    ActionExecutionModeV2, ActionStreamingPlanV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+    ActionExecutionMode, ActionStreamingPlan, AdapterControlActionV1, AdapterControlOutcomeV1,
     AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppConnectorV2,
-    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
-    AppStructureSyncReasonV3, AppStructureSyncResultV3, AuthStatusV2, ConnectorContext,
-    ConnectorContextV2, ConnectorError, ConnectorErrorV2, ConnectorInfo, ConnectorInfoV2,
-    ConnectorTransportV2, FetchLivePageRequest, FetchLivePageRequestV2, FetchLivePageResponse,
-    FetchLivePageResponseV2, FetchSnapshotChunkRequest, FetchSnapshotChunkRequestV2,
-    FetchSnapshotChunkResponse, FetchSnapshotChunkResponseV2, GetAppStructureRequest,
-    GetAppStructureRequestV3, GetAppStructureResponse, GetAppStructureResponseV3, HealthStatus,
-    HealthStatusV2, LiveModeV2, LivePageInfoV2, RefreshAppStructureRequest,
-    RefreshAppStructureRequestV3, RefreshAppStructureResponse, RefreshAppStructureResponseV3,
-    RequestContextV1, SnapshotMeta, SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2,
-    SubmitActionOutcomeV2, SubmitActionRequest, SubmitActionRequestV2, SubmitActionResponse,
-    SubmitActionResponseV2,
+    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppStructureNode,
+    AppStructureNodeKind, AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult,
+    AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo, ConnectorTransport,
+    FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
+    FetchSnapshotChunkResponse, GetAppStructureRequest, GetAppStructureResponse, HealthStatus,
+    LiveMode, LivePageInfo, RefreshAppStructureRequest, RefreshAppStructureResponse,
+    RequestContextV1, SnapshotMeta, SnapshotRecord, SnapshotResume, SubmitActionOutcome,
+    SubmitActionRequest, SubmitActionResponse,
 };
 use serde_json::{json, Value as JsonValue};
 use std::time::Duration;
@@ -86,7 +81,7 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
         timeout: Duration,
     ) -> std::result::Result<AdapterSnapshotMetaV1, AdapterErrorV1> {
         let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
-        let delay_ms = std::env::var("APPFS_V2_PREWARM_DELAY_MS")
+        let delay_ms = std::env::var("APPFS_PREWARM_DELAY_MS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(0);
@@ -152,20 +147,20 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
     }
 }
 
-/// Reference demo connector implementation for AppFS v0.3 canonical connector trait.
+/// Reference demo connector implementation for the canonical AppFS connector trait.
 ///
 /// This demo connector is intentionally deterministic and transport-neutral.
-pub struct DemoAppConnectorV2 {
+pub struct DemoAppConnector {
     app_id: String,
 }
 
-impl DemoAppConnectorV2 {
+impl DemoAppConnector {
     pub fn new(app_id: String) -> Self {
         Self { app_id }
     }
 
-    fn err(code: &str, message: impl Into<String>, retryable: bool) -> ConnectorErrorV2 {
-        ConnectorErrorV2 {
+    fn err(code: &str, message: impl Into<String>, retryable: bool) -> ConnectorError {
+        ConnectorError {
             code: code.to_string(),
             message: message.into(),
             retryable,
@@ -185,9 +180,9 @@ impl DemoAppConnectorV2 {
         resource_path.ends_with("/chats/chat-oversize/messages.res.jsonl")
     }
 
-    fn emit_chat_records(start: usize, end: usize) -> Vec<SnapshotRecordV2> {
+    fn emit_chat_records(start: usize, end: usize) -> Vec<SnapshotRecord> {
         (start..=end)
-            .map(|idx| SnapshotRecordV2 {
+            .map(|idx| SnapshotRecord {
                 record_key: format!("rk-{idx:03}"),
                 ordering_key: format!("ok-{idx:03}"),
                 line: json!({
@@ -234,35 +229,35 @@ impl DemoAppConnectorV2 {
         })
     }
 
-    fn base_structure_nodes(scope: Option<&str>) -> Vec<AppStructureNodeV3> {
+    fn base_structure_nodes(scope: Option<&str>) -> Vec<AppStructureNode> {
         let mut nodes = vec![
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_meta".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "contacts".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "contacts/zhangsan".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "contacts/zhangsan/send_message.act".to_string(),
-                kind: AppStructureNodeKindV3::ActionFile,
+                kind: AppStructureNodeKind::ActionFile,
                 manifest_entry: Some(Self::action_manifest(
                     "contacts/{contact_id}/send_message.act",
                     "inline",
@@ -271,17 +266,17 @@ impl DemoAppConnectorV2 {
                 mutable: true,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "feed".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "feed/recommendations.res.json".to_string(),
-                kind: AppStructureNodeKindV3::LiveResource,
+                kind: AppStructureNodeKind::LiveResource,
                 manifest_entry: Some(Self::live_manifest("feed/recommendations.res.json")),
                 seed_content: Some(
                     json!({"items":[],"page":{"handle_id":"","page_no":0,"has_more":true,"mode":"live"}}),
@@ -289,49 +284,49 @@ impl DemoAppConnectorV2 {
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_paging".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_app".to_string(),
-                kind: AppStructureNodeKindV3::Directory,
+                kind: AppStructureNodeKind::Directory,
                 manifest_entry: None,
                 seed_content: None,
                 mutable: false,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_paging/fetch_next.act".to_string(),
-                kind: AppStructureNodeKindV3::ActionFile,
+                kind: AppStructureNodeKind::ActionFile,
                 manifest_entry: Some(Self::action_manifest("_paging/fetch_next.act", "inline")),
                 seed_content: None,
                 mutable: true,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_paging/close.act".to_string(),
-                kind: AppStructureNodeKindV3::ActionFile,
+                kind: AppStructureNodeKind::ActionFile,
                 manifest_entry: Some(Self::action_manifest("_paging/close.act", "inline")),
                 seed_content: None,
                 mutable: true,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_app/enter_scope.act".to_string(),
-                kind: AppStructureNodeKindV3::ActionFile,
+                kind: AppStructureNodeKind::ActionFile,
                 manifest_entry: Some(Self::action_manifest("_app/enter_scope.act", "inline")),
                 seed_content: None,
                 mutable: true,
                 scope: None,
             },
-            AppStructureNodeV3 {
+            AppStructureNode {
                 path: "_app/refresh_structure.act".to_string(),
-                kind: AppStructureNodeKindV3::ActionFile,
+                kind: AppStructureNodeKind::ActionFile,
                 manifest_entry: Some(Self::action_manifest(
                     "_app/refresh_structure.act",
                     "inline",
@@ -344,25 +339,25 @@ impl DemoAppConnectorV2 {
 
         match scope {
             Some("chat-long") => {
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats".to_string(),
-                    kind: AppStructureNodeKindV3::Directory,
+                    kind: AppStructureNodeKind::Directory,
                     manifest_entry: None,
                     seed_content: None,
                     mutable: false,
                     scope: Some("chat-long".to_string()),
                 });
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats/chat-long".to_string(),
-                    kind: AppStructureNodeKindV3::Directory,
+                    kind: AppStructureNodeKind::Directory,
                     manifest_entry: None,
                     seed_content: None,
                     mutable: false,
                     scope: Some("chat-long".to_string()),
                 });
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats/chat-long/messages.res.jsonl".to_string(),
-                    kind: AppStructureNodeKindV3::SnapshotResource,
+                    kind: AppStructureNodeKind::SnapshotResource,
                     manifest_entry: Some(Self::snapshot_manifest(
                         "chats/chat-long/messages.res.jsonl",
                         1024,
@@ -373,25 +368,25 @@ impl DemoAppConnectorV2 {
                 });
             }
             _ => {
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats".to_string(),
-                    kind: AppStructureNodeKindV3::Directory,
+                    kind: AppStructureNodeKind::Directory,
                     manifest_entry: None,
                     seed_content: None,
                     mutable: false,
                     scope: Some("chat-001".to_string()),
                 });
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats/chat-001".to_string(),
-                    kind: AppStructureNodeKindV3::Directory,
+                    kind: AppStructureNodeKind::Directory,
                     manifest_entry: None,
                     seed_content: None,
                     mutable: false,
                     scope: Some("chat-001".to_string()),
                 });
-                nodes.push(AppStructureNodeV3 {
+                nodes.push(AppStructureNode {
                     path: "chats/chat-001/messages.res.jsonl".to_string(),
-                    kind: AppStructureNodeKindV3::SnapshotResource,
+                    kind: AppStructureNodeKind::SnapshotResource,
                     manifest_entry: Some(Self::snapshot_manifest(
                         "chats/chat-001/messages.res.jsonl",
                         10 * 1024 * 1024,
@@ -409,7 +404,7 @@ impl DemoAppConnectorV2 {
     fn structure_snapshot(
         &self,
         scope: Option<&str>,
-    ) -> std::result::Result<AppStructureSnapshotV3, ConnectorErrorV2> {
+    ) -> std::result::Result<AppStructureSnapshot, ConnectorError> {
         let active_scope = match scope {
             None | Some("chat-001") => "chat-001".to_string(),
             Some("chat-long") => "chat-long".to_string(),
@@ -421,7 +416,7 @@ impl DemoAppConnectorV2 {
                 ));
             }
         };
-        Ok(AppStructureSnapshotV3 {
+        Ok(AppStructureSnapshot {
             app_id: self.app_id.clone(),
             revision: format!("demo-structure-{active_scope}"),
             active_scope: Some(active_scope.clone()),
@@ -438,13 +433,13 @@ impl DemoAppConnectorV2 {
     }
 }
 
-impl AppConnectorV2 for DemoAppConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfoV2, ConnectorErrorV2> {
-        Ok(ConnectorInfoV2 {
-            connector_id: format!("demo-connector-v2-{}", self.app_id),
-            version: "0.3.0-demo".to_string(),
+impl AppConnector for DemoAppConnector {
+    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+        Ok(ConnectorInfo {
+            connector_id: format!("demo-connector-{}", self.app_id),
+            version: "0.5.0-demo".to_string(),
             app_id: self.app_id.clone(),
-            transport: ConnectorTransportV2::InProcess,
+            transport: ConnectorTransport::InProcess,
             supports_snapshot: true,
             supports_live: true,
             supports_action: true,
@@ -454,8 +449,8 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
 
     fn health(
         &mut self,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<HealthStatusV2, ConnectorErrorV2> {
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<HealthStatus, ConnectorError> {
         if ctx.trace_id.as_deref() == Some("force-upstream-unavailable") {
             return Err(Self::err(
                 "UPSTREAM_UNAVAILABLE",
@@ -465,13 +460,13 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         }
 
         let auth_status = if ctx.trace_id.as_deref() == Some("force-auth-expired") {
-            AuthStatusV2::Expired
+            AuthStatus::Expired
         } else {
-            AuthStatusV2::Valid
+            AuthStatus::Valid
         };
 
-        Ok(HealthStatusV2 {
-            healthy: auth_status == AuthStatusV2::Valid,
+        Ok(HealthStatus {
+            healthy: auth_status == AuthStatus::Valid,
             auth_status,
             message: Some("demo connector healthy".to_string()),
             checked_at: "2026-03-24T00:00:00Z".to_string(),
@@ -482,8 +477,8 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         &mut self,
         resource_path: &str,
         timeout: Duration,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SnapshotMetaV2, ConnectorErrorV2> {
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
         if resource_path.contains("/forbidden/") {
             return Err(Self::err(
                 "PERMISSION_DENIED",
@@ -493,9 +488,8 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         }
 
         let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
-        let delay_ms = std::env::var("APPFS_V3_PREWARM_DELAY_MS")
+        let delay_ms = std::env::var("APPFS_PREWARM_DELAY_MS")
             .ok()
-            .or_else(|| std::env::var("APPFS_V2_PREWARM_DELAY_MS").ok())
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(0);
 
@@ -514,9 +508,9 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
             std::thread::sleep(Duration::from_millis(delay_ms));
         }
 
-        Ok(SnapshotMetaV2 {
+        Ok(SnapshotMeta {
             size_bytes: Some(5000),
-            revision: Some("demo-v2".to_string()),
+            revision: Some("demo-connector".to_string()),
             last_modified: Some("2026-03-24T00:00:00Z".to_string()),
             item_count: Some(2),
         })
@@ -524,9 +518,9 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
 
     fn fetch_snapshot_chunk(
         &mut self,
-        request: FetchSnapshotChunkRequestV2,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+        request: FetchSnapshotChunkRequest,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
         if request.budget_bytes == 0 {
             return Err(Self::err(
                 "INVALID_ARGUMENT",
@@ -553,12 +547,12 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                 ));
             } else if Self::is_snapshot_chat_oversize(&request.resource_path) {
                 match request.resume {
-                    SnapshotResumeV2::Start => (
+                    SnapshotResume::Start => (
                         Self::emit_chat_records(1, 12),
                         Some("oversize-cursor-12".to_string()),
                         true,
                     ),
-                    SnapshotResumeV2::Cursor(cursor) => {
+                    SnapshotResume::Cursor(cursor) => {
                         if cursor == "cursor-invalid" {
                             return Err(Self::err(
                                 "INVALID_ARGUMENT",
@@ -576,8 +570,8 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                             ));
                         }
                     }
-                    SnapshotResumeV2::Offset(offset) => (
-                        vec![SnapshotRecordV2 {
+                    SnapshotResume::Offset(offset) => (
+                        vec![SnapshotRecord {
                             record_key: format!("rk-offset-{offset}"),
                             ordering_key: format!("ok-offset-{offset}"),
                             line: json!({"id":"m-offset","offset":offset}),
@@ -588,12 +582,12 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                 }
             } else if Self::is_snapshot_chat_001(&request.resource_path) {
                 match request.resume {
-                    SnapshotResumeV2::Start => (
+                    SnapshotResume::Start => (
                         Self::emit_chat_records(1, 40),
                         Some("chat-001-cursor-40".to_string()),
                         true,
                     ),
-                    SnapshotResumeV2::Cursor(cursor) => {
+                    SnapshotResume::Cursor(cursor) => {
                         if cursor == "cursor-invalid" {
                             return Err(Self::err(
                                 "INVALID_ARGUMENT",
@@ -617,8 +611,8 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                             ));
                         }
                     }
-                    SnapshotResumeV2::Offset(offset) => (
-                        vec![SnapshotRecordV2 {
+                    SnapshotResume::Offset(offset) => (
+                        vec![SnapshotRecord {
                             record_key: format!("rk-offset-{offset}"),
                             ordering_key: format!("ok-offset-{offset}"),
                             line: json!({"id":"m-offset","offset":offset}),
@@ -629,14 +623,14 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                 }
             } else {
                 match request.resume {
-                    SnapshotResumeV2::Start => (
+                    SnapshotResume::Start => (
                         vec![
-                            SnapshotRecordV2 {
+                            SnapshotRecord {
                                 record_key: "rk-001".to_string(),
                                 ordering_key: "ok-001".to_string(),
                                 line: json!({"id":"m-1","text":"hello"}),
                             },
-                            SnapshotRecordV2 {
+                            SnapshotRecord {
                                 record_key: "rk-002".to_string(),
                                 ordering_key: "ok-002".to_string(),
                                 line: json!({"id":"m-2","text":"world"}),
@@ -645,7 +639,7 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                         Some("cursor-2".to_string()),
                         true,
                     ),
-                    SnapshotResumeV2::Cursor(cursor) => {
+                    SnapshotResume::Cursor(cursor) => {
                         if cursor == "cursor-invalid" {
                             return Err(Self::err(
                                 "INVALID_ARGUMENT",
@@ -655,7 +649,7 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                         }
                         if cursor == "cursor-2" {
                             (
-                                vec![SnapshotRecordV2 {
+                                vec![SnapshotRecord {
                                     record_key: "rk-003".to_string(),
                                     ordering_key: "ok-003".to_string(),
                                     line: json!({"id":"m-3","text":"done"}),
@@ -671,7 +665,7 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                             ));
                         }
                     }
-                    SnapshotResumeV2::Offset(offset) => {
+                    SnapshotResume::Offset(offset) => {
                         if request.resource_path.contains("no-offset") {
                             return Err(Self::err(
                                 "NOT_SUPPORTED",
@@ -680,7 +674,7 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
                             ));
                         }
                         (
-                            vec![SnapshotRecordV2 {
+                            vec![SnapshotRecord {
                                 record_key: format!("rk-offset-{offset}"),
                                 ordering_key: format!("ok-offset-{offset}"),
                                 line: json!({"id":"m-offset","offset":offset}),
@@ -699,20 +693,20 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
             acc.saturating_add(line_bytes)
         });
 
-        Ok(FetchSnapshotChunkResponseV2 {
+        Ok(FetchSnapshotChunkResponse {
             records,
             emitted_bytes,
             next_cursor,
             has_more,
-            revision: Some("demo-v2".to_string()),
+            revision: Some("demo-connector".to_string()),
         })
     }
 
     fn fetch_live_page(
         &mut self,
-        request: FetchLivePageRequestV2,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+        request: FetchLivePageRequest,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
         if request.page_size == 0 {
             return Err(Self::err(
                 "INVALID_ARGUMENT",
@@ -739,18 +733,18 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
             None
         };
 
-        Ok(FetchLivePageResponseV2 {
+        Ok(FetchLivePageResponse {
             items: vec![json!({
                 "id": format!("item-{page_no}"),
                 "resource": request.resource_path,
             })],
-            page: LivePageInfoV2 {
+            page: LivePageInfo {
                 handle_id: request
                     .handle_id
                     .unwrap_or_else(|| "demo-live-handle-1".to_string()),
                 page_no,
                 has_more,
-                mode: LiveModeV2::Live,
+                mode: LiveMode::Live,
                 expires_at: Some("2026-03-24T01:00:00Z".to_string()),
                 next_cursor,
                 retry_after_ms: None,
@@ -760,9 +754,9 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
 
     fn submit_action(
         &mut self,
-        request: SubmitActionRequestV2,
-        ctx: &ConnectorContextV2,
-    ) -> std::result::Result<SubmitActionResponseV2, ConnectorErrorV2> {
+        request: SubmitActionRequest,
+        ctx: &ConnectorContext,
+    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
         if request.path.contains("invalid_payload") {
             return Err(Self::err(
                 "INVALID_PAYLOAD",
@@ -775,15 +769,15 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
         }
 
         let outcome = match request.execution_mode {
-            ActionExecutionModeV2::Inline => SubmitActionOutcomeV2::Completed {
+            ActionExecutionMode::Inline => SubmitActionOutcome::Completed {
                 content: json!({
                     "ok": true,
                     "path": request.path,
                     "echo": request.payload,
                 }),
             },
-            ActionExecutionModeV2::Streaming => SubmitActionOutcomeV2::Streaming {
-                plan: ActionStreamingPlanV2 {
+            ActionExecutionMode::Streaming => SubmitActionOutcome::Streaming {
+                plan: ActionStreamingPlan {
                     accepted_content: Some(json!({"state":"accepted"})),
                     progress_content: Some(json!({"percent":50})),
                     terminal_content: json!({"ok": true}),
@@ -791,24 +785,21 @@ impl AppConnectorV2 for DemoAppConnectorV2 {
             },
         };
 
-        Ok(SubmitActionResponseV2 {
+        Ok(SubmitActionResponse {
             request_id: ctx.request_id.clone(),
             estimated_duration_ms: Some(120),
             outcome,
         })
     }
-}
-
-impl AppConnectorV3 for DemoAppConnectorV2 {
     fn get_app_structure(
         &mut self,
-        request: GetAppStructureRequestV3,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<GetAppStructureResponseV3, ConnectorErrorV2> {
+        request: GetAppStructureRequest,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<GetAppStructureResponse, ConnectorError> {
         let snapshot = self.structure_snapshot(None)?;
         if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
-            return Ok(GetAppStructureResponseV3 {
-                result: AppStructureSyncResultV3::Unchanged {
+            return Ok(GetAppStructureResponse {
+                result: AppStructureSyncResult::Unchanged {
                     app_id: request.app_id,
                     revision: snapshot.revision,
                     active_scope: snapshot.active_scope,
@@ -816,17 +807,17 @@ impl AppConnectorV3 for DemoAppConnectorV2 {
             });
         }
 
-        Ok(GetAppStructureResponseV3 {
-            result: AppStructureSyncResultV3::Snapshot { snapshot },
+        Ok(GetAppStructureResponse {
+            result: AppStructureSyncResult::Snapshot { snapshot },
         })
     }
 
     fn refresh_app_structure(
         &mut self,
-        request: RefreshAppStructureRequestV3,
-        _ctx: &ConnectorContextV2,
-    ) -> std::result::Result<RefreshAppStructureResponseV3, ConnectorErrorV2> {
-        if matches!(request.reason, AppStructureSyncReasonV3::EnterScope)
+        request: RefreshAppStructureRequest,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
+        if matches!(request.reason, AppStructureSyncReason::EnterScope)
             && request.target_scope.is_none()
         {
             return Err(Self::err(
@@ -837,8 +828,8 @@ impl AppConnectorV3 for DemoAppConnectorV2 {
         }
         let snapshot = self.structure_snapshot(request.target_scope.as_deref())?;
         if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
-            return Ok(RefreshAppStructureResponseV3 {
-                result: AppStructureSyncResultV3::Unchanged {
+            return Ok(RefreshAppStructureResponse {
+                result: AppStructureSyncResult::Unchanged {
                     app_id: request.app_id,
                     revision: snapshot.revision,
                     active_scope: snapshot.active_scope,
@@ -846,84 +837,21 @@ impl AppConnectorV3 for DemoAppConnectorV2 {
             });
         }
 
-        Ok(RefreshAppStructureResponseV3 {
-            result: AppStructureSyncResultV3::Snapshot { snapshot },
+        Ok(RefreshAppStructureResponse {
+            result: AppStructureSyncResult::Snapshot { snapshot },
         })
-    }
-}
-
-impl AppConnector for DemoAppConnectorV2 {
-    fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
-        <Self as AppConnectorV2>::connector_id(self)
-    }
-
-    fn health(
-        &mut self,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<HealthStatus, ConnectorError> {
-        <Self as AppConnectorV2>::health(self, ctx)
-    }
-
-    fn prewarm_snapshot_meta(
-        &mut self,
-        resource_path: &str,
-        timeout: Duration,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<SnapshotMeta, ConnectorError> {
-        <Self as AppConnectorV2>::prewarm_snapshot_meta(self, resource_path, timeout, ctx)
-    }
-
-    fn fetch_snapshot_chunk(
-        &mut self,
-        request: FetchSnapshotChunkRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_snapshot_chunk(self, request, ctx)
-    }
-
-    fn fetch_live_page(
-        &mut self,
-        request: FetchLivePageRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
-        <Self as AppConnectorV2>::fetch_live_page(self, request, ctx)
-    }
-
-    fn submit_action(
-        &mut self,
-        request: SubmitActionRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
-        <Self as AppConnectorV2>::submit_action(self, request, ctx)
-    }
-
-    fn get_app_structure(
-        &mut self,
-        request: GetAppStructureRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<GetAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::get_app_structure(self, request, ctx)
-    }
-
-    fn refresh_app_structure(
-        &mut self,
-        request: RefreshAppStructureRequest,
-        ctx: &ConnectorContext,
-    ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
-        <Self as AppConnectorV3>::refresh_app_structure(self, request, ctx)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DemoAppAdapterV1, DemoAppConnectorV2};
+    use super::{DemoAppAdapterV1, DemoAppConnector};
     use crate::{
-        ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+        ActionExecutionMode, AdapterControlActionV1, AdapterControlOutcomeV1,
         AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-        AppConnectorV2, AppConnectorV3, AppStructureSyncReasonV3, ConnectorContextV2,
-        FetchLivePageRequestV2, FetchSnapshotChunkRequestV2, GetAppStructureRequestV3,
-        RefreshAppStructureRequestV3, RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2,
-        SubmitActionRequestV2,
+        AppConnector, AppStructureSyncReason, ConnectorContext, FetchLivePageRequest,
+        FetchSnapshotChunkRequest, GetAppStructureRequest, RefreshAppStructureRequest,
+        RequestContextV1, SnapshotResume, SubmitActionOutcome, SubmitActionRequest,
     };
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
@@ -937,12 +865,12 @@ mod tests {
         }
     }
 
-    fn ctx_v2(trace_id: Option<&str>) -> ConnectorContextV2 {
-        ConnectorContextV2 {
+    fn connector_ctx(trace_id: Option<&str>) -> ConnectorContext {
+        ConnectorContext {
             app_id: "aiim".to_string(),
             session_id: "sess-test".to_string(),
-            request_id: "req-v2-1".to_string(),
-            client_token: Some("tok-v2-1".to_string()),
+            request_id: "req-connector-1".to_string(),
+            client_token: Some("tok-connector-1".to_string()),
             trace_id: trace_id.map(|v| v.to_string()),
         }
     }
@@ -1028,8 +956,8 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_info_health_and_prewarm() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_info_health_and_prewarm() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let info = connector
             .connector_id()
@@ -1040,98 +968,97 @@ mod tests {
         assert!(info.supports_action);
 
         let health = connector
-            .health(&ctx_v2(None))
+            .health(&connector_ctx(None))
             .expect("health should succeed");
         assert!(health.healthy);
 
         let expired = connector
-            .health(&ctx_v2(Some("force-auth-expired")))
+            .health(&connector_ctx(Some("force-auth-expired")))
             .expect("auth expired health status should still return payload");
         assert!(!expired.healthy);
 
         let _guard = env_lock().lock().expect("env lock should be acquirable");
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
         let meta = connector
             .prewarm_snapshot_meta(
                 "/chats/chat-001/messages.res.jsonl",
                 Duration::from_millis(20),
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("prewarm should succeed");
-        assert_eq!(meta.revision.as_deref(), Some("demo-v2"));
+        assert_eq!(meta.revision.as_deref(), Some("demo-connector"));
     }
 
     #[test]
-    fn demo_connector_v2_health_error_path() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_health_error_path() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         let err = connector
-            .health(&ctx_v2(Some("force-upstream-unavailable")))
+            .health(&connector_ctx(Some("force-upstream-unavailable")))
             .expect_err("health error path should be mapped");
         assert_eq!(err.code, "UPSTREAM_UNAVAILABLE");
         assert!(err.retryable);
     }
 
     #[test]
-    fn demo_connector_v2_prewarm_error_paths() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_prewarm_error_paths() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let forbidden = connector
             .prewarm_snapshot_meta(
                 "/forbidden/chats/chat-001/messages.res.jsonl",
                 Duration::from_millis(20),
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("forbidden resource must return explicit permission error");
         assert_eq!(forbidden.code, "PERMISSION_DENIED");
 
         let _guard = env_lock().lock().expect("env lock should be acquirable");
-        std::env::set_var("APPFS_V3_PREWARM_DELAY_MS", "30");
+        std::env::set_var("APPFS_PREWARM_DELAY_MS", "30");
         let timeout = connector
             .prewarm_snapshot_meta(
                 "/chats/chat-001/messages.res.jsonl",
                 Duration::from_millis(5),
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("timeout path should be mapped");
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
 
         assert_eq!(timeout.code, "TIMEOUT");
         assert!(timeout.retryable);
     }
 
     #[test]
-    fn demo_connector_v2_prewarm_accepts_v2_env_alias() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_prewarm_uses_canonical_env() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         let _guard = env_lock().lock().expect("env lock should be acquirable");
 
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
-        std::env::set_var("APPFS_V2_PREWARM_DELAY_MS", "30");
+        std::env::set_var("APPFS_PREWARM_DELAY_MS", "30");
 
         let timeout = connector
             .prewarm_snapshot_meta(
                 "/chats/chat-001/messages.res.jsonl",
                 Duration::from_millis(5),
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
-            .expect_err("v2 env alias should still drive timeout path");
+            .expect_err("canonical env should drive timeout path");
 
-        std::env::remove_var("APPFS_V2_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
         assert_eq!(timeout.code, "TIMEOUT");
         assert!(timeout.retryable);
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_success_and_error() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_snapshot_success_and_error() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let chunk = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/chat-generic/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Start,
+                    resume: SnapshotResume::Start,
                     budget_bytes: 1024,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("snapshot chunk should succeed");
         assert!(!chunk.records.is_empty());
@@ -1139,12 +1066,12 @@ mod tests {
 
         let err = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/no-offset/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Offset(10),
+                    resume: SnapshotResume::Offset(10),
                     budget_bytes: 1024,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("offset resume should be rejected for unsupported resource");
         assert_eq!(err.code, "NOT_SUPPORTED");
@@ -1152,12 +1079,12 @@ mod tests {
 
         let cursor_err = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Cursor("cursor-unknown".to_string()),
+                    resume: SnapshotResume::Cursor("cursor-unknown".to_string()),
                     budget_bytes: 1024,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("unknown cursor must be rejected explicitly");
         assert_eq!(cursor_err.code, "INVALID_ARGUMENT");
@@ -1165,20 +1092,20 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_001_materializes_100_records() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
-        let mut resume = SnapshotResumeV2::Start;
+    fn demo_connector_snapshot_chat_001_materializes_100_records() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
+        let mut resume = SnapshotResume::Start;
         let mut total = 0usize;
         let mut chunks = 0usize;
         loop {
             let chunk = connector
                 .fetch_snapshot_chunk(
-                    FetchSnapshotChunkRequestV2 {
+                    FetchSnapshotChunkRequest {
                         resource_path: "/chats/chat-001/messages.res.jsonl".to_string(),
                         resume,
                         budget_bytes: 1_048_576,
                     },
-                    &ctx_v2(None),
+                    &connector_ctx(None),
                 )
                 .expect("chat-001 chunk fetch should succeed");
             total += chunk.records.len();
@@ -1189,23 +1116,23 @@ mod tests {
             let cursor = chunk
                 .next_cursor
                 .expect("has_more=true must include next_cursor");
-            resume = SnapshotResumeV2::Cursor(cursor);
+            resume = SnapshotResume::Cursor(cursor);
         }
         assert_eq!(chunks, 3);
         assert_eq!(total, 100);
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_long_returns_upstream_error() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_snapshot_chat_long_returns_upstream_error() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         let err = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/chat-long/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Start,
+                    resume: SnapshotResume::Start,
                     budget_bytes: 1024,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("chat-long must fail through upstream error path");
         assert_eq!(err.code, "UPSTREAM_UNAVAILABLE");
@@ -1213,31 +1140,31 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_oversize_yields_large_materializable_chunk() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_snapshot_chat_oversize_yields_large_materializable_chunk() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
         let first = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/chat-oversize/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Start,
+                    resume: SnapshotResume::Start,
                     budget_bytes: 1_048_576,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("oversize snapshot start chunk should succeed");
         assert!(first.has_more);
         let second = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/chats/chat-oversize/messages.res.jsonl".to_string(),
-                    resume: SnapshotResumeV2::Cursor(
+                    resume: SnapshotResume::Cursor(
                         first
                             .next_cursor
                             .expect("oversize start chunk must include cursor"),
                     ),
                     budget_bytes: 1_048_576,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("oversize snapshot second chunk should succeed");
         assert!(!second.has_more);
@@ -1246,18 +1173,18 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_live_success_and_cursor_errors() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_live_success_and_cursor_errors() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let page = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/chats/chat-001/messages.res.json".to_string(),
                     handle_id: None,
                     cursor: None,
                     page_size: 20,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("live page should succeed");
         assert_eq!(page.page.page_no, 1);
@@ -1265,47 +1192,47 @@ mod tests {
 
         let invalid = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/chats/chat-001/messages.res.json".to_string(),
                     handle_id: None,
                     cursor: Some("invalid".to_string()),
                     page_size: 20,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("invalid cursor must return explicit error");
         assert_eq!(invalid.code, "CURSOR_INVALID");
 
         let expired = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/chats/chat-001/messages.res.json".to_string(),
                     handle_id: None,
                     cursor: Some("expired".to_string()),
                     page_size: 20,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("expired cursor must return explicit error");
         assert_eq!(expired.code, "CURSOR_EXPIRED");
     }
 
     #[test]
-    fn demo_connector_v2_submit_success_and_error() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_submit_success_and_error() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let inline = connector
             .submit_action(
-                SubmitActionRequestV2 {
+                SubmitActionRequest {
                     path: "/contacts/zhangsan/send_message.act".to_string(),
                     payload: serde_json::json!({"text":"hello"}),
-                    execution_mode: ActionExecutionModeV2::Inline,
+                    execution_mode: ActionExecutionMode::Inline,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("inline submit should succeed");
         match inline.outcome {
-            SubmitActionOutcomeV2::Completed { content } => {
+            SubmitActionOutcome::Completed { content } => {
                 assert_eq!(content["ok"], true);
             }
             _ => panic!("expected completed outcome"),
@@ -1313,16 +1240,16 @@ mod tests {
 
         let streaming = connector
             .submit_action(
-                SubmitActionRequestV2 {
+                SubmitActionRequest {
                     path: "/contacts/zhangsan/upload.act".to_string(),
                     payload: serde_json::json!({"target":"x"}),
-                    execution_mode: ActionExecutionModeV2::Streaming,
+                    execution_mode: ActionExecutionMode::Streaming,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("streaming submit should succeed");
         match streaming.outcome {
-            SubmitActionOutcomeV2::Streaming { plan } => {
+            SubmitActionOutcome::Streaming { plan } => {
                 assert!(plan.accepted_content.is_some());
                 assert!(plan.progress_content.is_some());
             }
@@ -1331,12 +1258,12 @@ mod tests {
 
         let err = connector
             .submit_action(
-                SubmitActionRequestV2 {
+                SubmitActionRequest {
                     path: "/contacts/zhangsan/invalid_payload.act".to_string(),
                     payload: serde_json::json!({"x":"y"}),
-                    execution_mode: ActionExecutionModeV2::Inline,
+                    execution_mode: ActionExecutionMode::Inline,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("invalid payload should return mapped error");
         assert_eq!(err.code, "INVALID_PAYLOAD");
@@ -1344,20 +1271,20 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v3_structure_get_and_refresh() {
-        let mut connector = DemoAppConnectorV2::new("aiim".to_string());
+    fn demo_connector_structure_get_and_refresh() {
+        let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let initial = connector
             .get_app_structure(
-                GetAppStructureRequestV3 {
+                GetAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: None,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("initial structure should succeed");
         let initial_revision = match initial.result {
-            crate::AppStructureSyncResultV3::Snapshot { snapshot } => {
+            crate::AppStructureSyncResult::Snapshot { snapshot } => {
                 assert_eq!(snapshot.active_scope.as_deref(), Some("chat-001"));
                 assert!(snapshot
                     .nodes
@@ -1370,32 +1297,32 @@ mod tests {
 
         let unchanged = connector
             .get_app_structure(
-                GetAppStructureRequestV3 {
+                GetAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: Some(initial_revision.clone()),
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("unchanged structure should succeed");
         assert!(matches!(
             unchanged.result,
-            crate::AppStructureSyncResultV3::Unchanged { .. }
+            crate::AppStructureSyncResult::Unchanged { .. }
         ));
 
         let refreshed = connector
             .refresh_app_structure(
-                RefreshAppStructureRequestV3 {
+                RefreshAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: Some(initial_revision),
-                    reason: AppStructureSyncReasonV3::EnterScope,
+                    reason: AppStructureSyncReason::EnterScope,
                     target_scope: Some("chat-long".to_string()),
                     trigger_action_path: Some("/_app/enter_scope.act".to_string()),
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect("scope refresh should succeed");
         match refreshed.result {
-            crate::AppStructureSyncResultV3::Snapshot { snapshot } => {
+            crate::AppStructureSyncResult::Snapshot { snapshot } => {
                 assert_eq!(snapshot.active_scope.as_deref(), Some("chat-long"));
                 assert!(snapshot
                     .nodes
@@ -1411,14 +1338,14 @@ mod tests {
 
         let invalid_scope = connector
             .refresh_app_structure(
-                RefreshAppStructureRequestV3 {
+                RefreshAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: None,
-                    reason: AppStructureSyncReasonV3::EnterScope,
+                    reason: AppStructureSyncReason::EnterScope,
                     target_scope: Some("missing-scope".to_string()),
                     trigger_action_path: None,
                 },
-                &ctx_v2(None),
+                &connector_ctx(None),
             )
             .expect_err("unknown scope should be rejected");
         assert_eq!(invalid_scope.code, "STRUCTURE_SCOPE_INVALID");

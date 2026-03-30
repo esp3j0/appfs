@@ -61,7 +61,7 @@ sh ./run-conformance.sh http-python
 
 1. `sdk/rust/src/appfs_adapter.rs`
 2. `sdk/rust/src/appfs_demo_adapter.rs`
-3. `examples/appfs/adapter-template/rust-minimal/`
+3. `examples/appfs/legacy/v1/templates/rust-minimal/`
 
 ### 4.2 HTTP bridge（多语言优先）
 
@@ -72,7 +72,7 @@ sh ./run-conformance.sh http-python
 
 参考：
 
-1. `examples/appfs/http-bridge/python/`
+1. `examples/appfs/bridges/http-python/`
 2. `docs/v1/APPFS-adapter-http-bridge-v0.1.md`
 
 ### 4.3 gRPC bridge
@@ -84,7 +84,7 @@ sh ./run-conformance.sh http-python
 
 参考：
 
-1. `examples/appfs/grpc-bridge/python/`
+1. `examples/appfs/bridges/grpc-python/`
 2. `docs/v1/APPFS-adapter-grpc-bridge-v0.1.md`
 
 ### 4.4 先定义结构，再写 handler
@@ -204,5 +204,5 @@ CT-017 相关：
 ## 10. 下一步建议
 
 1. 增加一个真实 app 连接器（不只 mock）。
-2. 继续完善脚手架（`examples/appfs/new-adapter.sh`）。
+2. 继续完善脚手架（`examples/appfs/legacy/v1/new-adapter.sh`）。
 3. 按兼容性矩阵逐步补齐 Go/TS 参考实现。

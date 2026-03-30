@@ -10,11 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Required AppFS gate: in-process runtime path + CT2 required set (linux).
-  # Check-run name intentionally stays stable during APPFS_V2_* -> APPFS_V3_* migration
-  # to avoid branch-protection expected-check pending drift.
+  # Required AppFS gate: in-process runtime path + connector required set (linux).
   appfs-contract-gate:
-    # Keep check-run name stable for branch protection; semantic: required inprocess v2 gate.
     name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
     defaults:
@@ -41,7 +38,7 @@ jobs:
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_STATIC_FIXTURE: "1"
-        APPFS_ROOT: ${{ github.workspace }}/examples/appfs
+        APPFS_ROOT: ${{ github.workspace }}/examples/appfs/fixtures
       run: sh ./tests/test-appfs-contract.sh
 
     - name: Run AppFS v0.1 live contract suite (baseline smoke)
@@ -50,18 +47,18 @@ jobs:
         APPFS_TIMEOUT_SEC: "30"
       run: sh ./tests/appfs/run-live-with-adapter.sh
 
-    - name: Run AppFS v3 contract suite (CT2 required set)
+    - name: Run AppFS connector contract suite (required set)
       env:
-        APPFS_V3_CONTRACT_TESTS: "1"
-        APPFS_V3_STRICT: "1"
-        APPFS_V3_BUILD_BEFORE_RUN: "0"
-      run: sh ./tests/test-appfs-v2-contract.sh
+        APPFS_CONNECTOR_CONTRACT_TESTS: "1"
+        APPFS_CONNECTOR_STRICT: "1"
+        APPFS_BUILD_BEFORE_RUN: "0"
+      run: sh ./tests/test-appfs-connector-contract.sh
 
-    - name: Run AppFS v4 structure contract suite
+    - name: Run AppFS structure contract suite
       env:
-        APPFS_V4_STRUCTURE_TESTS: "1"
-        APPFS_V4_BUILD_BEFORE_RUN: "0"
-      run: sh ./tests/test-appfs-v4-structure-contract.sh
+        APPFS_STRUCTURE_TESTS: "1"
+        APPFS_BUILD_BEFORE_RUN: "0"
+      run: sh ./tests/test-appfs-structure-contract.sh
 
   # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
@@ -98,12 +95,12 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
         APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_HTTP_STATUS=503 \
@@ -154,8 +151,8 @@ jobs:
 
   # Informational AppFS bridge signal: CT2 subset over HTTP bridge path.
   # Required gate is the in-process job above; bridge jobs are non-blocking diagnostics.
-  appfs-contract-gate-http-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, http bridge v2)
+  appfs-contract-signal-http-bridge:
+    name: AppFS Contract Signal (informational, linux, http bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -192,14 +189,14 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge
       run: |
-        cd ../examples/appfs/http-bridge/python
-        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-v2.log" 2>&1 &
-        echo $! >"$RUNNER_TEMP/appfs-http-bridge-v2.pid"
+        cd ../examples/appfs/bridges/http-python
+        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-http-bridge.pid"
         uv run python - <<'PY'
         import socket
         import sys
@@ -218,42 +215,42 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v3 contract subset (HTTP bridge mode, informational)
-      id: http_v2_subset
+    - name: Run AppFS connector contract subset (HTTP bridge mode, informational)
+      id: http_connector_subset
       continue-on-error: true
       env:
-        APPFS_V3_CONTRACT_TESTS: "1"
-        APPFS_V3_STRICT: "1"
-        APPFS_V3_BUILD_BEFORE_RUN: "0"
-        APPFS_V3_REQUIRED_CASES: "ct2-002,ct2-003,ct2-004,ct2-005,ct2-007,ct2-008,ct2-009"
-        APPFS_V3_EXTENDED_CASES: "none"
+        APPFS_CONNECTOR_CONTRACT_TESTS: "1"
+        APPFS_CONNECTOR_STRICT: "1"
+        APPFS_BUILD_BEFORE_RUN: "0"
+        APPFS_CONNECTOR_REQUIRED_CASES: "ct2-002,ct2-003,ct2-004,ct2-005,ct2-007,ct2-008,ct2-009"
+        APPFS_CONNECTOR_EXTENDED_CASES: "none"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
-      run: sh ./tests/test-appfs-v2-contract.sh
+      run: sh ./tests/test-appfs-connector-contract.sh
 
     - name: Summarize HTTP bridge subset informational result
       if: always()
       run: |
-        if [ "${{ steps.http_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v3 HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v3 HTTP bridge subset failed; non-blocking informational signal."
+        if [ "${{ steps.http_connector_subset.outcome }}" = "failure" ]; then
+          echo "AppFS connector HTTP bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS connector HTTP bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v3 HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS connector HTTP bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    - name: Dump HTTP bridge log on failure (v2)
-      if: steps.http_v2_subset.outcome == 'failure'
-      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-v2.log" || true
+    - name: Dump HTTP bridge log on failure
+      if: steps.http_connector_subset.outcome == 'failure'
+      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge.log" || true
 
-    - name: Stop HTTP bridge (v2)
+    - name: Stop HTTP bridge
       if: always()
       run: |
-        if [ -f "$RUNNER_TEMP/appfs-http-bridge-v2.pid" ]; then
-          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2.pid")" 2>/dev/null || true
+        if [ -f "$RUNNER_TEMP/appfs-http-bridge.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge.pid")" 2>/dev/null || true
         fi
 
   # Informational AppFS bridge signal: higher-risk CT2 coverage over HTTP bridge path.
-  appfs-contract-gate-http-bridge-v2-high-risk:
-    name: AppFS Contract Signal (informational, linux, http bridge v2 high-risk)
+  appfs-contract-signal-http-bridge-high-risk:
+    name: AppFS Contract Signal (informational, linux, http bridge high-risk)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -290,14 +287,14 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
-    - name: Start HTTP bridge (v2 high-risk)
+    - name: Start HTTP bridge (high-risk)
       run: |
-        cd ../examples/appfs/http-bridge/python
-        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.log" 2>&1 &
-        echo $! >"$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid"
+        cd ../examples/appfs/bridges/http-python
+        nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-high-risk.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-http-bridge-high-risk.pid"
         uv run python - <<'PY'
         import socket
         import sys
@@ -316,37 +313,37 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v3 high-risk bridge coverage (HTTP mode, informational)
-      id: http_v2_high_risk
+    - name: Run AppFS connector high-risk bridge coverage (HTTP mode, informational)
+      id: http_connector_high_risk
       continue-on-error: true
       env:
-        APPFS_V3_CONTRACT_TESTS: "1"
-        APPFS_V3_STRICT: "1"
-        APPFS_V3_BUILD_BEFORE_RUN: "0"
-        APPFS_V3_REQUIRED_CASES: "ct2-006"
-        APPFS_V3_EXTENDED_CASES: "ct2-028"
+        APPFS_CONNECTOR_CONTRACT_TESTS: "1"
+        APPFS_CONNECTOR_STRICT: "1"
+        APPFS_BUILD_BEFORE_RUN: "0"
+        APPFS_CONNECTOR_REQUIRED_CASES: "ct2-006"
+        APPFS_CONNECTOR_EXTENDED_CASES: "ct2-028"
         APPFS_ADAPTER_HTTP_ENDPOINT: "http://127.0.0.1:8080"
-      run: sh ./tests/test-appfs-v2-contract.sh
+      run: sh ./tests/test-appfs-connector-contract.sh
 
     - name: Summarize HTTP bridge high-risk informational result
       if: always()
       run: |
-        if [ "${{ steps.http_v2_high_risk.outcome }}" = "failure" ]; then
-          echo "AppFS v3 HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v3 HTTP bridge high-risk coverage failed; non-blocking informational signal."
+        if [ "${{ steps.http_connector_high_risk.outcome }}" = "failure" ]; then
+          echo "AppFS connector HTTP bridge high-risk coverage: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS connector HTTP bridge high-risk coverage failed; non-blocking informational signal."
         else
-          echo "AppFS v3 HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS connector HTTP bridge high-risk coverage: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    - name: Dump HTTP bridge log on failure (v2 high-risk)
-      if: steps.http_v2_high_risk.outcome == 'failure'
-      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.log" || true
+    - name: Dump HTTP bridge log on failure (high-risk)
+      if: steps.http_connector_high_risk.outcome == 'failure'
+      run: tail -n 200 "$RUNNER_TEMP/appfs-http-bridge-high-risk.log" || true
 
-    - name: Stop HTTP bridge (v2 high-risk)
+    - name: Stop HTTP bridge (high-risk)
       if: always()
       run: |
-        if [ -f "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid" ]; then
-          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-v2-high-risk.pid")" 2>/dev/null || true
+        if [ -f "$RUNNER_TEMP/appfs-http-bridge-high-risk.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-http-bridge-high-risk.pid")" 2>/dev/null || true
         fi
 
   # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
@@ -381,7 +378,7 @@ jobs:
 
     - name: Install gRPC bridge dependencies
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
         chmod +x ./generate_stubs.sh
@@ -389,7 +386,7 @@ jobs:
 
     - name: Start gRPC bridge
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
         APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_GRPC_CODE=UNAVAILABLE \
@@ -439,8 +436,8 @@ jobs:
         fi
 
   # Informational AppFS bridge signal: CT2 subset over gRPC bridge path.
-  appfs-contract-gate-grpc-bridge-v2:
-    name: AppFS Contract Signal (informational, linux, grpc bridge v2)
+  appfs-contract-signal-grpc-bridge:
+    name: AppFS Contract Signal (informational, linux, grpc bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: appfs-contract-gate
@@ -472,17 +469,17 @@ jobs:
 
     - name: Install gRPC bridge dependencies
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
         chmod +x ./generate_stubs.sh
         ./generate_stubs.sh
 
-    - name: Start gRPC bridge (v2)
+    - name: Start gRPC bridge
       run: |
-        cd ../examples/appfs/grpc-bridge/python
-        nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge-v2.log" 2>&1 &
-        echo $! >"$RUNNER_TEMP/appfs-grpc-bridge-v2.pid"
+        cd ../examples/appfs/bridges/grpc-python
+        nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge.log" 2>&1 &
+        echo $! >"$RUNNER_TEMP/appfs-grpc-bridge.pid"
         python3 - <<'PY'
         import socket
         import sys
@@ -501,37 +498,37 @@ jobs:
         sys.exit(1)
         PY
 
-    - name: Run AppFS v3 contract subset (gRPC bridge mode, informational)
-      id: grpc_v2_subset
+    - name: Run AppFS connector contract subset (gRPC bridge mode, informational)
+      id: grpc_connector_subset
       continue-on-error: true
       env:
-        APPFS_V3_CONTRACT_TESTS: "1"
-        APPFS_V3_STRICT: "1"
-        APPFS_V3_BUILD_BEFORE_RUN: "0"
-        APPFS_V3_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
-        APPFS_V3_EXTENDED_CASES: "none"
+        APPFS_CONNECTOR_CONTRACT_TESTS: "1"
+        APPFS_CONNECTOR_STRICT: "1"
+        APPFS_BUILD_BEFORE_RUN: "0"
+        APPFS_CONNECTOR_REQUIRED_CASES: "ct2-002,ct2-007,ct2-008,ct2-009"
+        APPFS_CONNECTOR_EXTENDED_CASES: "none"
         APPFS_ADAPTER_GRPC_ENDPOINT: "http://127.0.0.1:50051"
-      run: sh ./tests/test-appfs-v2-contract.sh
+      run: sh ./tests/test-appfs-connector-contract.sh
 
     - name: Summarize gRPC bridge informational result
       if: always()
       run: |
-        if [ "${{ steps.grpc_v2_subset.outcome }}" = "failure" ]; then
-          echo "AppFS v3 gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::AppFS v3 gRPC bridge subset failed; non-blocking informational signal."
+        if [ "${{ steps.grpc_connector_subset.outcome }}" = "failure" ]; then
+          echo "AppFS connector gRPC bridge subset: FAILED (non-blocking informational signal)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AppFS connector gRPC bridge subset failed; non-blocking informational signal."
         else
-          echo "AppFS v3 gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
+          echo "AppFS connector gRPC bridge subset: PASSED." >> "$GITHUB_STEP_SUMMARY"
         fi
 
-    - name: Dump gRPC bridge log on failure (v2)
-      if: steps.grpc_v2_subset.outcome == 'failure'
-      run: tail -n 200 "$RUNNER_TEMP/appfs-grpc-bridge-v2.log" || true
+    - name: Dump gRPC bridge log on failure
+      if: steps.grpc_connector_subset.outcome == 'failure'
+      run: tail -n 200 "$RUNNER_TEMP/appfs-grpc-bridge.log" || true
 
-    - name: Stop gRPC bridge (v2)
+    - name: Stop gRPC bridge
       if: always()
       run: |
-        if [ -f "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid" ]; then
-          kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge-v2.pid")" 2>/dev/null || true
+        if [ -f "$RUNNER_TEMP/appfs-grpc-bridge.pid" ]; then
+          kill "$(cat "$RUNNER_TEMP/appfs-grpc-bridge.pid")" 2>/dev/null || true
         fi
 
   test:
