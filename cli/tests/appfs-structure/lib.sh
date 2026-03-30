@@ -3,7 +3,7 @@ set -eu
 
 DIR="$(dirname "$0")"
 # shellcheck disable=SC1091
-. "$DIR/../appfs-v2/lib.sh"
+. "$DIR/../appfs-connector/lib.sh"
 
 wait_path_exists() {
     path="$1"

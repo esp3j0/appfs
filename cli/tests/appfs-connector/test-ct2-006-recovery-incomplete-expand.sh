@@ -52,7 +52,7 @@ start_mount() {
     publish_delay_ms="${1:-}"
     reuse_existing="${2:-0}"
     MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
-    MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "$AGENT_ID" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "" "$publish_delay_ms" "" "$reuse_existing")"
+    MOUNT_PID="$(start_appfs_connector_mount "$MOUNT_LOG" "$AGENTFS_BIN" "$AGENT_ID" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "" "$publish_delay_ms" "" "$reuse_existing")"
 }
 
 wait_mount_log() {
@@ -69,14 +69,14 @@ wait_mount_log() {
     return 1
 }
 
-banner "AppFS v2 CT2-006 Journal Recovery for Incomplete Expand"
+banner "AppFS Connector CT2-006 Journal Recovery for Incomplete Expand"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-006.XXXXXX")"
-MOUNTPOINT="/tmp/agentfs-ct2-v2-006-$$"
-AGENT_ID="ct2-v2-006-$$"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-006.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-connector-006-$$"
+AGENT_ID="ct2-connector-006-$$"
 
 prepare_fixture
 start_mount 8000 0

@@ -66,13 +66,13 @@ assert_json_expr() {
     fi
 }
 
-banner "AppFS v2 CT2-009 Snapshot/Live Dual Shape"
+banner "AppFS Connector CT2-009 Snapshot/Live Dual Shape"
 require_cmd python3
 
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-009.XXXXXX")"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-009.XXXXXX")"
 cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
 
 APP_DIR="$TMP_ROOT/aiim"
@@ -87,7 +87,7 @@ assert_file "$FETCH_NEXT_ACT"
 assert_file "$EVENTS"
 
 ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0)"
+ADAPTER_PID="$(start_appfs_connector_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0)"
 pass "adapter started"
 
 line_count="$(wc -l < "$SNAPSHOT_RESOURCE" | tr -d ' ')"

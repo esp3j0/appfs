@@ -5,10 +5,10 @@ say() {
     printf '%s\n' "$*"
 }
 
-record_v2_evidence() {
+record_connector_evidence() {
     key="$1"
     value="${2:-}"
-    evidence_file="${APPFS_V2_EVIDENCE_FILE:-}"
+    evidence_file="${APPFS_CONNECTOR_EVIDENCE_FILE:-}"
     [ -n "$evidence_file" ] || return 0
     if [ -n "$value" ]; then
         printf '%s=%s\n' "$key" "$value" >>"$evidence_file"
@@ -21,7 +21,7 @@ persist_case_evidence() {
     case_id="$1"
     artifact_name="$2"
     src_path="$3"
-    evidence_dir="${APPFS_V2_EVIDENCE_DIR:-}"
+    evidence_dir="${APPFS_CONNECTOR_EVIDENCE_DIR:-}"
     [ -n "$evidence_dir" ] || return 0
     [ -f "$src_path" ] || return 0
     mkdir -p "$evidence_dir"
@@ -169,7 +169,7 @@ ensure_agentfs_bin() {
     cli_dir="${1:-${CLI_DIR:-}}"
     [ -n "$cli_dir" ] || fail "CLI_DIR is required for ensure_agentfs_bin"
 
-    build_before_run="${APPFS_V3_BUILD_BEFORE_RUN:-${APPFS_V2_BUILD_BEFORE_RUN:-1}}"
+    build_before_run="${APPFS_BUILD_BEFORE_RUN:-1}"
 
     if [ -n "${AGENTFS_BIN:-}" ] && [ -f "$AGENTFS_BIN" ] && [ "$build_before_run" != "1" ]; then
         return 0
@@ -180,10 +180,10 @@ ensure_agentfs_bin() {
     if [ "$build_before_run" = "1" ]; then
         case "$cargo_cmd" in
             cargo)
-                say "Building Linux agentfs binary for AppFS v2 contract tests..."
+                say "Building Linux agentfs binary for AppFS connector contract tests..."
                 ;;
             *)
-                say "Building Windows agentfs binary for AppFS v2 contract tests..."
+                say "Building Windows agentfs binary for AppFS connector contract tests..."
                 ;;
         esac
         (cd "$cli_dir" && "$cargo_cmd" build --quiet) || fail "failed to build agentfs with $cargo_cmd"
@@ -219,7 +219,7 @@ ensure_agentfs_bin() {
     fail "missing agentfs binary; expected $linux_bin or $windows_bin"
 }
 
-start_appfs_v2_adapter() {
+start_appfs_connector_adapter() {
     adapter_log="$1"
     bin_path="$2"
     root_dir="$3"
@@ -268,32 +268,32 @@ start_appfs_v2_adapter() {
             fi
             cmd_prefix=""
             if [ "$strict_actionline" = "1" ]; then
-                cmd_prefix="${cmd_prefix}set APPFS_V2_ACTIONLINE_STRICT=1&& "
+                cmd_prefix="${cmd_prefix}set APPFS_ACTIONLINE_STRICT=1&& "
             fi
             if [ -n "$snapshot_expand_delay_ms" ]; then
-                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms&& "
+                cmd_prefix="${cmd_prefix}set APPFS_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms&& "
             fi
             if [ -n "$snapshot_publish_delay_ms" ]; then
-                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms&& "
+                cmd_prefix="${cmd_prefix}set APPFS_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms&& "
             fi
             if [ -n "$snapshot_refresh_force_expand" ]; then
-                cmd_prefix="${cmd_prefix}set APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand&& "
+                cmd_prefix="${cmd_prefix}set APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand&& "
             fi
             cmd.exe /C "${cmd_prefix}$win_bin serve appfs --root $runtime_root --app-id $app_id --poll-ms $poll_ms$bridge_args" >"$adapter_log" 2>&1 &
             ;;
         *)
             env_args=""
             if [ "$strict_actionline" = "1" ]; then
-                env_args="$env_args APPFS_V2_ACTIONLINE_STRICT=1"
+                env_args="$env_args APPFS_ACTIONLINE_STRICT=1"
             fi
             if [ -n "$snapshot_expand_delay_ms" ]; then
-                env_args="$env_args APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms"
+                env_args="$env_args APPFS_SNAPSHOT_EXPAND_DELAY_MS=$snapshot_expand_delay_ms"
             fi
             if [ -n "$snapshot_publish_delay_ms" ]; then
-                env_args="$env_args APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms"
+                env_args="$env_args APPFS_SNAPSHOT_PUBLISH_DELAY_MS=$snapshot_publish_delay_ms"
             fi
             if [ -n "$snapshot_refresh_force_expand" ]; then
-                env_args="$env_args APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand"
+                env_args="$env_args APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand"
             fi
             # shellcheck disable=SC2086
             env $env_args "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --poll-ms "$poll_ms" $bridge_args >"$adapter_log" 2>&1 &
@@ -343,7 +343,7 @@ stop_mount_process() {
     fi
 }
 
-start_appfs_v2_mount() {
+start_appfs_connector_mount() {
     mount_log="$1"
     bin_path="$2"
     agent_id="$3"
@@ -393,13 +393,13 @@ start_appfs_v2_mount() {
 
     env_args=""
     if [ -n "$expand_delay_ms" ]; then
-        env_args="$env_args APPFS_V2_SNAPSHOT_EXPAND_DELAY_MS=$expand_delay_ms"
+        env_args="$env_args APPFS_SNAPSHOT_EXPAND_DELAY_MS=$expand_delay_ms"
     fi
     if [ -n "$publish_delay_ms" ]; then
-        env_args="$env_args APPFS_V2_SNAPSHOT_PUBLISH_DELAY_MS=$publish_delay_ms"
+        env_args="$env_args APPFS_SNAPSHOT_PUBLISH_DELAY_MS=$publish_delay_ms"
     fi
     if [ -n "$force_expand" ]; then
-        env_args="$env_args APPFS_V2_SNAPSHOT_REFRESH_FORCE_EXPAND=$force_expand"
+        env_args="$env_args APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND=$force_expand"
     fi
 
     # shellcheck disable=SC2086

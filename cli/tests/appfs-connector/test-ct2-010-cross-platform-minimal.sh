@@ -113,14 +113,14 @@ start_adapter() {
                 win_bin="$(cygpath -w "$AGENTFS_BIN")"
             fi
             if [ "$strict_actionline" = "1" ]; then
-                cmd.exe /C "set APPFS_V2_ACTIONLINE_STRICT=1&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
+                cmd.exe /C "set APPFS_ACTIONLINE_STRICT=1&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
             else
                 cmd.exe /C "$win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
             fi
             ;;
         *)
             if [ "$strict_actionline" = "1" ]; then
-                APPFS_V2_ACTIONLINE_STRICT=1 "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
+                APPFS_ACTIONLINE_STRICT=1 "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
             else
                 "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
             fi
@@ -134,12 +134,12 @@ start_adapter() {
     fi
 }
 
-banner "AppFS v2 CT2-010 Minimal Cross-Platform Consistency Matrix"
+banner "AppFS Connector CT2-010 Minimal Cross-Platform Consistency Matrix"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-010.XXXXXX")"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-010.XXXXXX")"
 SUMMARY_JSON="$TMP_ROOT/ct2-010-summary.json"
 
 reload_fixture_app
@@ -150,28 +150,28 @@ assert_file "$REFRESH_ACT"
 assert_file "$FETCH_NEXT_ACT"
 assert_file "$EVENTS_FILE"
 
-# 1) ActionLineV2 accept/reject basics (strict mode for deterministic submit-time semantics)
+# 1) ActionLine accept/reject basics (strict mode for deterministic submit-time semantics)
 start_adapter 1
-pass "adapter started (strict ActionLineV2 mode)"
+pass "adapter started (strict ActionLine mode)"
 
 wait_writable "$SEND_ACT" 10 || fail "action sink remained non-writable: $SEND_ACT"
 token_accept="ct2-010-accept-$$"
-printf '{"version":"2.0","client_token":"%s","payload":{"text":"cross-platform hello"}}\n' "$token_accept" >> "$SEND_ACT" || fail "failed to append ActionLineV2 accept payload"
-wait_token_type_event "$token_accept" "action.completed" "$EVENTS_FILE" 20 || fail "ActionLineV2 accept did not emit action.completed"
+printf '{"version":"2.0","client_token":"%s","payload":{"text":"cross-platform hello"}}\n' "$token_accept" >> "$SEND_ACT" || fail "failed to append ActionLine accept payload"
+wait_token_type_event "$token_accept" "action.completed" "$EVENTS_FILE" 20 || fail "ActionLine accept did not emit action.completed"
 accept_event="$(grep "$token_accept" "$EVENTS_FILE" 2>/dev/null | grep "\"type\":\"action.completed\"" | tail -n 1 || true)"
 [ -n "$accept_event" ] || fail "missing accept event line"
-pass "ActionLineV2 accept path is consistent"
+pass "ActionLine accept path is consistent"
 
-# 3) ActionLineV2 reject basics (must not emit action.accepted/completed for rejected submit)
+# 3) ActionLine reject basics (must not emit action.accepted/completed for rejected submit)
 token_reject="ct2-010-reject-$$"
 before_reject_count="$(grep -c "$token_reject" "$EVENTS_FILE" 2>/dev/null || true)"
 [ -n "$before_reject_count" ] || before_reject_count=0
-printf '{"version":"2.0","client_token":"%s"}\n' "$token_reject" >> "$SEND_ACT" || fail "failed to append ActionLineV2 reject payload"
+printf '{"version":"2.0","client_token":"%s"}\n' "$token_reject" >> "$SEND_ACT" || fail "failed to append ActionLine reject payload"
 sleep 2
 after_reject_count="$(grep -c "$token_reject" "$EVENTS_FILE" 2>/dev/null || true)"
 [ -n "$after_reject_count" ] || after_reject_count=0
-[ "$before_reject_count" = "$after_reject_count" ] || fail "rejected ActionLineV2 payload should not emit token-correlated events"
-pass "ActionLineV2 reject path is consistent (no token event emitted)"
+[ "$before_reject_count" = "$after_reject_count" ] || fail "rejected ActionLine payload should not emit token-correlated events"
+pass "ActionLine reject path is consistent (no token event emitted)"
 
 stop_adapter
 
@@ -236,8 +236,8 @@ with open(summary_path, "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 
-if [ -n "${APPFS_V2_CT2_010_REFERENCE:-}" ] && [ -f "${APPFS_V2_CT2_010_REFERENCE:-}" ]; then
-    if ! python3 - "$SUMMARY_JSON" "$APPFS_V2_CT2_010_REFERENCE" <<'PY'
+if [ -n "${APPFS_CT2_010_REFERENCE:-}" ] && [ -f "${APPFS_CT2_010_REFERENCE:-}" ]; then
+    if ! python3 - "$SUMMARY_JSON" "$APPFS_CT2_010_REFERENCE" <<'PY'
 import json
 import sys
 
@@ -261,14 +261,14 @@ if diffs:
     sys.exit(1)
 PY
     then
-        fail "CT2-010 minimal matrix differs from reference: $APPFS_V2_CT2_010_REFERENCE"
+        fail "CT2-010 minimal matrix differs from reference: $APPFS_CT2_010_REFERENCE"
     fi
-    pass "reference comparison passed: $APPFS_V2_CT2_010_REFERENCE"
+    pass "reference comparison passed: $APPFS_CT2_010_REFERENCE"
 fi
 
-if [ -n "${APPFS_V2_CT2_010_REFERENCE_OUT:-}" ]; then
-    cp "$SUMMARY_JSON" "$APPFS_V2_CT2_010_REFERENCE_OUT"
-    pass "wrote CT2-010 reference summary: $APPFS_V2_CT2_010_REFERENCE_OUT"
+if [ -n "${APPFS_CT2_010_REFERENCE_OUT:-}" ]; then
+    cp "$SUMMARY_JSON" "$APPFS_CT2_010_REFERENCE_OUT"
+    pass "wrote CT2-010 reference summary: $APPFS_CT2_010_REFERENCE_OUT"
 fi
 
 pass "CT2-010 minimal matrix summary: $SUMMARY_JSON"

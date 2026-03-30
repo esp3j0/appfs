@@ -32,7 +32,7 @@ mkdir -p "$CLI_DIR/target"
 TMP_ROOT="$(mktemp -d "$CLI_DIR/target/st4-001.XXXXXX")"
 ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
 
-ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0)"
+ADAPTER_PID="$(start_appfs_connector_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 0)"
 pass "adapter started on empty root"
 
 APP_DIR="$TMP_ROOT/aiim"

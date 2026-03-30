@@ -51,17 +51,17 @@ PY
 
 start_mount() {
     MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
-    MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-v2-028-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" 200 "" 1)"
+    MOUNT_PID="$(start_appfs_connector_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-connector-028-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" 200 "" 1)"
 }
 
-banner "AppFS v2 CT2-028 Timeout Return-Stale Fallback"
+banner "AppFS Connector CT2-028 Timeout Return-Stale Fallback"
 require_cmd python3
 require_cmd sha256sum
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-028.XXXXXX")"
-MOUNTPOINT="/tmp/agentfs-ct2-v2-028-$$"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-028.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-connector-028-$$"
 
 prepare_fixture
 patch_manifest_timeout_return_stale

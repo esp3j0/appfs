@@ -68,17 +68,17 @@ start_mount() {
     publish_delay_ms="${2:-}"
     force_expand="${3:-}"
     MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
-    AGENT_ID="ct2-v2-003-$$"
-    MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "$AGENT_ID" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "$delay_ms" "$publish_delay_ms" "$force_expand")"
+    AGENT_ID="ct2-connector-003-$$"
+    MOUNT_PID="$(start_appfs_connector_mount "$MOUNT_LOG" "$AGENTFS_BIN" "$AGENT_ID" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "$delay_ms" "$publish_delay_ms" "$force_expand")"
 }
 
-banner "AppFS v2 CT2-003 Read Miss Expand"
+banner "AppFS Connector CT2-003 Read Miss Expand"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-003.XXXXXX")"
-MOUNTPOINT="/tmp/agentfs-ct2-v2-003-$$"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-003.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-connector-003-$$"
 
 prepare_fixture
 start_mount "" "" ""
@@ -101,7 +101,7 @@ grep -F -q "[cache] mount read-through resource=/chats/chat-001/messages.res.jso
 grep -F -q "[cache.expand] fetch_snapshot_chunk resource=/chats/chat-001/messages.res.jsonl trigger=read" "$MOUNT_LOG" || fail "missing fetch_snapshot_chunk log"
 grep -F -q "[cache] expanded resource=/chats/chat-001/messages.res.jsonl bytes=" "$MOUNT_LOG" || fail "missing expansion completion log"
 persist_case_evidence "ct2-003" "mount.log" "$MOUNT_LOG"
-pass "cold miss ordinary read expanded through V2 connector and materialized JSONL"
+pass "cold miss ordinary read expanded through connector and materialized JSONL"
 
 stop_mount_process "${MOUNT_PID:-}" "${MOUNTPOINT:-}"
 MOUNT_PID=""

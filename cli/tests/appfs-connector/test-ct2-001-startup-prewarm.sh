@@ -111,10 +111,10 @@ start_adapter_with_prewarm_delay() {
                 runtime_root="$(wslpath -w "$TMP_ROOT")"
                 win_bin="$(wslpath -w "$AGENTFS_BIN")"
             fi
-            cmd.exe /C "set APPFS_V2_PREWARM_DELAY_MS=$delay_ms&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
+            cmd.exe /C "set APPFS_PREWARM_DELAY_MS=$delay_ms&& $win_bin serve appfs --root $runtime_root --app-id aiim --poll-ms 50" >"$ADAPTER_LOG" 2>&1 &
             ;;
         *)
-            APPFS_V2_PREWARM_DELAY_MS="$delay_ms" "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
+            APPFS_PREWARM_DELAY_MS="$delay_ms" "$AGENTFS_BIN" serve appfs --root "$runtime_root" --app-id aiim --poll-ms 50 >"$ADAPTER_LOG" 2>&1 &
             ;;
     esac
     ADAPTER_PID=$!
@@ -125,12 +125,12 @@ start_adapter_with_prewarm_delay() {
     fi
 }
 
-banner "AppFS v2 CT2-001 Startup Prewarm"
+banner "AppFS Connector CT2-001 Startup Prewarm"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-001.XXXXXX")"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-001.XXXXXX")"
 
 reload_fixture_app
 rm -f "$SNAPSHOT_FILE"

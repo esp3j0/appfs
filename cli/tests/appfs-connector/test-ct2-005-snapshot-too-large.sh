@@ -31,17 +31,17 @@ prepare_fixture() {
 start_mount() {
     force_expand="${1:-}"
     MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
-    MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-v2-005-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "" "" "$force_expand")"
+    MOUNT_PID="$(start_appfs_connector_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-connector-005-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" "" "" "$force_expand")"
 }
 
-banner "AppFS v2 CT2-005 Snapshot Too-Large Atomic Mapping"
+banner "AppFS Connector CT2-005 Snapshot Too-Large Atomic Mapping"
 require_cmd python3
 require_cmd sha256sum
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-005.XXXXXX")"
-MOUNTPOINT="/tmp/agentfs-ct2-v2-005-$$"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-005.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-connector-005-$$"
 
 prepare_fixture
 start_mount ""

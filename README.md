@@ -191,9 +191,9 @@ uv run ruff format .
 
 Key entry points:
 
-- [docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md](docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md)
-- [docs/v3/APPFS-v0.3-Connector接口.zh-CN.md](docs/v3/APPFS-v0.3-Connector接口.zh-CN.md)
-- [docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
+- [Connectorization ADR](docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md)
+- [Connector Interface](docs/v3/APPFS-v0.3-Connector接口.zh-CN.md)
+- [Connectorization Completion Summary](docs/v3/APPFS-v0.3-完成总结-2026-03-24.zh-CN.md)
 - [docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md](docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md)
 - [docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md](docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
@@ -245,7 +245,7 @@ Core validation paths:
 
 - Rust CLI tests: `cargo test --manifest-path cli/Cargo.toml --package agentfs`
 - Rust SDK tests: `cargo test --manifest-path sdk/rust/Cargo.toml`
-- Linux contract suite: `cli/tests/test-appfs-v2-contract.sh`
+- Linux contract suite: `cli/tests/test-appfs-connector-contract.sh`
 - Windows managed lifecycle regression: `cli/test-windows-appfs-managed.ps1`
 
 Linux remains the primary required CI platform. Windows has dedicated manual regression coverage for the managed AppFS flow.

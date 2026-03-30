@@ -97,12 +97,12 @@ assert_no_token_event() {
     fi
 }
 
-banner "AppFS v2 CT2-008 Submit Reject Rules"
+banner "AppFS Connector CT2-008 Submit Reject Rules"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-008.XXXXXX")"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-008.XXXXXX")"
 cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
 
 APP_DIR="$TMP_ROOT/aiim"
@@ -113,8 +113,8 @@ assert_file "$ACTION"
 assert_file "$EVENTS"
 
 ADAPTER_LOG="$TMP_ROOT/appfs-adapter.log"
-ADAPTER_PID="$(start_appfs_v2_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 1)"
-pass "adapter started with APPFS_V2_ACTIONLINE_STRICT=1"
+ADAPTER_PID="$(start_appfs_connector_adapter "$ADAPTER_LOG" "$AGENTFS_BIN" "$TMP_ROOT" "aiim" 50 1)"
+pass "adapter started with APPFS_ACTIONLINE_STRICT=1"
 
 wait_writable "$ACTION" 10 || fail "action sink remained non-writable: $ACTION"
 
@@ -162,7 +162,7 @@ printf '{"version":"2.0","client_token":"%s","payload":{"text":"ok"}}\n' "$token
 wait_token_event "$token_ok" "$EVENTS" 15 || fail "valid payload did not emit token event"
 line_ok="$(grep "$token_ok" "$EVENTS" 2>/dev/null | tail -n 1 || true)"
 [ -n "$line_ok" ] || fail "missing token event for valid payload"
-assert_json_expr "$line_ok" 'obj.get("type") == "action.completed"' "valid ActionLineV2 payload should still pass in strict mode"
-pass "strict gate is active and allows valid ActionLineV2 payload"
+assert_json_expr "$line_ok" 'obj.get("type") == "action.completed"' "valid ActionLine payload should still pass in strict mode"
+pass "strict gate is active and allows valid ActionLine payload"
 
 say "CT2-008 done"

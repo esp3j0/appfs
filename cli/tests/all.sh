@@ -30,10 +30,10 @@ DIR="$(dirname "$0")"
 # Enable with: APPFS_CONTRACT_TESTS=1 ./tests/all.sh
 sh "$DIR/test-appfs-contract.sh"
 
-# Optional AppFS v2 Phase-B contract skeleton suite (disabled by default).
-# Enable with: APPFS_V2_CONTRACT_TESTS=1 ./tests/all.sh
-sh "$DIR/test-appfs-v2-contract.sh"
+# Optional AppFS connector contract suite (disabled by default).
+# Enable with: APPFS_CONNECTOR_CONTRACT_TESTS=1 ./tests/all.sh
+sh "$DIR/test-appfs-connector-contract.sh"
 
-# Optional AppFS v4 structure-sync contract suite (disabled by default).
-# Enable with: APPFS_V4_STRUCTURE_TESTS=1 ./tests/all.sh
-sh "$DIR/test-appfs-v4-structure-contract.sh"
+# Optional AppFS structure contract suite (disabled by default).
+# Enable with: APPFS_STRUCTURE_TESTS=1 ./tests/all.sh
+sh "$DIR/test-appfs-structure-contract.sh"

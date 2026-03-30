@@ -28,17 +28,17 @@ prepare_fixture() {
     cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
 }
 
-banner "AppFS v2 CT2-004 Concurrent Cold-Miss Coalescing"
+banner "AppFS Connector CT2-004 Concurrent Cold-Miss Coalescing"
 require_cmd python3
 ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
-TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-v2-004.XXXXXX")"
-MOUNTPOINT="/tmp/agentfs-ct2-v2-004-$$"
+TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-004.XXXXXX")"
+MOUNTPOINT="/tmp/agentfs-ct2-connector-004-$$"
 
 prepare_fixture
 MOUNT_LOG="$TMP_ROOT/appfs-mount.log"
-MOUNT_PID="$(start_appfs_v2_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-v2-004-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" 200 "" "")"
+MOUNT_PID="$(start_appfs_connector_mount "$MOUNT_LOG" "$AGENTFS_BIN" "ct2-connector-004-$$" "$TMP_ROOT" "$MOUNTPOINT" "aiim" 200 "" "")"
 
 SNAPSHOT_FILE="$MOUNTPOINT/aiim/chats/chat-001/messages.res.jsonl"
 [ -f "$SNAPSHOT_FILE" ] || fail "snapshot file missing before concurrent cold-miss probe"

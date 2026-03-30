@@ -2,10 +2,11 @@
 
 This directory contains shell-first contract tests for AppFS v0.1.
 
-For v0.2 Phase-B minimal skeleton tests, see:
+For connector and structure contract suites, see:
 
-1. `../test-appfs-v2-contract.sh`
-2. `../appfs-v2/README.md`
+1. `../test-appfs-connector-contract.sh`
+2. `../appfs-connector/README.md`
+3. `../test-appfs-structure-contract.sh`
 
 ## Run
 
