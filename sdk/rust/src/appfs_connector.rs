@@ -1,61 +1,297 @@
-use crate::appfs_connector_v2::{
-    connector_error_codes_v2, ActionExecutionModeV2, ActionStreamingPlanV2, AuthStatusV2,
-    ConnectorContextV2, ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2,
-    FetchLivePageRequestV2, FetchLivePageResponseV2, FetchSnapshotChunkRequestV2,
-    FetchSnapshotChunkResponseV2, HealthStatusV2, LiveModeV2, LivePageInfoV2, SnapshotMetaV2,
-    SnapshotRecordV2, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
-    SubmitActionResponseV2,
-};
-use crate::appfs_connector_v3::{
-    AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3, AppStructureSyncReasonV3,
-    AppStructureSyncResultV3, GetAppStructureRequestV3, GetAppStructureResponseV3,
-    RefreshAppStructureRequestV3, RefreshAppStructureResponseV3,
-};
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use thiserror::Error;
 
 /// Canonical AppFS connector SDK surface version after runtime closure cleanup.
 pub const APPFS_CONNECTOR_SDK_VERSION: &str = "0.4.0";
 
+/// Canonical connector error code constants.
 pub mod connector_error_codes {
-    pub use crate::appfs_connector_v2::connector_error_codes_v2::{
-        AUTH_EXPIRED, CACHE_MISS_EXPAND_FAILED, CURSOR_EXPIRED, CURSOR_INVALID, INTERNAL,
-        INVALID_ARGUMENT, INVALID_PAYLOAD, NOT_SUPPORTED, PERMISSION_DENIED, RATE_LIMITED,
-        RESOURCE_EXHAUSTED, SNAPSHOT_TOO_LARGE, TIMEOUT, UPSTREAM_UNAVAILABLE,
-    };
+    pub const INVALID_ARGUMENT: &str = "INVALID_ARGUMENT";
+    pub const INVALID_PAYLOAD: &str = "INVALID_PAYLOAD";
+    pub const NOT_SUPPORTED: &str = "NOT_SUPPORTED";
+    pub const SNAPSHOT_TOO_LARGE: &str = "SNAPSHOT_TOO_LARGE";
+    pub const CACHE_MISS_EXPAND_FAILED: &str = "CACHE_MISS_EXPAND_FAILED";
+    pub const INTERNAL: &str = "INTERNAL";
+    pub const UPSTREAM_UNAVAILABLE: &str = "UPSTREAM_UNAVAILABLE";
+    pub const RATE_LIMITED: &str = "RATE_LIMITED";
+    pub const AUTH_EXPIRED: &str = "AUTH_EXPIRED";
+    pub const PERMISSION_DENIED: &str = "PERMISSION_DENIED";
+    pub const RESOURCE_EXHAUSTED: &str = "RESOURCE_EXHAUSTED";
+    pub const TIMEOUT: &str = "TIMEOUT";
+    pub const CURSOR_INVALID: &str = "CURSOR_INVALID";
+    pub const CURSOR_EXPIRED: &str = "CURSOR_EXPIRED";
 }
 
-pub type ConnectorInfo = ConnectorInfoV2;
-pub type ConnectorContext = ConnectorContextV2;
-pub type ConnectorError = ConnectorErrorV2;
-pub type ConnectorTransport = ConnectorTransportV2;
-pub type AuthStatus = AuthStatusV2;
-pub type HealthStatus = HealthStatusV2;
-pub type SnapshotMeta = SnapshotMetaV2;
-pub type SnapshotResume = SnapshotResumeV2;
-pub type SnapshotRecord = SnapshotRecordV2;
-pub type FetchSnapshotChunkRequest = FetchSnapshotChunkRequestV2;
-pub type FetchSnapshotChunkResponse = FetchSnapshotChunkResponseV2;
-pub type FetchLivePageRequest = FetchLivePageRequestV2;
-pub type FetchLivePageResponse = FetchLivePageResponseV2;
-pub type LiveMode = LiveModeV2;
-pub type LivePageInfo = LivePageInfoV2;
-pub type SubmitActionRequest = SubmitActionRequestV2;
-pub type SubmitActionResponse = SubmitActionResponseV2;
-pub type SubmitActionOutcome = SubmitActionOutcomeV2;
-pub type ActionExecutionMode = ActionExecutionModeV2;
-pub type ActionStreamingPlan = ActionStreamingPlanV2;
-pub type GetAppStructureRequest = GetAppStructureRequestV3;
-pub type GetAppStructureResponse = GetAppStructureResponseV3;
-pub type RefreshAppStructureRequest = RefreshAppStructureRequestV3;
-pub type RefreshAppStructureResponse = RefreshAppStructureResponseV3;
-pub type AppStructureSyncReason = AppStructureSyncReasonV3;
-pub type AppStructureSyncResult = AppStructureSyncResultV3;
-pub type AppStructureSnapshot = AppStructureSnapshotV3;
-pub type AppStructureNode = AppStructureNodeV3;
-pub type AppStructureNodeKind = AppStructureNodeKindV3;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorTransport {
+    InProcess,
+    HttpBridge,
+    GrpcBridge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorInfo {
+    pub connector_id: String,
+    pub version: String,
+    pub app_id: String,
+    pub transport: ConnectorTransport,
+    pub supports_snapshot: bool,
+    pub supports_live: bool,
+    pub supports_action: bool,
+    #[serde(default)]
+    pub optional_features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorContext {
+    pub app_id: String,
+    pub session_id: String,
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStatus {
+    Valid,
+    Expired,
+    Refreshing,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthStatus {
+    pub healthy: bool,
+    pub auth_status: AuthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SnapshotMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum SnapshotResume {
+    Start,
+    Cursor(String),
+    Offset(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchSnapshotChunkRequest {
+    pub resource_path: String,
+    pub resume: SnapshotResume,
+    pub budget_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotRecord {
+    pub record_key: String,
+    pub ordering_key: String,
+    pub line: JsonValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FetchSnapshotChunkResponse {
+    pub records: Vec<SnapshotRecord>,
+    pub emitted_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FetchLivePageRequest {
+    pub resource_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveMode {
+    Live,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LivePageInfo {
+    pub handle_id: String,
+    pub page_no: u32,
+    pub has_more: bool,
+    pub mode: LiveMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FetchLivePageResponse {
+    pub items: Vec<JsonValue>,
+    pub page: LivePageInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionExecutionMode {
+    Inline,
+    Streaming,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubmitActionRequest {
+    pub path: String,
+    pub payload: JsonValue,
+    pub execution_mode: ActionExecutionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionStreamingPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_content: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_content: Option<JsonValue>,
+    pub terminal_content: JsonValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubmitActionOutcome {
+    Completed { content: JsonValue },
+    Streaming { plan: ActionStreamingPlan },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubmitActionResponse {
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_duration_ms: Option<u32>,
+    pub outcome: SubmitActionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+#[error("{code}: {message}")]
+pub struct ConnectorError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppStructureSyncReason {
+    Initialize,
+    EnterScope,
+    Refresh,
+    Recover,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetAppStructureRequest {
+    pub app_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshAppStructureRequest {
+    pub app_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_revision: Option<String>,
+    pub reason: AppStructureSyncReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_action_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppStructureNodeKind {
+    Directory,
+    ActionFile,
+    SnapshotResource,
+    LiveResource,
+    StaticJsonResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppStructureNode {
+    pub path: String,
+    pub kind: AppStructureNodeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_entry: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_content: Option<JsonValue>,
+    #[serde(default)]
+    pub mutable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppStructureSnapshot {
+    pub app_id: String,
+    pub revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_scope: Option<String>,
+    #[serde(default)]
+    pub ownership_prefixes: Vec<String>,
+    pub nodes: Vec<AppStructureNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AppStructureSyncResult {
+    Unchanged {
+        app_id: String,
+        revision: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_scope: Option<String>,
+    },
+    Snapshot {
+        snapshot: AppStructureSnapshot,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetAppStructureResponse {
+    pub result: AppStructureSyncResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshAppStructureResponse {
+    pub result: AppStructureSyncResult,
+}
 
 fn not_supported_structure_sync() -> ConnectorError {
     ConnectorError {
-        code: connector_error_codes_v2::NOT_SUPPORTED.to_string(),
+        code: connector_error_codes::NOT_SUPPORTED.to_string(),
         message: "app structure sync is not supported by this connector".to_string(),
         retryable: false,
         details: None,
@@ -63,9 +299,6 @@ fn not_supported_structure_sync() -> ConnectorError {
 }
 
 /// Canonical AppFS connector trait used by the runtime and mount-side read-through.
-///
-/// The HTTP and gRPC bridge implementations may continue to speak their current V2/V3 wire
-/// surfaces internally; adapters map those protocols into this unified SDK trait.
 pub trait AppConnector: Send {
     fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError>;
 
@@ -113,5 +346,49 @@ pub trait AppConnector: Send {
         _ctx: &ConnectorContext,
     ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
         Err(not_supported_structure_sync())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connector_error_codes as code;
+
+    #[test]
+    fn connector_error_codes_match_expected_set() {
+        let actual = vec![
+            code::INVALID_ARGUMENT,
+            code::INVALID_PAYLOAD,
+            code::NOT_SUPPORTED,
+            code::SNAPSHOT_TOO_LARGE,
+            code::CACHE_MISS_EXPAND_FAILED,
+            code::INTERNAL,
+            code::UPSTREAM_UNAVAILABLE,
+            code::RATE_LIMITED,
+            code::AUTH_EXPIRED,
+            code::PERMISSION_DENIED,
+            code::RESOURCE_EXHAUSTED,
+            code::TIMEOUT,
+            code::CURSOR_INVALID,
+            code::CURSOR_EXPIRED,
+        ];
+
+        let expected = vec![
+            "INVALID_ARGUMENT",
+            "INVALID_PAYLOAD",
+            "NOT_SUPPORTED",
+            "SNAPSHOT_TOO_LARGE",
+            "CACHE_MISS_EXPAND_FAILED",
+            "INTERNAL",
+            "UPSTREAM_UNAVAILABLE",
+            "RATE_LIMITED",
+            "AUTH_EXPIRED",
+            "PERMISSION_DENIED",
+            "RESOURCE_EXHAUSTED",
+            "TIMEOUT",
+            "CURSOR_INVALID",
+            "CURSOR_EXPIRED",
+        ];
+
+        assert_eq!(actual, expected);
     }
 }

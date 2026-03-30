@@ -1,8 +1,6 @@
 pub mod appfs_adapter;
 pub mod appfs_adapter_testkit;
 pub mod appfs_connector;
-pub mod appfs_connector_v2;
-pub mod appfs_connector_v3;
 pub mod appfs_demo_adapter;
 pub mod connection_pool;
 pub mod error;
@@ -41,23 +39,6 @@ pub use appfs_connector::{
     LiveMode, LivePageInfo, RefreshAppStructureRequest, RefreshAppStructureResponse, SnapshotMeta,
     SnapshotRecord, SnapshotResume, SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
     APPFS_CONNECTOR_SDK_VERSION,
-};
-pub use appfs_connector_v2::connector_error_codes_v2;
-pub use appfs_connector_v2::{
-    ActionExecutionModeV2, ActionStreamingPlanV2, AppConnectorV2, AuthStatusV2, ConnectorContextV2,
-    ConnectorErrorV2, ConnectorInfoV2, ConnectorTransportV2, FetchLivePageRequestV2,
-    FetchLivePageResponseV2, FetchSnapshotChunkRequestV2, FetchSnapshotChunkResponseV2,
-    HealthStatusV2, LiveModeV2, LivePageInfoV2, SnapshotMetaV2, SnapshotRecordV2, SnapshotResumeV2,
-    SubmitActionOutcomeV2, SubmitActionRequestV2, SubmitActionResponseV2,
-    APPFS_CONNECTOR_SDK_V2_VERSION,
-};
-pub use appfs_connector_v3::{
-    AppConnectorV3, AppStructureNodeKindV3, AppStructureNodeV3, AppStructureSnapshotV3,
-    AppStructureSyncReasonV3, AppStructureSyncResultV3, ConnectorContextV3, ConnectorErrorV3,
-    ConnectorInfoV3, FetchLivePageRequestV3, FetchLivePageResponseV3, FetchSnapshotChunkRequestV3,
-    FetchSnapshotChunkResponseV3, GetAppStructureRequestV3, GetAppStructureResponseV3,
-    HealthStatusV3, RefreshAppStructureRequestV3, RefreshAppStructureResponseV3, SnapshotMetaV3,
-    SubmitActionRequestV3, SubmitActionResponseV3, APPFS_CONNECTOR_SDK_V3_VERSION,
 };
 pub use appfs_demo_adapter::{DemoAppAdapterV1, DemoAppConnector};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

@@ -58,40 +58,8 @@ pub(super) struct GrpcBridgeConnector {
     circuit_breaker: BridgeCircuitBreaker,
 }
 
-type ConnectorInfoV2 = ConnectorInfo;
-type ConnectorContextV2 = ConnectorContext;
-type ConnectorContextV3 = ConnectorContext;
 type ConnectorErrorV2 = ConnectorError;
 type ConnectorErrorV3 = ConnectorError;
-type ConnectorTransportV2 = ConnectorTransport;
-type AuthStatusV2 = AuthStatus;
-type HealthStatusV2 = HealthStatus;
-type SnapshotMetaV2 = SnapshotMeta;
-type SnapshotResumeV2 = SnapshotResume;
-type SnapshotRecordV2 = SnapshotRecord;
-type FetchSnapshotChunkRequestV2 = FetchSnapshotChunkRequest;
-type FetchSnapshotChunkResponseV2 = FetchSnapshotChunkResponse;
-type FetchLivePageRequestV2 = FetchLivePageRequest;
-type FetchLivePageResponseV2 = FetchLivePageResponse;
-type LiveModeV2 = LiveMode;
-type LivePageInfoV2 = LivePageInfo;
-type SubmitActionRequestV2 = ConnectorSubmitActionRequest;
-type SubmitActionResponseV2 = ConnectorSubmitActionResponse;
-type SubmitActionOutcomeV2 = SubmitActionOutcome;
-type ActionExecutionModeV2 = ActionExecutionMode;
-type ActionStreamingPlanV2 = ActionStreamingPlan;
-type GetAppStructureRequestV3 = GetAppStructureRequest;
-type GetAppStructureResponseV3 = GetAppStructureResponse;
-type RefreshAppStructureRequestV3 = RefreshAppStructureRequest;
-type RefreshAppStructureResponseV3 = RefreshAppStructureResponse;
-type AppStructureSyncReasonV3 = AppStructureSyncReason;
-type AppStructureSyncResultV3 = AppStructureSyncResult;
-type AppStructureSnapshotV3 = AppStructureSnapshot;
-type AppStructureNodeV3 = AppStructureNode;
-type AppStructureNodeKindV3 = AppStructureNodeKind;
-
-#[cfg(test)]
-type GrpcBridgeConnectorV2 = GrpcBridgeConnector;
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl GrpcBridgeAdapterV1 {
@@ -931,7 +899,7 @@ fn map_grpc_status_v3(
     }
 }
 
-fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2 {
+fn to_proto_context_v2(ctx: &ConnectorContext) -> proto_v2::ConnectorContextV2 {
     proto_v2::ConnectorContextV2 {
         app_id: ctx.app_id.clone(),
         session_id: ctx.session_id.clone(),
@@ -941,7 +909,7 @@ fn to_proto_context_v2(ctx: &ConnectorContextV2) -> proto_v2::ConnectorContextV2
     }
 }
 
-fn to_proto_context_v3(ctx: &ConnectorContextV3) -> proto_v3::ConnectorContextV3 {
+fn to_proto_context_v3(ctx: &ConnectorContext) -> proto_v3::ConnectorContextV3 {
     proto_v3::ConnectorContextV3 {
         app_id: ctx.app_id.clone(),
         session_id: ctx.session_id.clone(),
@@ -952,7 +920,7 @@ fn to_proto_context_v3(ctx: &ConnectorContextV3) -> proto_v3::ConnectorContextV3
 }
 
 fn to_proto_get_app_structure_request_v3(
-    request: GetAppStructureRequestV3,
+    request: GetAppStructureRequest,
 ) -> proto_v3::GetAppStructureRequestV3 {
     proto_v3::GetAppStructureRequestV3 {
         app_id: request.app_id,
@@ -961,17 +929,13 @@ fn to_proto_get_app_structure_request_v3(
 }
 
 fn to_proto_refresh_app_structure_request_v3(
-    request: RefreshAppStructureRequestV3,
+    request: RefreshAppStructureRequest,
 ) -> proto_v3::RefreshAppStructureRequestV3 {
     let reason = match request.reason {
-        AppStructureSyncReasonV3::Initialize => {
-            proto_v3::AppStructureSyncReasonV3::Initialize as i32
-        }
-        AppStructureSyncReasonV3::EnterScope => {
-            proto_v3::AppStructureSyncReasonV3::EnterScope as i32
-        }
-        AppStructureSyncReasonV3::Refresh => proto_v3::AppStructureSyncReasonV3::Refresh as i32,
-        AppStructureSyncReasonV3::Recover => proto_v3::AppStructureSyncReasonV3::Recover as i32,
+        AppStructureSyncReason::Initialize => proto_v3::AppStructureSyncReasonV3::Initialize as i32,
+        AppStructureSyncReason::EnterScope => proto_v3::AppStructureSyncReasonV3::EnterScope as i32,
+        AppStructureSyncReason::Refresh => proto_v3::AppStructureSyncReasonV3::Refresh as i32,
+        AppStructureSyncReason::Recover => proto_v3::AppStructureSyncReasonV3::Recover as i32,
     };
     proto_v3::RefreshAppStructureRequestV3 {
         app_id: request.app_id,
@@ -984,7 +948,7 @@ fn to_proto_refresh_app_structure_request_v3(
 
 fn from_proto_connector_info(
     info: proto_v2::ConnectorInfoV2,
-) -> Result<ConnectorInfoV2, ConnectorErrorV2> {
+) -> Result<ConnectorInfo, ConnectorError> {
     let transport = proto_v2::ConnectorTransportV2::try_from(info.transport).map_err(|_| {
         malformed_payload(
             "connector_info.transport",
@@ -992,9 +956,9 @@ fn from_proto_connector_info(
         )
     })?;
     let transport = match transport {
-        proto_v2::ConnectorTransportV2::InProcess => ConnectorTransportV2::InProcess,
-        proto_v2::ConnectorTransportV2::HttpBridge => ConnectorTransportV2::HttpBridge,
-        proto_v2::ConnectorTransportV2::GrpcBridge => ConnectorTransportV2::GrpcBridge,
+        proto_v2::ConnectorTransportV2::InProcess => ConnectorTransport::InProcess,
+        proto_v2::ConnectorTransportV2::HttpBridge => ConnectorTransport::HttpBridge,
+        proto_v2::ConnectorTransportV2::GrpcBridge => ConnectorTransport::GrpcBridge,
         proto_v2::ConnectorTransportV2::Unspecified => {
             return Err(malformed_payload(
                 "connector_info.transport",
@@ -1002,7 +966,7 @@ fn from_proto_connector_info(
             ))
         }
     };
-    Ok(ConnectorInfoV2 {
+    Ok(ConnectorInfo {
         connector_id: info.connector_id,
         version: info.version,
         app_id: info.app_id,
@@ -1016,7 +980,7 @@ fn from_proto_connector_info(
 
 fn from_proto_health_status(
     status: proto_v2::HealthStatusV2,
-) -> Result<HealthStatusV2, ConnectorErrorV2> {
+) -> Result<HealthStatus, ConnectorError> {
     let auth = proto_v2::AuthStatusV2::try_from(status.auth_status).map_err(|_| {
         malformed_payload(
             "health.auth_status",
@@ -1024,10 +988,10 @@ fn from_proto_health_status(
         )
     })?;
     let auth_status = match auth {
-        proto_v2::AuthStatusV2::Valid => AuthStatusV2::Valid,
-        proto_v2::AuthStatusV2::Expired => AuthStatusV2::Expired,
-        proto_v2::AuthStatusV2::Refreshing => AuthStatusV2::Refreshing,
-        proto_v2::AuthStatusV2::Invalid => AuthStatusV2::Invalid,
+        proto_v2::AuthStatusV2::Valid => AuthStatus::Valid,
+        proto_v2::AuthStatusV2::Expired => AuthStatus::Expired,
+        proto_v2::AuthStatusV2::Refreshing => AuthStatus::Refreshing,
+        proto_v2::AuthStatusV2::Invalid => AuthStatus::Invalid,
         proto_v2::AuthStatusV2::Unspecified => {
             return Err(malformed_payload(
                 "health.auth_status",
@@ -1035,7 +999,7 @@ fn from_proto_health_status(
             ))
         }
     };
-    Ok(HealthStatusV2 {
+    Ok(HealthStatus {
         healthy: status.healthy,
         auth_status,
         message: status.message,
@@ -1043,8 +1007,8 @@ fn from_proto_health_status(
     })
 }
 
-fn from_proto_snapshot_meta(meta: proto_v2::SnapshotMetaV2) -> SnapshotMetaV2 {
-    SnapshotMetaV2 {
+fn from_proto_snapshot_meta(meta: proto_v2::SnapshotMetaV2) -> SnapshotMeta {
+    SnapshotMeta {
         size_bytes: meta.size_bytes,
         revision: meta.revision,
         last_modified: meta.last_modified,
@@ -1053,16 +1017,16 @@ fn from_proto_snapshot_meta(meta: proto_v2::SnapshotMetaV2) -> SnapshotMetaV2 {
 }
 
 fn to_proto_fetch_snapshot_chunk_request(
-    request: FetchSnapshotChunkRequestV2,
+    request: FetchSnapshotChunkRequest,
 ) -> proto_v2::FetchSnapshotChunkRequestV2 {
     let resume = match request.resume {
-        SnapshotResumeV2::Start => proto_v2::SnapshotResumeV2 {
+        SnapshotResume::Start => proto_v2::SnapshotResumeV2 {
             kind: Some(proto_v2::snapshot_resume_v2::Kind::Start(true)),
         },
-        SnapshotResumeV2::Cursor(cursor) => proto_v2::SnapshotResumeV2 {
+        SnapshotResume::Cursor(cursor) => proto_v2::SnapshotResumeV2 {
             kind: Some(proto_v2::snapshot_resume_v2::Kind::Cursor(cursor)),
         },
-        SnapshotResumeV2::Offset(offset) => proto_v2::SnapshotResumeV2 {
+        SnapshotResume::Offset(offset) => proto_v2::SnapshotResumeV2 {
             kind: Some(proto_v2::snapshot_resume_v2::Kind::Offset(offset)),
         },
     };
@@ -1075,7 +1039,7 @@ fn to_proto_fetch_snapshot_chunk_request(
 
 fn from_proto_fetch_snapshot_chunk_response(
     response: proto_v2::FetchSnapshotChunkResponseV2,
-) -> Result<FetchSnapshotChunkResponseV2, ConnectorErrorV2> {
+) -> Result<FetchSnapshotChunkResponse, ConnectorError> {
     let mut records = Vec::with_capacity(response.records.len());
     for record in response.records {
         if record.line_json.trim().is_empty() {
@@ -1086,13 +1050,13 @@ fn from_proto_fetch_snapshot_chunk_response(
                 details: None,
             });
         }
-        records.push(SnapshotRecordV2 {
+        records.push(SnapshotRecord {
             record_key: record.record_key,
             ordering_key: record.ordering_key,
             line: parse_json_object_text_v2(&record.line_json, "snapshot.records[].line_json")?,
         });
     }
-    Ok(FetchSnapshotChunkResponseV2 {
+    Ok(FetchSnapshotChunkResponse {
         records,
         emitted_bytes: response.emitted_bytes,
         next_cursor: parse_optional_cursor_v2(response.next_cursor, "snapshot.next_cursor")?,
@@ -1102,7 +1066,7 @@ fn from_proto_fetch_snapshot_chunk_response(
 }
 
 fn to_proto_fetch_live_page_request(
-    request: FetchLivePageRequestV2,
+    request: FetchLivePageRequest,
 ) -> proto_v2::FetchLivePageRequestV2 {
     proto_v2::FetchLivePageRequestV2 {
         resource_path: request.resource_path,
@@ -1114,7 +1078,7 @@ fn to_proto_fetch_live_page_request(
 
 fn from_proto_fetch_live_page_response(
     response: proto_v2::FetchLivePageResponseV2,
-) -> Result<FetchLivePageResponseV2, ConnectorErrorV2> {
+) -> Result<FetchLivePageResponse, ConnectorError> {
     let page = response.page.ok_or_else(|| ConnectorErrorV2 {
         code: connector_error_codes::INTERNAL.to_string(),
         message: "live page response missing page".to_string(),
@@ -1125,9 +1089,9 @@ fn from_proto_fetch_live_page_response(
     for item in response.items_json {
         items.push(parse_json_text_v2(&item, "live.items_json[]")?);
     }
-    Ok(FetchLivePageResponseV2 {
+    Ok(FetchLivePageResponse {
         items,
-        page: LivePageInfoV2 {
+        page: LivePageInfo {
             handle_id: page.handle_id,
             page_no: page.page_no,
             has_more: page.has_more,
@@ -1137,7 +1101,7 @@ fn from_proto_fetch_live_page_response(
                     format!("unknown enum value {}", page.mode),
                 )
             })? {
-                proto_v2::LiveModeV2::Live => LiveModeV2::Live,
+                proto_v2::LiveModeV2::Live => LiveMode::Live,
                 proto_v2::LiveModeV2::Unspecified => {
                     return Err(malformed_payload(
                         "live.page.mode",
@@ -1153,8 +1117,8 @@ fn from_proto_fetch_live_page_response(
 }
 
 fn to_proto_submit_action_request(
-    request: SubmitActionRequestV2,
-) -> Result<proto_v2::SubmitActionRequestV2, ConnectorErrorV2> {
+    request: ConnectorSubmitActionRequest,
+) -> Result<proto_v2::SubmitActionRequestV2, ConnectorError> {
     Ok(proto_v2::SubmitActionRequestV2 {
         path: request.path,
         payload_json: serde_json::to_string(&request.payload).map_err(|err| ConnectorErrorV2 {
@@ -1164,15 +1128,15 @@ fn to_proto_submit_action_request(
             details: None,
         })?,
         execution_mode: match request.execution_mode {
-            ActionExecutionModeV2::Inline => proto_v2::ActionExecutionModeV2::Inline as i32,
-            ActionExecutionModeV2::Streaming => proto_v2::ActionExecutionModeV2::Streaming as i32,
+            ActionExecutionMode::Inline => proto_v2::ActionExecutionModeV2::Inline as i32,
+            ActionExecutionMode::Streaming => proto_v2::ActionExecutionModeV2::Streaming as i32,
         },
     })
 }
 
 fn from_proto_submit_action_response(
     response: proto_v2::SubmitActionResponseV2,
-) -> Result<SubmitActionResponseV2, ConnectorErrorV2> {
+) -> Result<ConnectorSubmitActionResponse, ConnectorError> {
     let outcome = response.outcome.ok_or_else(|| ConnectorErrorV2 {
         code: connector_error_codes::INTERNAL.to_string(),
         message: "submit action response missing outcome".to_string(),
@@ -1181,7 +1145,7 @@ fn from_proto_submit_action_response(
     })?;
     let mapped = match outcome.kind {
         Some(proto_v2::submit_action_outcome_v2::Kind::CompletedContentJson(content)) => {
-            SubmitActionOutcomeV2::Completed {
+            SubmitActionOutcome::Completed {
                 content: parse_json_text_v2(&content, "submit_action.completed_content_json")?,
             }
         }
@@ -1214,8 +1178,8 @@ fn from_proto_submit_action_response(
             } else {
                 None
             };
-            SubmitActionOutcomeV2::Streaming {
-                plan: ActionStreamingPlanV2 {
+            SubmitActionOutcome::Streaming {
+                plan: ActionStreamingPlan {
                     accepted_content: accepted,
                     progress_content: progress,
                     terminal_content: terminal,
@@ -1232,15 +1196,15 @@ fn from_proto_submit_action_response(
         }
     };
 
-    Ok(SubmitActionResponseV2 {
+    Ok(ConnectorSubmitActionResponse {
         request_id: response.request_id,
         estimated_duration_ms: response.estimated_duration_ms,
         outcome: mapped,
     })
 }
 
-fn from_proto_connector_error(err: proto_v2::ConnectorErrorV2) -> ConnectorErrorV2 {
-    ConnectorErrorV2 {
+fn from_proto_connector_error(err: proto_v2::ConnectorErrorV2) -> ConnectorError {
+    ConnectorError {
         code: err.code,
         message: err.message,
         retryable: err.retryable,
@@ -1248,8 +1212,8 @@ fn from_proto_connector_error(err: proto_v2::ConnectorErrorV2) -> ConnectorError
     }
 }
 
-fn from_proto_connector_error_v3(err: proto_v3::ConnectorErrorV3) -> ConnectorErrorV3 {
-    ConnectorErrorV3 {
+fn from_proto_connector_error_v3(err: proto_v3::ConnectorErrorV3) -> ConnectorError {
+    ConnectorError {
         code: err.code,
         message: err.message,
         retryable: err.retryable,
@@ -1259,33 +1223,33 @@ fn from_proto_connector_error_v3(err: proto_v3::ConnectorErrorV3) -> ConnectorEr
 
 fn from_proto_get_app_structure_response_v3(
     response: proto_v3::AppStructureSyncResultV3,
-) -> Result<GetAppStructureResponseV3, ConnectorErrorV3> {
-    Ok(GetAppStructureResponseV3 {
+) -> Result<GetAppStructureResponse, ConnectorError> {
+    Ok(GetAppStructureResponse {
         result: from_proto_structure_sync_result_v3(response)?,
     })
 }
 
 fn from_proto_refresh_app_structure_response_v3(
     response: proto_v3::AppStructureSyncResultV3,
-) -> Result<RefreshAppStructureResponseV3, ConnectorErrorV3> {
-    Ok(RefreshAppStructureResponseV3 {
+) -> Result<RefreshAppStructureResponse, ConnectorError> {
+    Ok(RefreshAppStructureResponse {
         result: from_proto_structure_sync_result_v3(response)?,
     })
 }
 
 fn from_proto_structure_sync_result_v3(
     response: proto_v3::AppStructureSyncResultV3,
-) -> Result<AppStructureSyncResultV3, ConnectorErrorV3> {
+) -> Result<AppStructureSyncResult, ConnectorError> {
     match response.kind {
         Some(proto_v3::app_structure_sync_result_v3::Kind::Unchanged(unchanged)) => {
-            Ok(AppStructureSyncResultV3::Unchanged {
+            Ok(AppStructureSyncResult::Unchanged {
                 app_id: unchanged.app_id,
                 revision: unchanged.revision,
                 active_scope: unchanged.active_scope,
             })
         }
         Some(proto_v3::app_structure_sync_result_v3::Kind::Snapshot(snapshot)) => {
-            Ok(AppStructureSyncResultV3::Snapshot {
+            Ok(AppStructureSyncResult::Snapshot {
                 snapshot: from_proto_structure_snapshot_v3(snapshot.snapshot.ok_or_else(
                     || {
                         malformed_payload_v3(
@@ -1305,7 +1269,7 @@ fn from_proto_structure_sync_result_v3(
 
 fn from_proto_structure_snapshot_v3(
     snapshot: proto_v3::AppStructureSnapshotV3,
-) -> Result<AppStructureSnapshotV3, ConnectorErrorV3> {
+) -> Result<AppStructureSnapshot, ConnectorError> {
     if snapshot.revision.trim().is_empty() {
         return Err(malformed_payload_v3(
             "structure.snapshot.revision",
@@ -1316,7 +1280,7 @@ fn from_proto_structure_snapshot_v3(
     for node in snapshot.nodes {
         nodes.push(from_proto_structure_node_v3(node)?);
     }
-    Ok(AppStructureSnapshotV3 {
+    Ok(AppStructureSnapshot {
         app_id: snapshot.app_id,
         revision: snapshot.revision,
         active_scope: snapshot.active_scope,
@@ -1327,7 +1291,7 @@ fn from_proto_structure_snapshot_v3(
 
 fn from_proto_structure_node_v3(
     node: proto_v3::AppStructureNodeV3,
-) -> Result<AppStructureNodeV3, ConnectorErrorV3> {
+) -> Result<AppStructureNode, ConnectorError> {
     if node.path.trim().is_empty() {
         return Err(malformed_payload_v3(
             "structure.snapshot.nodes[].path",
@@ -1340,14 +1304,14 @@ fn from_proto_structure_node_v3(
             format!("unknown enum value {}", node.kind),
         )
     })? {
-        proto_v3::AppStructureNodeKindV3::Directory => AppStructureNodeKindV3::Directory,
-        proto_v3::AppStructureNodeKindV3::ActionFile => AppStructureNodeKindV3::ActionFile,
+        proto_v3::AppStructureNodeKindV3::Directory => AppStructureNodeKind::Directory,
+        proto_v3::AppStructureNodeKindV3::ActionFile => AppStructureNodeKind::ActionFile,
         proto_v3::AppStructureNodeKindV3::SnapshotResource => {
-            AppStructureNodeKindV3::SnapshotResource
+            AppStructureNodeKind::SnapshotResource
         }
-        proto_v3::AppStructureNodeKindV3::LiveResource => AppStructureNodeKindV3::LiveResource,
+        proto_v3::AppStructureNodeKindV3::LiveResource => AppStructureNodeKind::LiveResource,
         proto_v3::AppStructureNodeKindV3::StaticJsonResource => {
-            AppStructureNodeKindV3::StaticJsonResource
+            AppStructureNodeKind::StaticJsonResource
         }
         proto_v3::AppStructureNodeKindV3::Unspecified => {
             return Err(malformed_payload_v3(
@@ -1370,7 +1334,7 @@ fn from_proto_structure_node_v3(
         )?),
         None => None,
     };
-    Ok(AppStructureNodeV3 {
+    Ok(AppStructureNode {
         path: node.path,
         kind,
         manifest_entry,
@@ -1380,8 +1344,8 @@ fn from_proto_structure_node_v3(
     })
 }
 
-fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
-    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV2 {
+fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorError> {
+    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorError {
         code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc invalid json in {field}: {err}"),
         retryable: true,
@@ -1389,8 +1353,8 @@ fn parse_json_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErr
     })
 }
 
-fn parse_json_text_v3(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV3> {
-    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorErrorV3 {
+fn parse_json_text_v3(text: &str, field: &str) -> Result<JsonValue, ConnectorError> {
+    serde_json::from_str::<JsonValue>(text).map_err(|err| ConnectorError {
         code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc invalid json in {field}: {err}"),
         retryable: true,
@@ -1398,7 +1362,7 @@ fn parse_json_text_v3(text: &str, field: &str) -> Result<JsonValue, ConnectorErr
     })
 }
 
-fn parse_json_object_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorErrorV2> {
+fn parse_json_object_text_v2(text: &str, field: &str) -> Result<JsonValue, ConnectorError> {
     let value = parse_json_text_v2(text, field)?;
     if !value.is_object() {
         return Err(malformed_payload(
@@ -1412,7 +1376,7 @@ fn parse_json_object_text_v2(text: &str, field: &str) -> Result<JsonValue, Conne
 fn parse_optional_cursor_v2(
     value: Option<String>,
     field: &str,
-) -> Result<Option<String>, ConnectorErrorV2> {
+) -> Result<Option<String>, ConnectorError> {
     match value {
         Some(s) if s.is_empty() => Err(malformed_payload(
             field,
@@ -1423,8 +1387,8 @@ fn parse_optional_cursor_v2(
     }
 }
 
-fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV2 {
-    ConnectorErrorV2 {
+fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorError {
+    ConnectorError {
         code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc malformed payload in {field}: {reason}"),
         retryable: false,
@@ -1432,8 +1396,8 @@ fn malformed_payload(field: &str, reason: impl std::fmt::Display) -> ConnectorEr
     }
 }
 
-fn malformed_payload_v3(field: &str, reason: impl std::fmt::Display) -> ConnectorErrorV3 {
-    ConnectorErrorV3 {
+fn malformed_payload_v3(field: &str, reason: impl std::fmt::Display) -> ConnectorError {
+    ConnectorError {
         code: connector_error_codes::INTERNAL.to_string(),
         message: format!("bridge grpc malformed payload in {field}: {reason}"),
         retryable: false,
@@ -1457,14 +1421,15 @@ where
 mod tests {
     use super::{
         parse_json_text, to_proto_execution_mode, to_proto_input_mode, GrpcBridgeAdapterV1,
-        GrpcBridgeConnectorV2,
+        GrpcBridgeConnector,
     };
     use agentfs_sdk::{
-        ActionExecutionModeV2, AdapterControlActionV1, AdapterControlOutcomeV1,
+        ActionExecutionMode, AdapterControlActionV1, AdapterControlOutcomeV1,
         AdapterExecutionModeV1, AdapterInputModeV1, AdapterSubmitOutcomeV1, AppAdapterV1,
-        AppConnector, AppStructureSyncReasonV3, ConnectorContextV2, FetchLivePageRequestV2,
-        FetchSnapshotChunkRequestV2, GetAppStructureRequestV3, RefreshAppStructureRequestV3,
-        RequestContextV1, SnapshotResumeV2, SubmitActionOutcomeV2, SubmitActionRequestV2,
+        AppConnector, AppStructureSyncReason, AppStructureSyncResult, ConnectorContext,
+        FetchLivePageRequest, FetchSnapshotChunkRequest, GetAppStructureRequest,
+        RefreshAppStructureRequest, RequestContextV1, SnapshotResume, SubmitActionOutcome,
+        SubmitActionRequest,
     };
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -2065,8 +2030,8 @@ mod tests {
         }
     }
 
-    fn test_ctx_v2() -> ConnectorContextV2 {
-        ConnectorContextV2 {
+    fn test_ctx_v2() -> ConnectorContext {
+        ConnectorContext {
             app_id: "aiim".to_string(),
             session_id: "sess-v2".to_string(),
             request_id: "req-v2".to_string(),
@@ -2265,7 +2230,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn grpc_bridge_connector_v2_roundtrip() {
         let (addr, shutdown) = spawn_test_grpc_v2_server().await;
-        let mut connector = GrpcBridgeConnectorV2::new(
+        let mut connector = GrpcBridgeConnector::new(
             "aiim".to_string(),
             format!("http://{}", addr),
             Duration::from_millis(1000),
@@ -2287,9 +2252,9 @@ mod tests {
 
         let first = connector
             .fetch_snapshot_chunk(
-                FetchSnapshotChunkRequestV2 {
+                FetchSnapshotChunkRequest {
                     resource_path: "/messages".to_string(),
-                    resume: SnapshotResumeV2::Start,
+                    resume: SnapshotResume::Start,
                     budget_bytes: 1024,
                 },
                 &ctx,
@@ -2300,7 +2265,7 @@ mod tests {
 
         let live = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/messages".to_string(),
                     handle_id: None,
                     cursor: None,
@@ -2314,16 +2279,16 @@ mod tests {
 
         let inline = connector
             .submit_action(
-                SubmitActionRequestV2 {
+                SubmitActionRequest {
                     path: "/send_message.act".to_string(),
                     payload: serde_json::json!({"text":"hi"}),
-                    execution_mode: ActionExecutionModeV2::Inline,
+                    execution_mode: ActionExecutionMode::Inline,
                 },
                 &ctx,
             )
             .expect("submit inline");
         match inline.outcome {
-            SubmitActionOutcomeV2::Completed { content } => {
+            SubmitActionOutcome::Completed { content } => {
                 assert_eq!(content["ok"], true);
             }
             _ => panic!("expected completed outcome"),
@@ -2460,7 +2425,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn grpc_bridge_connector_v2_error_paths() {
         let (addr, shutdown) = spawn_test_grpc_v2_server().await;
-        let mut connector = GrpcBridgeConnectorV2::new(
+        let mut connector = GrpcBridgeConnector::new(
             "aiim".to_string(),
             format!("http://{}", addr),
             Duration::from_millis(1000),
@@ -2471,7 +2436,7 @@ mod tests {
 
         let cursor_err = connector
             .fetch_live_page(
-                FetchLivePageRequestV2 {
+                FetchLivePageRequest {
                     resource_path: "/messages".to_string(),
                     handle_id: None,
                     cursor: Some("invalid".to_string()),
@@ -2485,10 +2450,10 @@ mod tests {
 
         let rate_limit_err = connector
             .submit_action(
-                SubmitActionRequestV2 {
+                SubmitActionRequest {
                     path: "/messages/rate_limited.act".to_string(),
                     payload: serde_json::json!({"text":"hi"}),
-                    execution_mode: ActionExecutionModeV2::Inline,
+                    execution_mode: ActionExecutionMode::Inline,
                 },
                 &ctx,
             )
@@ -2502,7 +2467,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn grpc_bridge_connector_v3_structure_roundtrip() {
         let (addr, shutdown) = spawn_test_grpc_v2_v3_server().await;
-        let mut connector = GrpcBridgeConnectorV2::new(
+        let mut connector = GrpcBridgeConnector::new(
             "aiim".to_string(),
             format!("http://{}", addr),
             Duration::from_millis(1000),
@@ -2513,7 +2478,7 @@ mod tests {
 
         let initial = connector
             .get_app_structure(
-                GetAppStructureRequestV3 {
+                GetAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: None,
                 },
@@ -2521,7 +2486,7 @@ mod tests {
             )
             .expect("initial structure");
         match initial.result {
-            agentfs_sdk::AppStructureSyncResultV3::Snapshot { snapshot } => {
+            AppStructureSyncResult::Snapshot { snapshot } => {
                 assert_eq!(snapshot.active_scope.as_deref(), Some("chat-001"));
                 assert!(snapshot
                     .nodes
@@ -2533,10 +2498,10 @@ mod tests {
 
         let refreshed = connector
             .refresh_app_structure(
-                RefreshAppStructureRequestV3 {
+                RefreshAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: Some("demo-structure-chat-001".to_string()),
-                    reason: AppStructureSyncReasonV3::Refresh,
+                    reason: AppStructureSyncReason::Refresh,
                     target_scope: None,
                     trigger_action_path: Some("/_app/refresh_structure.act".to_string()),
                 },
@@ -2544,7 +2509,7 @@ mod tests {
             )
             .expect("unchanged refresh");
         match refreshed.result {
-            agentfs_sdk::AppStructureSyncResultV3::Unchanged {
+            AppStructureSyncResult::Unchanged {
                 revision,
                 active_scope,
                 ..
@@ -2557,10 +2522,10 @@ mod tests {
 
         let enter_scope = connector
             .refresh_app_structure(
-                RefreshAppStructureRequestV3 {
+                RefreshAppStructureRequest {
                     app_id: "aiim".to_string(),
                     known_revision: Some("demo-structure-chat-001".to_string()),
-                    reason: AppStructureSyncReasonV3::EnterScope,
+                    reason: AppStructureSyncReason::EnterScope,
                     target_scope: Some("chat-long".to_string()),
                     trigger_action_path: Some("/_app/enter_scope.act".to_string()),
                 },
@@ -2568,7 +2533,7 @@ mod tests {
             )
             .expect("enter scope refresh");
         match enter_scope.result {
-            agentfs_sdk::AppStructureSyncResultV3::Snapshot { snapshot } => {
+            AppStructureSyncResult::Snapshot { snapshot } => {
                 assert_eq!(snapshot.active_scope.as_deref(), Some("chat-long"));
                 assert!(snapshot
                     .nodes
