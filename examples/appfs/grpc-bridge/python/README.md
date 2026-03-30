@@ -5,10 +5,10 @@ This example provides:
 1. `grpc_server.py`: gRPC implementation of AppFS connector bridge services.
 2. `http_gateway.py`: legacy HTTP gateway exposing `/v1/submit-action` and `/v1/submit-control-action` (auxiliary example only).
 
-For v0.4 structure-sync parity, the direct gRPC endpoint now exposes:
+For structure-sync parity, the direct gRPC endpoint now exposes:
 
-1. `AppfsConnectorV2` for snapshot/live/action runtime traffic
-2. `AppfsConnectorV3` for app structure bootstrap and refresh
+1. `AppfsConnector` for snapshot/live/action runtime traffic
+2. `AppfsStructureConnector` for app structure bootstrap and refresh
 
 For runtime main path, use direct gRPC endpoint with `--adapter-grpc-endpoint`.
 
@@ -31,10 +31,10 @@ This generates:
 
 1. `appfs_adapter_v1_pb2.py`
 2. `appfs_adapter_v1_pb2_grpc.py`
-3. `appfs_connector_v2_pb2.py`
-4. `appfs_connector_v2_pb2_grpc.py`
-5. `appfs_connector_v3_pb2.py`
-6. `appfs_connector_v3_pb2_grpc.py`
+3. `appfs_connector_pb2.py`
+4. `appfs_connector_pb2_grpc.py`
+5. `appfs_structure_pb2.py`
+6. `appfs_structure_pb2_grpc.py`
 
 ## 3. Start gRPC server
 
@@ -44,7 +44,7 @@ python3 grpc_server.py
 
 Default listen: `127.0.0.1:50051`.
 
-## 4. Start AppFS runtime (gRPC V2 + V3 structure sync)
+## 4. Start AppFS runtime (gRPC connector + structure sync)
 
 ```bash
 cd cli

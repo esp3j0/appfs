@@ -81,7 +81,7 @@ impl AppAdapterV1 for DemoAppAdapterV1 {
         timeout: Duration,
     ) -> std::result::Result<AdapterSnapshotMetaV1, AdapterErrorV1> {
         let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
-        let delay_ms = std::env::var("APPFS_V2_PREWARM_DELAY_MS")
+        let delay_ms = std::env::var("APPFS_PREWARM_DELAY_MS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(0);
@@ -488,9 +488,8 @@ impl AppConnector for DemoAppConnector {
         }
 
         let timeout_ms = (timeout.as_millis().max(1)).min(u128::from(u64::MAX)) as u64;
-        let delay_ms = std::env::var("APPFS_V3_PREWARM_DELAY_MS")
+        let delay_ms = std::env::var("APPFS_PREWARM_DELAY_MS")
             .ok()
-            .or_else(|| std::env::var("APPFS_V2_PREWARM_DELAY_MS").ok())
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(0);
 
@@ -511,7 +510,7 @@ impl AppConnector for DemoAppConnector {
 
         Ok(SnapshotMeta {
             size_bytes: Some(5000),
-            revision: Some("demo-v2".to_string()),
+            revision: Some("demo-connector".to_string()),
             last_modified: Some("2026-03-24T00:00:00Z".to_string()),
             item_count: Some(2),
         })
@@ -699,7 +698,7 @@ impl AppConnector for DemoAppConnector {
             emitted_bytes,
             next_cursor,
             has_more,
-            revision: Some("demo-v2".to_string()),
+            revision: Some("demo-connector".to_string()),
         })
     }
 
@@ -957,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_info_health_and_prewarm() {
+    fn demo_connector_info_health_and_prewarm() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let info = connector
@@ -979,7 +978,7 @@ mod tests {
         assert!(!expired.healthy);
 
         let _guard = env_lock().lock().expect("env lock should be acquirable");
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
         let meta = connector
             .prewarm_snapshot_meta(
                 "/chats/chat-001/messages.res.jsonl",
@@ -987,11 +986,11 @@ mod tests {
                 &connector_ctx(None),
             )
             .expect("prewarm should succeed");
-        assert_eq!(meta.revision.as_deref(), Some("demo-v2"));
+        assert_eq!(meta.revision.as_deref(), Some("demo-connector"));
     }
 
     #[test]
-    fn demo_connector_v2_health_error_path() {
+    fn demo_connector_health_error_path() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
         let err = connector
             .health(&connector_ctx(Some("force-upstream-unavailable")))
@@ -1001,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_prewarm_error_paths() {
+    fn demo_connector_prewarm_error_paths() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let forbidden = connector
@@ -1014,7 +1013,7 @@ mod tests {
         assert_eq!(forbidden.code, "PERMISSION_DENIED");
 
         let _guard = env_lock().lock().expect("env lock should be acquirable");
-        std::env::set_var("APPFS_V3_PREWARM_DELAY_MS", "30");
+        std::env::set_var("APPFS_PREWARM_DELAY_MS", "30");
         let timeout = connector
             .prewarm_snapshot_meta(
                 "/chats/chat-001/messages.res.jsonl",
@@ -1022,19 +1021,18 @@ mod tests {
                 &connector_ctx(None),
             )
             .expect_err("timeout path should be mapped");
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
 
         assert_eq!(timeout.code, "TIMEOUT");
         assert!(timeout.retryable);
     }
 
     #[test]
-    fn demo_connector_v2_prewarm_accepts_v2_env_alias() {
+    fn demo_connector_prewarm_uses_canonical_env() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
         let _guard = env_lock().lock().expect("env lock should be acquirable");
 
-        std::env::remove_var("APPFS_V3_PREWARM_DELAY_MS");
-        std::env::set_var("APPFS_V2_PREWARM_DELAY_MS", "30");
+        std::env::set_var("APPFS_PREWARM_DELAY_MS", "30");
 
         let timeout = connector
             .prewarm_snapshot_meta(
@@ -1042,15 +1040,15 @@ mod tests {
                 Duration::from_millis(5),
                 &connector_ctx(None),
             )
-            .expect_err("v2 env alias should still drive timeout path");
+            .expect_err("canonical env should drive timeout path");
 
-        std::env::remove_var("APPFS_V2_PREWARM_DELAY_MS");
+        std::env::remove_var("APPFS_PREWARM_DELAY_MS");
         assert_eq!(timeout.code, "TIMEOUT");
         assert!(timeout.retryable);
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_success_and_error() {
+    fn demo_connector_snapshot_success_and_error() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let chunk = connector
@@ -1094,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_001_materializes_100_records() {
+    fn demo_connector_snapshot_chat_001_materializes_100_records() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
         let mut resume = SnapshotResume::Start;
         let mut total = 0usize;
@@ -1125,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_long_returns_upstream_error() {
+    fn demo_connector_snapshot_chat_long_returns_upstream_error() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
         let err = connector
             .fetch_snapshot_chunk(
@@ -1142,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_snapshot_chat_oversize_yields_large_materializable_chunk() {
+    fn demo_connector_snapshot_chat_oversize_yields_large_materializable_chunk() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
         let first = connector
             .fetch_snapshot_chunk(
@@ -1175,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_live_success_and_cursor_errors() {
+    fn demo_connector_live_success_and_cursor_errors() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let page = connector
@@ -1220,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v2_submit_success_and_error() {
+    fn demo_connector_submit_success_and_error() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let inline = connector
@@ -1273,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn demo_connector_v3_structure_get_and_refresh() {
+    fn demo_connector_structure_get_and_refresh() {
         let mut connector = DemoAppConnector::new("aiim".to_string());
 
         let initial = connector

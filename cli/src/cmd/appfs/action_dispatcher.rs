@@ -5,13 +5,13 @@ use super::registry::AppfsRegistryTransportDoc;
 use super::{ActionSpec, InputMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ParsedActionLineV2 {
+pub(super) struct ParsedActionLine {
     pub(super) client_token: String,
     pub(super) payload_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ActionLineV2ValidationError {
+pub(super) struct ActionLineValidationError {
     pub(super) code: &'static str,
     pub(super) reason: &'static str,
 }
@@ -68,14 +68,14 @@ pub(super) enum DispatchRouteParseError {
     StructureRefresh,
 }
 
-pub(super) fn normalize_actionline_v2_payload(
+pub(super) fn normalize_actionline_payload(
     payload: &str,
     strict: bool,
-) -> std::result::Result<Option<ParsedActionLineV2>, ActionLineV2ValidationError> {
+) -> std::result::Result<Option<ParsedActionLine>, ActionLineValidationError> {
     if !strict {
         return Ok(None);
     }
-    parse_action_line_v2(payload).map(Some)
+    parse_action_line(payload).map(Some)
 }
 
 pub(super) fn route_action(
@@ -111,37 +111,36 @@ pub(super) fn route_action(
     Ok(DispatchRoute::BusinessSubmit)
 }
 
-pub(super) fn parse_action_line_v2(
+pub(super) fn parse_action_line(
     line: &str,
-) -> std::result::Result<ParsedActionLineV2, ActionLineV2ValidationError> {
-    let json =
-        serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineV2ValidationError {
-            code: ERR_INVALID_PAYLOAD,
-            reason: "action line must be valid json",
-        })?;
+) -> std::result::Result<ParsedActionLine, ActionLineValidationError> {
+    let json = serde_json::from_str::<JsonValue>(line).map_err(|_| ActionLineValidationError {
+        code: ERR_INVALID_PAYLOAD,
+        reason: "action line must be valid json",
+    })?;
 
-    let object = json.as_object().ok_or(ActionLineV2ValidationError {
+    let object = json.as_object().ok_or(ActionLineValidationError {
         code: ERR_INVALID_ARGUMENT,
         reason: "action line must be a json object",
     })?;
 
     if object.contains_key("mode") {
-        return Err(ActionLineV2ValidationError {
+        return Err(ActionLineValidationError {
             code: ERR_INVALID_ARGUMENT,
-            reason: "mode field is not allowed in ActionLineV2",
+            reason: "mode field is not allowed in ActionLine",
         });
     }
 
     let version = object
         .get("version")
         .and_then(|value| value.as_str())
-        .ok_or(ActionLineV2ValidationError {
+        .ok_or(ActionLineValidationError {
             code: ERR_INVALID_ARGUMENT,
             reason: "version is required",
         })?;
 
     if version != "2.0" {
-        return Err(ActionLineV2ValidationError {
+        return Err(ActionLineValidationError {
             code: ERR_INVALID_ARGUMENT,
             reason: "version must be 2.0",
         });
@@ -152,7 +151,7 @@ pub(super) fn parse_action_line_v2(
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or(ActionLineV2ValidationError {
+        .ok_or(ActionLineValidationError {
             code: ERR_INVALID_ARGUMENT,
             reason: "client_token is required",
         })?
@@ -161,17 +160,17 @@ pub(super) fn parse_action_line_v2(
     let payload = object
         .get("payload")
         .and_then(|value| value.as_object())
-        .ok_or(ActionLineV2ValidationError {
+        .ok_or(ActionLineValidationError {
             code: ERR_INVALID_ARGUMENT,
             reason: "payload must be a json object",
         })?;
 
-    let payload_json = serde_json::to_string(payload).map_err(|_| ActionLineV2ValidationError {
+    let payload_json = serde_json::to_string(payload).map_err(|_| ActionLineValidationError {
         code: ERR_INVALID_PAYLOAD,
         reason: "payload serialization failed",
     })?;
 
-    Ok(ParsedActionLineV2 {
+    Ok(ParsedActionLine {
         client_token,
         payload_json,
     })

@@ -1,12 +1,12 @@
-# AppFS Connector 快速开始（v0.3）
+# AppFS Connector 快速开始
 
-这是 AppFS v0.3 connector 主路径的默认 quickstart。  
-请以 Rust 进程内 `DemoAppConnectorV2` 作为 canonical 行为面，HTTP/gRPC demo 需要与其一致。
+这是 AppFS connector 主路径的默认 quickstart。
+请以 Rust 进程内 `DemoAppConnector` 作为 canonical 行为面，HTTP/gRPC demo 需要与其一致。
 
-v0.3 主参考文档：
+主参考文档：
 
-1. `docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md`
-2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`
+1. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
+2. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
 
 ## 1. 选择 Connector 路径
 
@@ -14,7 +14,7 @@ v0.3 主参考文档：
 2. 进程外 HTTP connector bridge
 3. 进程外 gRPC connector bridge
 
-## 2. 运行 v0.3 一致性
+## 2. 运行一致性
 
 在该目录执行：
 

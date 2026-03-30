@@ -248,7 +248,7 @@ class MockAiimBackend:
 
     def connector_info(self) -> dict[str, Any]:
         return {
-            "connector_id": "mock-aiim-http-v2",
+            "connector_id": "mock-aiim-http",
             "version": "0.3.0-demo",
             "app_id": "aiim",
             "transport": "http_bridge",
@@ -280,7 +280,7 @@ class MockAiimBackend:
             raise PermissionError("resource is forbidden")
         timeout_ms = request.get("timeout_ms")
         timeout_ms = int(timeout_ms) if isinstance(timeout_ms, int) else 0
-        delay_ms = _env_delay_ms("APPFS_V3_PREWARM_DELAY_MS")
+        delay_ms = _env_delay_ms("APPFS_PREWARM_DELAY_MS")
         if delay_ms > timeout_ms > 0:
             time.sleep(timeout_ms / 1000.0)
             raise TimeoutError(
@@ -290,7 +290,7 @@ class MockAiimBackend:
             time.sleep(delay_ms / 1000.0)
         return {
             "size_bytes": 5000,
-            "revision": "demo-v2",
+            "revision": "demo-connector",
             "last_modified": _fixed_checked_at(),
             "item_count": 2,
         }
@@ -361,7 +361,7 @@ class MockAiimBackend:
             "emitted_bytes": emitted_bytes,
             "next_cursor": next_cursor,
             "has_more": has_more,
-            "revision": "demo-v2",
+            "revision": "demo-connector",
         }
 
     def fetch_live_page(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

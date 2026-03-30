@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use super::action_dispatcher::{
-    normalize_actionline_v2_payload, parse_list_apps_request, parse_register_app_request,
+    normalize_actionline_payload, parse_list_apps_request, parse_register_app_request,
     parse_unregister_app_request, RegisterAppRequest, UnregisterAppRequest,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
@@ -51,11 +51,11 @@ pub(super) struct SupervisorControlPlane {
     cursor: CursorState,
     action_cursors: HashMap<String, ActionCursorState>,
     next_seq: i64,
-    actionline_v2_strict: bool,
+    actionline_strict: bool,
 }
 
 impl SupervisorControlPlane {
-    pub(super) fn new(root: PathBuf, actionline_v2_strict: bool) -> Result<Self> {
+    pub(super) fn new(root: PathBuf, actionline_strict: bool) -> Result<Self> {
         let control_dir = root.join(CONTROL_APP_ID);
         let stream_dir = control_dir.join("_stream");
         let cursor_path = stream_dir.join("cursor.res.json");
@@ -72,7 +72,7 @@ impl SupervisorControlPlane {
             cursor,
             action_cursors: load_action_cursors_or_default(&action_cursors_path)?,
             next_seq,
-            actionline_v2_strict,
+            actionline_strict,
         })
     }
 
@@ -235,7 +235,7 @@ impl SupervisorControlPlane {
         &self,
         line: &str,
     ) -> std::result::Result<NormalizedPayload, NormalizePayloadError> {
-        match normalize_actionline_v2_payload(line, self.actionline_v2_strict) {
+        match normalize_actionline_payload(line, self.actionline_strict) {
             Ok(Some(parsed)) => Ok((parsed.payload_json, Some(parsed.client_token))),
             Ok(None) => Ok((line.to_string(), extract_client_token(line))),
             Err(err) => Err((err.code, err.reason, None)),

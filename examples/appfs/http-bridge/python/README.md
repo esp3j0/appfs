@@ -22,8 +22,8 @@ cd examples/appfs/http-bridge/python
 uv run python bridge_server.py
 ```
 
-`v0.3` HTTP connector mainline currently supports only `mock_aiim` backend.
-`jsonplaceholder` backend is retained as a legacy v1 reference backend and is not allowed in v2 serve mode.
+Current HTTP connector mainline currently supports only `mock_aiim` backend.
+`jsonplaceholder` backend is retained as a legacy v1 reference backend and is not allowed in canonical connector mode.
 
 ## Run full live conformance (HTTP bridge)
 
@@ -60,19 +60,19 @@ cargo run -- serve appfs \
 
 ## Bridge contract
 
-v0.3 mainline runtime sends requests to:
+Mainline runtime sends requests to:
 
-1. `POST /v2/connector/info`
-2. `POST /v2/connector/health`
-3. `POST /v2/connector/snapshot/prewarm`
-4. `POST /v2/connector/snapshot/fetch-chunk`
-5. `POST /v2/connector/live/fetch-page`
-6. `POST /v2/connector/action/submit`
+1. `POST /connector/info`
+2. `POST /connector/health`
+3. `POST /connector/snapshot/prewarm`
+4. `POST /connector/snapshot/fetch-chunk`
+5. `POST /connector/live/fetch-page`
+6. `POST /connector/action/submit`
 
-Response payloads follow AppFS connector v2 shapes:
+Response payloads follow canonical AppFS connector shapes:
 
 1. Success: corresponding connector response payload
-2. Error: `ConnectorErrorV2` (`{code,message,retryable,details?}`)
+2. Error: `ConnectorError` (`{code,message,retryable,details?}`)
 
 Legacy compatibility surface (non-mainline):
 

@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package appfs.structure;
+
+message ConnectorContext {
+  string app_id = 1;
+  string session_id = 2;
+  string request_id = 3;
+  optional string client_token = 4;
+  optional string trace_id = 5;
+}
+
+message ConnectorError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  optional string details = 4;
+}
+
+enum AppStructureSyncReason {
+  APP_STRUCTURE_SYNC_REASON_UNSPECIFIED = 0;
+  APP_STRUCTURE_SYNC_REASON_INITIALIZE = 1;
+  APP_STRUCTURE_SYNC_REASON_ENTER_SCOPE = 2;
+  APP_STRUCTURE_SYNC_REASON_REFRESH = 3;
+  APP_STRUCTURE_SYNC_REASON_RECOVER = 4;
+}
+
+enum AppStructureNodeKind {
+  APP_STRUCTURE_NODE_KIND_UNSPECIFIED = 0;
+  APP_STRUCTURE_NODE_KIND_DIRECTORY = 1;
+  APP_STRUCTURE_NODE_KIND_ACTION_FILE = 2;
+  APP_STRUCTURE_NODE_KIND_SNAPSHOT_RESOURCE = 3;
+  APP_STRUCTURE_NODE_KIND_LIVE_RESOURCE = 4;
+  APP_STRUCTURE_NODE_KIND_STATIC_JSON_RESOURCE = 5;
+}
+
+message GetAppStructureInput {
+  string app_id = 1;
+  optional string known_revision = 2;
+}
+
+message RefreshAppStructureInput {
+  string app_id = 1;
+  optional string known_revision = 2;
+  AppStructureSyncReason reason = 3;
+  optional string target_scope = 4;
+  optional string trigger_action_path = 5;
+}
+
+message AppStructureNode {
+  string path = 1;
+  AppStructureNodeKind kind = 2;
+  optional string manifest_entry_json = 3;
+  optional string seed_content_json = 4;
+  bool mutable = 5;
+  optional string scope = 6;
+}
+
+message AppStructureSnapshot {
+  string app_id = 1;
+  string revision = 2;
+  optional string active_scope = 3;
+  repeated string ownership_prefixes = 4;
+  repeated AppStructureNode nodes = 5;
+}
+
+message AppStructureSyncUnchanged {
+  string app_id = 1;
+  string revision = 2;
+  optional string active_scope = 3;
+}
+
+message AppStructureSyncSnapshot {
+  AppStructureSnapshot snapshot = 1;
+}
+
+message AppStructureSyncResult {
+  oneof kind {
+    AppStructureSyncUnchanged unchanged = 1;
+    AppStructureSyncSnapshot snapshot = 2;
+  }
+}
+
+message GetAppStructureRequest {
+  ConnectorContext context = 1;
+  GetAppStructureInput request = 2;
+}
+
+message GetAppStructureResponse {
+  oneof result {
+    AppStructureSyncResult response = 1;
+    ConnectorError error = 2;
+  }
+}
+
+message RefreshAppStructureRequest {
+  ConnectorContext context = 1;
+  RefreshAppStructureInput request = 2;
+}
+
+message RefreshAppStructureResponse {
+  oneof result {
+    AppStructureSyncResult response = 1;
+    ConnectorError error = 2;
+  }
+}
+
+service AppfsStructureConnector {
+  rpc GetAppStructure(GetAppStructureRequest) returns (GetAppStructureResponse);
+  rpc RefreshAppStructure(RefreshAppStructureRequest) returns (RefreshAppStructureResponse);
+}

@@ -34,7 +34,7 @@ sh ./run-conformance.sh grpc-python
 
 ## V0.3 Demo Connector Parity
 
-`sdk/rust/src/appfs_demo_adapter.rs` (`DemoAppConnectorV2`) is the canonical demo behavior surface.
+`sdk/rust/src/appfs_demo_adapter.rs` (`DemoAppConnector`) is the canonical demo behavior surface.
 In-process / HTTP / gRPC should match on business semantics for:
 
 1. `connector_info` / `health`

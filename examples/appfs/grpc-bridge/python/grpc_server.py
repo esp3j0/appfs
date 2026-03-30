@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 
 import grpc
 
-import appfs_adapter_v1_pb2 as pb1
-import appfs_adapter_v1_pb2_grpc as pb1_grpc
-import appfs_connector_v2_pb2 as pb2
-import appfs_connector_v2_pb2_grpc as pb2_grpc
-import appfs_connector_v3_pb2 as pb3
-import appfs_connector_v3_pb2_grpc as pb3_grpc
+import appfs_adapter_v1_pb as pb1
+import appfs_adapter_v1_pb_grpc as pb1_grpc
+import appfs_connector_pb as connector_pb
+import appfs_connector_pb_grpc as connector_pb_grpc
+import appfs_structure_pb as structure_pb
+import appfs_structure_pb_grpc as structure_pb_grpc
 
 
 def _env_int(name: str, default: int) -> int:
@@ -52,9 +52,9 @@ def _env_delay_ms(name: str) -> int:
         return 0
 
 
-def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
+def _validate_connector_context(message: object) -> connector_pb.ConnectorError | None:
     if not hasattr(message, "HasField") or not message.HasField("context"):
-        return pb2.ConnectorErrorV2(
+        return connector_pb.ConnectorError(
             code="INVALID_ARGUMENT",
             message="context object is required",
             retryable=False,
@@ -67,7 +67,7 @@ def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
     )
     for field, value in required:
         if not isinstance(value, str) or value.strip() == "":
-            return pb2.ConnectorErrorV2(
+            return connector_pb.ConnectorError(
                 code="INVALID_ARGUMENT",
                 message=f"context.{field} must be non-empty string",
                 retryable=False,
@@ -75,9 +75,9 @@ def _validate_context_v2(message: object) -> pb2.ConnectorErrorV2 | None:
     return None
 
 
-def _validate_context_v3(message: object) -> pb3.ConnectorErrorV3 | None:
+def _validate_structure_context(message: object) -> structure_pb.ConnectorError | None:
     if not hasattr(message, "HasField") or not message.HasField("context"):
-        return pb3.ConnectorErrorV3(
+        return structure_pb.ConnectorError(
             code="INVALID_ARGUMENT",
             message="context object is required",
             retryable=False,
@@ -90,7 +90,7 @@ def _validate_context_v3(message: object) -> pb3.ConnectorErrorV3 | None:
     )
     for field, value in required:
         if not isinstance(value, str) or value.strip() == "":
-            return pb3.ConnectorErrorV3(
+            return structure_pb.ConnectorError(
                 code="INVALID_ARGUMENT",
                 message=f"context.{field} must be non-empty string",
                 retryable=False,
@@ -244,27 +244,27 @@ def _structure_snapshot(scope: str | None) -> dict[str, object]:
     }
 
 
-def _node_kind_v3(kind: str) -> int:
+def _structure_node_kind(kind: str) -> int:
     mapping = {
-        "directory": pb3.APP_STRUCTURE_NODE_KIND_V3_DIRECTORY,
-        "action_file": pb3.APP_STRUCTURE_NODE_KIND_V3_ACTION_FILE,
-        "snapshot_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_SNAPSHOT_RESOURCE,
-        "live_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_LIVE_RESOURCE,
-        "static_json_resource": pb3.APP_STRUCTURE_NODE_KIND_V3_STATIC_JSON_RESOURCE,
+        "directory": structure_pb.APP_STRUCTURE_NODE_KIND_DIRECTORY,
+        "action_file": structure_pb.APP_STRUCTURE_NODE_KIND_ACTION_FILE,
+        "snapshot_resource": structure_pb.APP_STRUCTURE_NODE_KIND_SNAPSHOT_RESOURCE,
+        "live_resource": structure_pb.APP_STRUCTURE_NODE_KIND_LIVE_RESOURCE,
+        "static_json_resource": structure_pb.APP_STRUCTURE_NODE_KIND_STATIC_JSON_RESOURCE,
     }
-    return mapping.get(kind, pb3.APP_STRUCTURE_NODE_KIND_V3_UNSPECIFIED)
+    return mapping.get(kind, structure_pb.APP_STRUCTURE_NODE_KIND_UNSPECIFIED)
 
 
-def _snapshot_message_v3(snapshot: dict[str, object]) -> pb3.AppStructureSnapshotV3:
-    return pb3.AppStructureSnapshotV3(
+def _structure_snapshot_message(snapshot: dict[str, object]) -> structure_pb.AppStructureSnapshot:
+    return structure_pb.AppStructureSnapshot(
         app_id=str(snapshot["app_id"]),
         revision=str(snapshot["revision"]),
         active_scope=snapshot.get("active_scope"),
         ownership_prefixes=[str(value) for value in snapshot.get("ownership_prefixes", [])],
         nodes=[
-            pb3.AppStructureNodeV3(
+            structure_pb.AppStructureNode(
                 path=str(node["path"]),
-                kind=_node_kind_v3(str(node["kind"])),
+                kind=_structure_node_kind(str(node["kind"])),
                 manifest_entry_json=(
                     _json_compact(node["manifest_entry"])
                     if node.get("manifest_entry") is not None
@@ -417,15 +417,15 @@ class BridgeServiceV1(pb1_grpc.AppfsAdapterBridgeServicer):
         )
 
 
-class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
-    def GetConnectorInfo(self, request: pb2.GetConnectorInfoRequest, context: grpc.ServicerContext):
+class BridgeConnectorService(connector_pb_grpc.AppfsConnectorServicer):
+    def GetConnectorInfo(self, request: connector_pb.GetConnectorInfoRequest, context: grpc.ServicerContext):
         _ = request
-        return pb2.GetConnectorInfoResponse(
-            info=pb2.ConnectorInfoV2(
-                connector_id="mock-grpc-v2",
+        return connector_pb.GetConnectorInfoResponse(
+            info=connector_pb.ConnectorInfo(
+                connector_id="mock-grpc",
                 version="0.3.0-demo",
                 app_id="aiim",
-                transport=pb2.CONNECTOR_TRANSPORT_V2_GRPC_BRIDGE,
+                transport=connector_pb.CONNECTOR_TRANSPORT_GRPC_BRIDGE,
                 supports_snapshot=True,
                 supports_live=True,
                 supports_action=True,
@@ -433,24 +433,24 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
         )
 
-    def Health(self, request: pb2.HealthRequest, context: grpc.ServicerContext):
+    def Health(self, request: connector_pb.HealthRequest, context: grpc.ServicerContext):
         _ = context
-        context_error = _validate_context_v2(request)
+        context_error = _validate_connector_context(request)
         if context_error is not None:
-            return pb2.HealthResponse(error=context_error)
+            return connector_pb.HealthResponse(error=context_error)
         trace_id = request.context.trace_id
         if trace_id == "force-upstream-unavailable":
-            return pb2.HealthResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.HealthResponse(
+                error=connector_pb.ConnectorError(
                     code="UPSTREAM_UNAVAILABLE",
                     message="upstream endpoint is unavailable",
                     retryable=True,
                 )
             )
-        auth_status = pb2.AUTH_STATUS_V2_EXPIRED if trace_id == "force-auth-expired" else pb2.AUTH_STATUS_V2_VALID
-        healthy = auth_status == pb2.AUTH_STATUS_V2_VALID
-        return pb2.HealthResponse(
-            status=pb2.HealthStatusV2(
+        auth_status = connector_pb.AUTH_STATUS_EXPIRED if trace_id == "force-auth-expired" else connector_pb.AUTH_STATUS_VALID
+        healthy = auth_status == connector_pb.AUTH_STATUS_VALID
+        return connector_pb.HealthResponse(
+            status=connector_pb.HealthStatus(
                 healthy=healthy,
                 auth_status=auth_status,
                 message="demo connector healthy",
@@ -458,25 +458,25 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
         )
 
-    def PrewarmSnapshotMeta(self, request: pb2.PrewarmSnapshotMetaRequest, context: grpc.ServicerContext):
+    def PrewarmSnapshotMeta(self, request: connector_pb.PrewarmSnapshotMetaRequest, context: grpc.ServicerContext):
         _ = context
-        context_error = _validate_context_v2(request)
+        context_error = _validate_connector_context(request)
         if context_error is not None:
-            return pb2.PrewarmSnapshotMetaResponse(error=context_error)
+            return connector_pb.PrewarmSnapshotMetaResponse(error=context_error)
         if "/forbidden/" in request.resource_path:
-            return pb2.PrewarmSnapshotMetaResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.PrewarmSnapshotMetaResponse(
+                error=connector_pb.ConnectorError(
                     code="PERMISSION_DENIED",
                     message="resource is forbidden",
                     retryable=False,
                 )
             )
-        delay_ms = _env_delay_ms("APPFS_V3_PREWARM_DELAY_MS")
+        delay_ms = _env_delay_ms("APPFS_PREWARM_DELAY_MS")
         timeout_ms = max(1, request.timeout_ms)
         if delay_ms > timeout_ms:
             time.sleep(timeout_ms / 1000.0)
-            return pb2.PrewarmSnapshotMetaResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.PrewarmSnapshotMetaResponse(
+                error=connector_pb.ConnectorError(
                     code="TIMEOUT",
                     message=f"prewarm timeout resource={request.resource_path} delay_ms={delay_ms} timeout_ms={timeout_ms}",
                     retryable=True,
@@ -484,23 +484,23 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
         if delay_ms > 0:
             time.sleep(delay_ms / 1000.0)
-        return pb2.PrewarmSnapshotMetaResponse(
-            meta=pb2.SnapshotMetaV2(
+        return connector_pb.PrewarmSnapshotMetaResponse(
+            meta=connector_pb.SnapshotMeta(
                 size_bytes=5000,
-                revision="demo-v2",
+                revision="demo-connector",
                 last_modified=_fixed_checked_at(),
                 item_count=2,
             )
         )
 
-    def FetchSnapshotChunk(self, request: pb2.FetchSnapshotChunkRequest, context: grpc.ServicerContext):
+    def FetchSnapshotChunk(self, request: connector_pb.FetchSnapshotChunkRequest, context: grpc.ServicerContext):
         _ = context
-        context_error = _validate_context_v2(request)
+        context_error = _validate_connector_context(request)
         if context_error is not None:
-            return pb2.FetchSnapshotChunkResponse(error=context_error)
+            return connector_pb.FetchSnapshotChunkResponse(error=context_error)
         if not request.HasField("request"):
-            return pb2.FetchSnapshotChunkResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="missing request payload",
                     retryable=False,
@@ -508,16 +508,16 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
         req = request.request
         if req.budget_bytes <= 0:
-            return pb2.FetchSnapshotChunkResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="budget_bytes must be > 0",
                     retryable=False,
                 )
             )
         if "too_large" in req.resource_path:
-            return pb2.FetchSnapshotChunkResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                error=connector_pb.ConnectorError(
                     code="SNAPSHOT_TOO_LARGE",
                     message="snapshot exceeds configured limit",
                     retryable=False,
@@ -526,63 +526,63 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         resume_kind = req.resume.WhichOneof("kind") if req.resume else None
         if resume_kind == "start":
             records = [
-                pb2.SnapshotRecordV2(
+                connector_pb.SnapshotRecord(
                     record_key="rk-001",
                     ordering_key="ok-001",
                     line_json=_json_compact({"id": "m-1", "text": "hello"}),
                 ),
-                pb2.SnapshotRecordV2(
+                connector_pb.SnapshotRecord(
                     record_key="rk-002",
                     ordering_key="ok-002",
                     line_json=_json_compact({"id": "m-2", "text": "world"}),
                 ),
             ]
             emitted_bytes = sum((len(r.line_json.encode("utf-8")) + 1) for r in records)
-            return pb2.FetchSnapshotChunkResponse(
-                response=pb2.FetchSnapshotChunkResponseV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                response=connector_pb.SnapshotChunkResponse(
                     records=records,
                     emitted_bytes=emitted_bytes,
                     next_cursor="cursor-2",
                     has_more=True,
-                    revision="demo-v2",
+                    revision="demo-connector",
                 )
             )
         if resume_kind == "cursor":
             if req.resume.cursor == "cursor-invalid":
-                return pb2.FetchSnapshotChunkResponse(
-                    error=pb2.ConnectorErrorV2(
+                return connector_pb.FetchSnapshotChunkResponse(
+                    error=connector_pb.ConnectorError(
                         code="INVALID_ARGUMENT",
                         message="resume cursor is invalid",
                         retryable=False,
                     )
                 )
             if req.resume.cursor != "cursor-2":
-                return pb2.FetchSnapshotChunkResponse(
-                    error=pb2.ConnectorErrorV2(
+                return connector_pb.FetchSnapshotChunkResponse(
+                    error=connector_pb.ConnectorError(
                         code="INVALID_ARGUMENT",
                         message="resume cursor is unknown",
                         retryable=False,
                     )
                 )
             records = [
-                pb2.SnapshotRecordV2(
+                connector_pb.SnapshotRecord(
                     record_key="rk-003",
                     ordering_key="ok-003",
                     line_json=_json_compact({"id": "m-3", "text": "done"}),
                 )
             ]
-            return pb2.FetchSnapshotChunkResponse(
-                response=pb2.FetchSnapshotChunkResponseV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                response=connector_pb.SnapshotChunkResponse(
                     records=records,
                     emitted_bytes=sum((len(r.line_json.encode("utf-8")) + 1) for r in records),
                     has_more=False,
-                    revision="demo-v2",
+                    revision="demo-connector",
                 )
             )
         if resume_kind == "offset":
             if "no-offset" in req.resource_path:
-                return pb2.FetchSnapshotChunkResponse(
-                    error=pb2.ConnectorErrorV2(
+                return connector_pb.FetchSnapshotChunkResponse(
+                    error=connector_pb.ConnectorError(
                         code="NOT_SUPPORTED",
                         message="offset resume is not supported for this resource",
                         retryable=False,
@@ -590,36 +590,36 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
                 )
             offset = req.resume.offset
             records = [
-                pb2.SnapshotRecordV2(
+                connector_pb.SnapshotRecord(
                     record_key=f"rk-offset-{offset}",
                     ordering_key=f"ok-offset-{offset}",
                     line_json=_json_compact({"id": "m-offset", "offset": offset}),
                 )
             ]
-            return pb2.FetchSnapshotChunkResponse(
-                response=pb2.FetchSnapshotChunkResponseV2(
+            return connector_pb.FetchSnapshotChunkResponse(
+                response=connector_pb.SnapshotChunkResponse(
                     records=records,
                     emitted_bytes=sum((len(r.line_json.encode("utf-8")) + 1) for r in records),
                     has_more=False,
-                    revision="demo-v2",
+                    revision="demo-connector",
                 )
             )
-        return pb2.FetchSnapshotChunkResponse(
-            error=pb2.ConnectorErrorV2(
+        return connector_pb.FetchSnapshotChunkResponse(
+            error=connector_pb.ConnectorError(
                 code="INVALID_ARGUMENT",
                 message=f"unsupported resume kind: {resume_kind}",
                 retryable=False,
             )
         )
 
-    def FetchLivePage(self, request: pb2.FetchLivePageRequest, context: grpc.ServicerContext):
+    def FetchLivePage(self, request: connector_pb.FetchLivePageRequest, context: grpc.ServicerContext):
         _ = context
-        context_error = _validate_context_v2(request)
+        context_error = _validate_connector_context(request)
         if context_error is not None:
-            return pb2.FetchLivePageResponse(error=context_error)
+            return connector_pb.FetchLivePageResponse(error=context_error)
         if not request.HasField("request"):
-            return pb2.FetchLivePageResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchLivePageResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="missing request payload",
                     retryable=False,
@@ -627,24 +627,24 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
         req = request.request
         if req.page_size <= 0:
-            return pb2.FetchLivePageResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchLivePageResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="page_size must be > 0",
                     retryable=False,
                 )
             )
         if req.cursor == "invalid":
-            return pb2.FetchLivePageResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchLivePageResponse(
+                error=connector_pb.ConnectorError(
                     code="CURSOR_INVALID",
                     message="cursor is invalid",
                     retryable=False,
                 )
             )
         if req.cursor == "expired":
-            return pb2.FetchLivePageResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.FetchLivePageResponse(
+                error=connector_pb.ConnectorError(
                     code="CURSOR_EXPIRED",
                     message="cursor has expired",
                     retryable=False,
@@ -657,25 +657,25 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             "handle_id": handle,
             "page_no": page_no,
             "has_more": has_more,
-            "mode": pb2.LIVE_MODE_V2_LIVE,
+            "mode": connector_pb.LIVE_MODE_LIVE,
             "expires_at": _fixed_live_expires_at(),
         }
         if has_more:
             page_kwargs["next_cursor"] = "cursor-1"
-        return pb2.FetchLivePageResponse(
-            response=pb2.FetchLivePageResponseV2(
+        return connector_pb.FetchLivePageResponse(
+            response=connector_pb.LivePageResponse(
                 items_json=[_json_compact({"id": f"item-{page_no}", "resource": req.resource_path})],
-                page=pb2.LivePageInfoV2(**page_kwargs),
+                page=connector_pb.LivePageInfo(**page_kwargs),
             )
         )
 
-    def SubmitAction(self, request: pb2.SubmitActionRequest, context: grpc.ServicerContext):
-        context_error = _validate_context_v2(request)
+    def SubmitAction(self, request: connector_pb.SubmitActionRequest, context: grpc.ServicerContext):
+        context_error = _validate_connector_context(request)
         if context_error is not None:
-            return pb2.SubmitActionResponse(error=context_error)
+            return connector_pb.SubmitActionResponse(error=context_error)
         if not request.HasField("request"):
-            return pb2.SubmitActionResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.SubmitActionResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="missing request payload",
                     retryable=False,
@@ -691,16 +691,16 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
             )
 
         if "invalid_payload" in path:
-            return pb2.SubmitActionResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.SubmitActionResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_PAYLOAD",
                     message="payload does not match schema",
                     retryable=False,
                 )
             )
         if "rate_limited" in path:
-            return pb2.SubmitActionResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.SubmitActionResponse(
+                error=connector_pb.ConnectorError(
                     code="RATE_LIMITED",
                     message="upstream rate limited",
                     retryable=True,
@@ -709,20 +709,20 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         try:
             payload_obj = json.loads(req.payload_json)
         except Exception:
-            return pb2.SubmitActionResponse(
-                error=pb2.ConnectorErrorV2(
+            return connector_pb.SubmitActionResponse(
+                error=connector_pb.ConnectorError(
                     code="INVALID_PAYLOAD",
                     message="payload does not match schema",
                     retryable=False,
                 )
             )
 
-        if req.execution_mode == pb2.ACTION_EXECUTION_MODE_V2_INLINE:
-            return pb2.SubmitActionResponse(
-                response=pb2.SubmitActionResponseV2(
+        if req.execution_mode == connector_pb.ACTION_EXECUTION_MODE_INLINE:
+            return connector_pb.SubmitActionResponse(
+                response=connector_pb.SubmitActionOutput(
                     request_id=request.context.request_id,
                     estimated_duration_ms=120,
-                    outcome=pb2.SubmitActionOutcomeV2(
+                    outcome=connector_pb.SubmitActionOutcome(
                         completed_content_json=_json_compact(
                             {"ok": True, "path": path, "echo": payload_obj}
                         )
@@ -730,12 +730,12 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
                 )
             )
 
-        return pb2.SubmitActionResponse(
-            response=pb2.SubmitActionResponseV2(
+        return connector_pb.SubmitActionResponse(
+            response=connector_pb.SubmitActionOutput(
                 request_id=request.context.request_id,
                 estimated_duration_ms=120,
-                outcome=pb2.SubmitActionOutcomeV2(
-                    streaming_plan=pb2.ActionStreamingPlanV2(
+                outcome=connector_pb.SubmitActionOutcome(
+                    streaming_plan=connector_pb.ActionStreamingPlan(
                         accepted_content_json=_json_compact({"state": "accepted"}),
                         progress_content_json=_json_compact({"percent": 50}),
                         terminal_content_json=_json_compact({"ok": True}),
@@ -747,17 +747,17 @@ class BridgeServiceV2(pb2_grpc.AppfsConnectorV2Servicer):
         )
 
 
-class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
+class BridgeStructureService(structure_pb_grpc.AppfsStructureConnectorServicer):
     def GetAppStructure(
-        self, request: pb3.GetAppStructureRequest, context: grpc.ServicerContext
+        self, request: structure_pb.GetAppStructureRequest, context: grpc.ServicerContext
     ):
         _ = context
-        context_error = _validate_context_v3(request)
+        context_error = _validate_structure_context(request)
         if context_error is not None:
-            return pb3.GetAppStructureResponse(error=context_error)
+            return structure_pb.GetAppStructureResponse(error=context_error)
         if not request.HasField("request"):
-            return pb3.GetAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.GetAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="missing request payload",
                     retryable=False,
@@ -765,8 +765,8 @@ class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
             )
         req = request.request
         if not req.app_id.strip():
-            return pb3.GetAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.GetAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="app_id is required",
                     retryable=False,
@@ -774,33 +774,33 @@ class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
             )
         snapshot = _structure_snapshot(None)
         if req.known_revision and req.known_revision == snapshot["revision"]:
-            return pb3.GetAppStructureResponse(
-                response=pb3.AppStructureSyncResultV3(
-                    unchanged=pb3.AppStructureSyncUnchangedV3(
+            return structure_pb.GetAppStructureResponse(
+                response=structure_pb.AppStructureSyncResult(
+                    unchanged=structure_pb.AppStructureSyncUnchanged(
                         app_id=req.app_id,
                         revision=str(snapshot["revision"]),
                         active_scope=str(snapshot["active_scope"]),
                     )
                 )
             )
-        return pb3.GetAppStructureResponse(
-            response=pb3.AppStructureSyncResultV3(
-                snapshot=pb3.AppStructureSyncSnapshotV3(
-                    snapshot=_snapshot_message_v3(snapshot)
+        return structure_pb.GetAppStructureResponse(
+            response=structure_pb.AppStructureSyncResult(
+                snapshot=structure_pb.AppStructureSyncSnapshot(
+                    snapshot=_structure_snapshot_message(snapshot)
                 )
             )
         )
 
     def RefreshAppStructure(
-        self, request: pb3.RefreshAppStructureRequest, context: grpc.ServicerContext
+        self, request: structure_pb.RefreshAppStructureRequest, context: grpc.ServicerContext
     ):
         _ = context
-        context_error = _validate_context_v3(request)
+        context_error = _validate_structure_context(request)
         if context_error is not None:
-            return pb3.RefreshAppStructureResponse(error=context_error)
+            return structure_pb.RefreshAppStructureResponse(error=context_error)
         if not request.HasField("request"):
-            return pb3.RefreshAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.RefreshAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="missing request payload",
                     retryable=False,
@@ -808,27 +808,27 @@ class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
             )
         req = request.request
         if not req.app_id.strip():
-            return pb3.RefreshAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.RefreshAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="app_id is required",
                     retryable=False,
                 )
             )
-        if req.reason == pb3.APP_STRUCTURE_SYNC_REASON_V3_UNSPECIFIED:
-            return pb3.RefreshAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+        if req.reason == structure_pb.APP_STRUCTURE_SYNC_REASON_UNSPECIFIED:
+            return structure_pb.RefreshAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="INVALID_ARGUMENT",
                     message="reason is required",
                     retryable=False,
                 )
             )
         if (
-            req.reason == pb3.APP_STRUCTURE_SYNC_REASON_V3_ENTER_SCOPE
+            req.reason == structure_pb.APP_STRUCTURE_SYNC_REASON_ENTER_SCOPE
             and not req.target_scope.strip()
         ):
-            return pb3.RefreshAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.RefreshAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="STRUCTURE_SCOPE_INVALID",
                     message="target_scope is required for enter_scope refresh",
                     retryable=False,
@@ -837,27 +837,27 @@ class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
         try:
             snapshot = _structure_snapshot(req.target_scope if req.target_scope else None)
         except ValueError as err:
-            return pb3.RefreshAppStructureResponse(
-                error=pb3.ConnectorErrorV3(
+            return structure_pb.RefreshAppStructureResponse(
+                error=structure_pb.ConnectorError(
                     code="STRUCTURE_SCOPE_INVALID",
                     message=str(err),
                     retryable=False,
                 )
             )
         if req.known_revision and req.known_revision == snapshot["revision"]:
-            return pb3.RefreshAppStructureResponse(
-                response=pb3.AppStructureSyncResultV3(
-                    unchanged=pb3.AppStructureSyncUnchangedV3(
+            return structure_pb.RefreshAppStructureResponse(
+                response=structure_pb.AppStructureSyncResult(
+                    unchanged=structure_pb.AppStructureSyncUnchanged(
                         app_id=req.app_id,
                         revision=str(snapshot["revision"]),
                         active_scope=str(snapshot["active_scope"]),
                     )
                 )
             )
-        return pb3.RefreshAppStructureResponse(
-            response=pb3.AppStructureSyncResultV3(
-                snapshot=pb3.AppStructureSyncSnapshotV3(
-                    snapshot=_snapshot_message_v3(snapshot)
+        return structure_pb.RefreshAppStructureResponse(
+            response=structure_pb.AppStructureSyncResult(
+                snapshot=structure_pb.AppStructureSyncSnapshot(
+                    snapshot=_structure_snapshot_message(snapshot)
                 )
             )
         )
@@ -866,8 +866,8 @@ class BridgeServiceV3(pb3_grpc.AppfsConnectorV3Servicer):
 def main() -> None:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     pb1_grpc.add_AppfsAdapterBridgeServicer_to_server(BridgeServiceV1(), server)
-    pb2_grpc.add_AppfsConnectorV2Servicer_to_server(BridgeServiceV2(), server)
-    pb3_grpc.add_AppfsConnectorV3Servicer_to_server(BridgeServiceV3(), server)
+    connector_pb_grpc.add_AppfsConnectorServicer_to_server(BridgeConnectorService(), server)
+    structure_pb_grpc.add_AppfsStructureConnectorServicer_to_server(BridgeStructureService(), server)
     server.add_insecure_port("127.0.0.1:50051")
     server.start()
     print("AppFS gRPC bridge listening on 127.0.0.1:50051")

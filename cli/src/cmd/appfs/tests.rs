@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::action_dispatcher::{
-    parse_action_line_v2, parse_enter_scope_request, parse_list_apps_request, parse_paging_request,
+    parse_action_line, parse_enter_scope_request, parse_list_apps_request, parse_paging_request,
     parse_register_app_request, parse_snapshot_refresh_request, parse_structure_refresh_request,
     parse_unregister_app_request, validate_submit_payload as validate_payload,
 };
@@ -84,8 +84,8 @@ fn json_payload_validation_rejects_non_json() {
 }
 
 #[test]
-fn actionline_v2_parses_minimal_valid_line() {
-    let parsed = parse_action_line_v2(
+fn actionline_parses_minimal_valid_line() {
+    let parsed = parse_action_line(
         r#"{"version":"2.0","client_token":"msg-001","payload":{"text":"hello"}}"#,
     )
     .expect("expected valid action line");
@@ -95,7 +95,7 @@ fn actionline_v2_parses_minimal_valid_line() {
 }
 
 #[test]
-fn actionline_v2_supports_multiple_jsonl_lines() {
+fn actionline_supports_multiple_jsonl_lines() {
     let bytes = br#"{"version":"2.0","client_token":"msg-001","payload":{"text":"a"}}
 {"version":"2.0","client_token":"msg-002","payload":{"text":"b"}}
 "#;
@@ -109,28 +109,28 @@ fn actionline_v2_supports_multiple_jsonl_lines() {
         let decoded = decode_jsonl_line(&line_bytes, idx == 0)
             .expect("decode")
             .expect("line");
-        let parsed = parse_action_line_v2(&decoded).expect("parse");
+        let parsed = parse_action_line(&decoded).expect("parse");
         parsed_tokens.push(parsed.client_token);
     }
     assert_eq!(parsed_tokens, vec!["msg-001", "msg-002"]);
 }
 
 #[test]
-fn actionline_v2_rejects_raw_text() {
-    let err = parse_action_line_v2("hello world").expect_err("raw text must be rejected");
+fn actionline_rejects_raw_text() {
+    let err = parse_action_line("hello world").expect_err("raw text must be rejected");
     assert_eq!(err.code, ERR_INVALID_PAYLOAD);
 }
 
 #[test]
-fn actionline_v2_rejects_non_object_json() {
+fn actionline_rejects_non_object_json() {
     let err =
-        parse_action_line_v2(r#"["not","object"]"#).expect_err("non-object json must be rejected");
+        parse_action_line(r#"["not","object"]"#).expect_err("non-object json must be rejected");
     assert_eq!(err.code, ERR_INVALID_ARGUMENT);
 }
 
 #[test]
-fn actionline_v2_rejects_mode_field() {
-    let err = parse_action_line_v2(
+fn actionline_rejects_mode_field() {
+    let err = parse_action_line(
         r#"{"version":"2.0","mode":"text","client_token":"x","payload":{"text":"hi"}}"#,
     )
     .expect_err("mode must be rejected");
@@ -138,13 +138,13 @@ fn actionline_v2_rejects_mode_field() {
 }
 
 #[test]
-fn actionline_v2_rejects_missing_required_fields() {
-    let missing_client = parse_action_line_v2(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
+fn actionline_rejects_missing_required_fields() {
+    let missing_client = parse_action_line(r#"{"version":"2.0","payload":{"text":"hi"}}"#)
         .expect_err("missing client_token");
     assert_eq!(missing_client.code, ERR_INVALID_ARGUMENT);
 
-    let missing_payload = parse_action_line_v2(r#"{"version":"2.0","client_token":"x"}"#)
-        .expect_err("missing payload");
+    let missing_payload =
+        parse_action_line(r#"{"version":"2.0","client_token":"x"}"#).expect_err("missing payload");
     assert_eq!(missing_payload.code, ERR_INVALID_ARGUMENT);
 }
 

@@ -1,12 +1,12 @@
-# AppFS Connector Quickstart (v0.3)
+# AppFS Connector Quickstart
 
-This is the default quickstart for AppFS v0.3 connector shipping path.
-Treat Rust in-process `DemoAppConnectorV2` as canonical behavior; HTTP/gRPC demos must match it.
+This is the default quickstart for AppFS connector shipping path.
+Treat Rust in-process `DemoAppConnector` as canonical behavior; HTTP/gRPC demos must match it.
 
-Primary v0.3 references:
+Primary references:
 
-1. `docs/v3/APPFS-v0.3-Connectorization-ADR.zh-CN.md`
-2. `docs/v3/APPFS-v0.3-Connector接口.zh-CN.md`
+1. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
+2. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
 
 ## 1. Choose Connector Path
 
@@ -14,7 +14,7 @@ Primary v0.3 references:
 2. Out-of-process HTTP connector bridge
 3. Out-of-process gRPC connector bridge
 
-## 2. Run V0.3 Conformance
+## 2. Run Conformance
 
 From this directory:
 

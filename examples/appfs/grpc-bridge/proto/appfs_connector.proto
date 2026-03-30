@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package appfs.connector.v2;
+package appfs.connector;
 
-message ConnectorContextV2 {
+message ConnectorContext {
   string app_id = 1;
   string session_id = 2;
   string request_id = 3;
@@ -10,47 +10,47 @@ message ConnectorContextV2 {
   optional string trace_id = 5;
 }
 
-enum ConnectorTransportV2 {
-  CONNECTOR_TRANSPORT_V2_UNSPECIFIED = 0;
-  CONNECTOR_TRANSPORT_V2_IN_PROCESS = 1;
-  CONNECTOR_TRANSPORT_V2_HTTP_BRIDGE = 2;
-  CONNECTOR_TRANSPORT_V2_GRPC_BRIDGE = 3;
+enum ConnectorTransport {
+  CONNECTOR_TRANSPORT_UNSPECIFIED = 0;
+  CONNECTOR_TRANSPORT_IN_PROCESS = 1;
+  CONNECTOR_TRANSPORT_HTTP_BRIDGE = 2;
+  CONNECTOR_TRANSPORT_GRPC_BRIDGE = 3;
 }
 
-message ConnectorInfoV2 {
+message ConnectorInfo {
   string connector_id = 1;
   string version = 2;
   string app_id = 3;
-  ConnectorTransportV2 transport = 4;
+  ConnectorTransport transport = 4;
   bool supports_snapshot = 5;
   bool supports_live = 6;
   bool supports_action = 7;
   repeated string optional_features = 8;
 }
 
-enum AuthStatusV2 {
-  AUTH_STATUS_V2_UNSPECIFIED = 0;
-  AUTH_STATUS_V2_VALID = 1;
-  AUTH_STATUS_V2_EXPIRED = 2;
-  AUTH_STATUS_V2_REFRESHING = 3;
-  AUTH_STATUS_V2_INVALID = 4;
+enum AuthStatus {
+  AUTH_STATUS_UNSPECIFIED = 0;
+  AUTH_STATUS_VALID = 1;
+  AUTH_STATUS_EXPIRED = 2;
+  AUTH_STATUS_REFRESHING = 3;
+  AUTH_STATUS_INVALID = 4;
 }
 
-message HealthStatusV2 {
+message HealthStatus {
   bool healthy = 1;
-  AuthStatusV2 auth_status = 2;
+  AuthStatus auth_status = 2;
   optional string message = 3;
   string checked_at = 4;
 }
 
-message SnapshotMetaV2 {
+message SnapshotMeta {
   optional uint64 size_bytes = 1;
   optional string revision = 2;
   optional string last_modified = 3;
   optional uint64 item_count = 4;
 }
 
-message SnapshotResumeV2 {
+message SnapshotResume {
   oneof kind {
     bool start = 1;
     string cursor = 2;
@@ -58,66 +58,66 @@ message SnapshotResumeV2 {
   }
 }
 
-message FetchSnapshotChunkRequestV2 {
+message SnapshotChunkRequest {
   string resource_path = 1;
-  SnapshotResumeV2 resume = 2;
+  SnapshotResume resume = 2;
   uint64 budget_bytes = 3;
 }
 
-message SnapshotRecordV2 {
+message SnapshotRecord {
   string record_key = 1;
   string ordering_key = 2;
   string line_json = 3;
 }
 
-message FetchSnapshotChunkResponseV2 {
-  repeated SnapshotRecordV2 records = 1;
+message SnapshotChunkResponse {
+  repeated SnapshotRecord records = 1;
   uint64 emitted_bytes = 2;
   optional string next_cursor = 3;
   bool has_more = 4;
   optional string revision = 5;
 }
 
-message FetchLivePageRequestV2 {
+message LivePageRequest {
   string resource_path = 1;
   optional string handle_id = 2;
   optional string cursor = 3;
   uint32 page_size = 4;
 }
 
-enum LiveModeV2 {
-  LIVE_MODE_V2_UNSPECIFIED = 0;
-  LIVE_MODE_V2_LIVE = 1;
+enum LiveMode {
+  LIVE_MODE_UNSPECIFIED = 0;
+  LIVE_MODE_LIVE = 1;
 }
 
-message LivePageInfoV2 {
+message LivePageInfo {
   string handle_id = 1;
   uint32 page_no = 2;
   bool has_more = 3;
-  LiveModeV2 mode = 4;
+  LiveMode mode = 4;
   optional string expires_at = 5;
   optional string next_cursor = 6;
   optional uint32 retry_after_ms = 7;
 }
 
-message FetchLivePageResponseV2 {
+message LivePageResponse {
   repeated string items_json = 1;
-  LivePageInfoV2 page = 2;
+  LivePageInfo page = 2;
 }
 
-enum ActionExecutionModeV2 {
-  ACTION_EXECUTION_MODE_V2_UNSPECIFIED = 0;
-  ACTION_EXECUTION_MODE_V2_INLINE = 1;
-  ACTION_EXECUTION_MODE_V2_STREAMING = 2;
+enum ActionExecutionMode {
+  ACTION_EXECUTION_MODE_UNSPECIFIED = 0;
+  ACTION_EXECUTION_MODE_INLINE = 1;
+  ACTION_EXECUTION_MODE_STREAMING = 2;
 }
 
-message SubmitActionRequestV2 {
+message SubmitActionInput {
   string path = 1;
   string payload_json = 2;
-  ActionExecutionModeV2 execution_mode = 3;
+  ActionExecutionMode execution_mode = 3;
 }
 
-message ActionStreamingPlanV2 {
+message ActionStreamingPlan {
   string accepted_content_json = 1;
   string progress_content_json = 2;
   string terminal_content_json = 3;
@@ -125,20 +125,20 @@ message ActionStreamingPlanV2 {
   bool has_progress_content = 5;
 }
 
-message SubmitActionOutcomeV2 {
+message SubmitActionOutcome {
   oneof kind {
     string completed_content_json = 1;
-    ActionStreamingPlanV2 streaming_plan = 2;
+    ActionStreamingPlan streaming_plan = 2;
   }
 }
 
-message SubmitActionResponseV2 {
+message SubmitActionOutput {
   string request_id = 1;
   optional uint32 estimated_duration_ms = 2;
-  SubmitActionOutcomeV2 outcome = 3;
+  SubmitActionOutcome outcome = 3;
 }
 
-message ConnectorErrorV2 {
+message ConnectorError {
   string code = 1;
   string message = 2;
   bool retryable = 3;
@@ -146,69 +146,75 @@ message ConnectorErrorV2 {
 }
 
 message GetConnectorInfoRequest {}
+
 message GetConnectorInfoResponse {
   oneof result {
-    ConnectorInfoV2 info = 1;
-    ConnectorErrorV2 error = 2;
+    ConnectorInfo info = 1;
+    ConnectorError error = 2;
   }
 }
 
 message HealthRequest {
-  ConnectorContextV2 context = 1;
+  ConnectorContext context = 1;
 }
+
 message HealthResponse {
   oneof result {
-    HealthStatusV2 status = 1;
-    ConnectorErrorV2 error = 2;
+    HealthStatus status = 1;
+    ConnectorError error = 2;
   }
 }
 
 message PrewarmSnapshotMetaRequest {
-  ConnectorContextV2 context = 1;
+  ConnectorContext context = 1;
   string resource_path = 2;
   uint64 timeout_ms = 3;
 }
+
 message PrewarmSnapshotMetaResponse {
   oneof result {
-    SnapshotMetaV2 meta = 1;
-    ConnectorErrorV2 error = 2;
+    SnapshotMeta meta = 1;
+    ConnectorError error = 2;
   }
 }
 
 message FetchSnapshotChunkRequest {
-  ConnectorContextV2 context = 1;
-  FetchSnapshotChunkRequestV2 request = 2;
+  ConnectorContext context = 1;
+  SnapshotChunkRequest request = 2;
 }
+
 message FetchSnapshotChunkResponse {
   oneof result {
-    FetchSnapshotChunkResponseV2 response = 1;
-    ConnectorErrorV2 error = 2;
+    SnapshotChunkResponse response = 1;
+    ConnectorError error = 2;
   }
 }
 
 message FetchLivePageRequest {
-  ConnectorContextV2 context = 1;
-  FetchLivePageRequestV2 request = 2;
+  ConnectorContext context = 1;
+  LivePageRequest request = 2;
 }
+
 message FetchLivePageResponse {
   oneof result {
-    FetchLivePageResponseV2 response = 1;
-    ConnectorErrorV2 error = 2;
+    LivePageResponse response = 1;
+    ConnectorError error = 2;
   }
 }
 
 message SubmitActionRequest {
-  ConnectorContextV2 context = 1;
-  SubmitActionRequestV2 request = 2;
+  ConnectorContext context = 1;
+  SubmitActionInput request = 2;
 }
+
 message SubmitActionResponse {
   oneof result {
-    SubmitActionResponseV2 response = 1;
-    ConnectorErrorV2 error = 2;
+    SubmitActionOutput response = 1;
+    ConnectorError error = 2;
   }
 }
 
-service AppfsConnectorV2 {
+service AppfsConnector {
   rpc GetConnectorInfo(GetConnectorInfoRequest) returns (GetConnectorInfoResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc PrewarmSnapshotMeta(PrewarmSnapshotMetaRequest) returns (PrewarmSnapshotMetaResponse);
