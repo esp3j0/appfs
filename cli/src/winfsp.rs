@@ -6,7 +6,7 @@
 #![allow(clippy::manual_is_multiple_of)]
 
 use agentfs_sdk::error::Error as SdkError;
-use agentfs_sdk::filesystem::TimeChange;
+use agentfs_sdk::filesystem::{FsError, TimeChange};
 use agentfs_sdk::{BoxedFile, FileSystem, Stats};
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -296,10 +296,10 @@ impl AgentFSWinFsp {
                     if stats.is_directory() {
                         current_ino = stats.ino;
                     } else {
-                        return Err(anyhow::anyhow!("Not a directory"));
+                        return Err(SdkError::Fs(FsError::NotADirectory).into());
                     }
                 }
-                Ok(None) => return Err(anyhow::anyhow!("Path not found")),
+                Ok(None) => return Err(SdkError::Fs(FsError::NotFound).into()),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -325,6 +325,10 @@ impl AgentFSWinFsp {
             Ok(Some(stats)) => stats,
             _ => fallback.clone(),
         }
+    }
+
+    fn sanitize_dir_entry_name(name: &str) -> &str {
+        name.trim_end_matches('\0')
     }
 
     /// Delete a file or directory by path.
@@ -1216,9 +1220,10 @@ impl FileSystemContext for AgentFSWinFsp {
                 // in the previous call. We need to find it and skip past it.
                 let start_idx = if let Some(marker_name) = marker.inner_as_cstr() {
                     let marker_str = marker_name.to_string_lossy();
+                    let marker_str = Self::sanitize_dir_entry_name(&marker_str);
                     let mut idx = 0usize;
                     for (i, (name, _stats)) in all_entries.iter().enumerate() {
-                        if name == &marker_str {
+                        if Self::sanitize_dir_entry_name(name) == marker_str {
                             idx = i + 1;
                             break;
                         }
@@ -1232,6 +1237,7 @@ impl FileSystemContext for AgentFSWinFsp {
                 for (name, stats) in all_entries.iter().skip(start_idx) {
                     let mut dir_info: DirInfo<255> = DirInfo::default();
                     fill_file_info(stats, dir_info.file_info_mut());
+                    let name = Self::sanitize_dir_entry_name(name);
 
                     // Set the name using WideNameInfo trait
                     if dir_info.set_name(name).is_ok() {
@@ -1740,7 +1746,183 @@ pub fn unmount(_mountpoint: &std::path::Path, _lazy: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_truncate_size, volume_capacity};
+    use super::{
+        anyhow_to_ntstatus, resolve_truncate_size, volume_capacity, AgentFSWinFsp,
+        STATUS_NOT_A_DIRECTORY, STATUS_OBJECT_NAME_NOT_FOUND,
+    };
+    use agentfs_sdk::error::Result as SdkResult;
+    use agentfs_sdk::filesystem::{DirEntry, FileSystem, FilesystemStats, TimeChange};
+    use agentfs_sdk::{BoxedFile, Stats};
+    use async_trait::async_trait;
+    use parking_lot::Mutex;
+    use std::{collections::HashMap, sync::Arc};
+
+    struct MockFs {
+        by_parent: HashMap<(i64, String), Stats>,
+        by_ino: HashMap<i64, Stats>,
+    }
+
+    impl MockFs {
+        fn new() -> Self {
+            let root = test_stats(1, 0o040755, 0);
+            let mut by_ino = HashMap::new();
+            by_ino.insert(1, root);
+            Self {
+                by_parent: HashMap::new(),
+                by_ino,
+            }
+        }
+
+        fn with_child(mut self, parent: i64, name: &str, stats: Stats) -> Self {
+            self.by_parent
+                .insert((parent, name.to_string()), stats.clone());
+            self.by_ino.insert(stats.ino, stats);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl FileSystem for MockFs {
+        async fn lookup(&self, parent_ino: i64, name: &str) -> SdkResult<Option<Stats>> {
+            Ok(self.by_parent.get(&(parent_ino, name.to_string())).cloned())
+        }
+
+        async fn getattr(&self, ino: i64) -> SdkResult<Option<Stats>> {
+            Ok(self.by_ino.get(&ino).cloned())
+        }
+
+        async fn readlink(&self, _ino: i64) -> SdkResult<Option<String>> {
+            Ok(None)
+        }
+
+        async fn readdir(&self, _ino: i64) -> SdkResult<Option<Vec<String>>> {
+            Ok(Some(Vec::new()))
+        }
+
+        async fn readdir_plus(&self, _ino: i64) -> SdkResult<Option<Vec<DirEntry>>> {
+            Ok(Some(Vec::new()))
+        }
+
+        async fn chmod(&self, _ino: i64, _mode: u32) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn chown(&self, _ino: i64, _uid: Option<u32>, _gid: Option<u32>) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn utimens(
+            &self,
+            _ino: i64,
+            _atime: TimeChange,
+            _mtime: TimeChange,
+        ) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn open(&self, _ino: i64, _flags: i32) -> SdkResult<BoxedFile> {
+            unimplemented!()
+        }
+
+        async fn mkdir(
+            &self,
+            _parent_ino: i64,
+            _name: &str,
+            _mode: u32,
+            _uid: u32,
+            _gid: u32,
+        ) -> SdkResult<Stats> {
+            unimplemented!()
+        }
+
+        async fn create_file(
+            &self,
+            _parent_ino: i64,
+            _name: &str,
+            _mode: u32,
+            _uid: u32,
+            _gid: u32,
+        ) -> SdkResult<(Stats, BoxedFile)> {
+            unimplemented!()
+        }
+
+        async fn mknod(
+            &self,
+            _parent_ino: i64,
+            _name: &str,
+            _mode: u32,
+            _rdev: u64,
+            _uid: u32,
+            _gid: u32,
+        ) -> SdkResult<Stats> {
+            unimplemented!()
+        }
+
+        async fn symlink(
+            &self,
+            _parent_ino: i64,
+            _name: &str,
+            _target: &str,
+            _uid: u32,
+            _gid: u32,
+        ) -> SdkResult<Stats> {
+            unimplemented!()
+        }
+
+        async fn unlink(&self, _parent_ino: i64, _name: &str) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn rmdir(&self, _parent_ino: i64, _name: &str) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn link(&self, _ino: i64, _newparent_ino: i64, _newname: &str) -> SdkResult<Stats> {
+            unimplemented!()
+        }
+
+        async fn rename(
+            &self,
+            _oldparent_ino: i64,
+            _oldname: &str,
+            _newparent_ino: i64,
+            _newname: &str,
+        ) -> SdkResult<()> {
+            unimplemented!()
+        }
+
+        async fn statfs(&self) -> SdkResult<FilesystemStats> {
+            Ok(FilesystemStats {
+                inodes: self.by_ino.len() as u64,
+                bytes_used: 0,
+            })
+        }
+    }
+
+    fn test_stats(ino: i64, mode: u32, size: i64) -> Stats {
+        Stats {
+            ino,
+            mode,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            size,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            atime_nsec: 0,
+            mtime_nsec: 0,
+            ctime_nsec: 0,
+            rdev: 0,
+        }
+    }
+
+    fn with_adapter<T>(fs: MockFs, f: impl FnOnce(&AgentFSWinFsp) -> T) -> T {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let handle = rt.handle().clone();
+        let adapter = AgentFSWinFsp::new(Arc::new(Mutex::new(fs)), handle);
+        rt.block_on(async move { f(&adapter) })
+    }
 
     #[test]
     fn allocation_growth_does_not_change_logical_size() {
@@ -1771,5 +1953,38 @@ mod tests {
         let (total, free) = volume_capacity(bytes_used);
         assert_eq!(total, bytes_used + 64 * 1024 * 1024);
         assert_eq!(free, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn nested_missing_dotpath_maps_to_not_found() {
+        with_adapter(MockFs::new(), |adapter| {
+            let err = adapter
+                .path_lookup("/.claw/settings.json")
+                .expect_err("missing nested dotpath should error during parent walk");
+            assert_eq!(anyhow_to_ntstatus(&err), STATUS_OBJECT_NAME_NOT_FOUND);
+        });
+    }
+
+    #[test]
+    fn nested_dotpath_under_file_maps_to_not_a_directory() {
+        let fs = MockFs::new().with_child(1, ".claw", test_stats(2, 0o100644, 0));
+        with_adapter(fs, |adapter| {
+            let err = adapter
+                .path_lookup("/.claw/settings.json")
+                .expect_err("child lookup under file should report not-a-directory");
+            assert_eq!(anyhow_to_ntstatus(&err), STATUS_NOT_A_DIRECTORY);
+        });
+    }
+
+    #[test]
+    fn sanitize_dir_entry_name_strips_trailing_nul() {
+        assert_eq!(
+            AgentFSWinFsp::sanitize_dir_entry_name("settings.json\0"),
+            "settings.json"
+        );
+        assert_eq!(
+            AgentFSWinFsp::sanitize_dir_entry_name("settings.json"),
+            "settings.json"
+        );
     }
 }
