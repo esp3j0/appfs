@@ -15,7 +15,7 @@ It does not change AppFS Core protocol semantics. Runtime-side guarantees still 
 
 Reference proto:
 
-- `examples/appfs/grpc-bridge/proto/appfs_adapter_v1.proto`
+- `examples/appfs/legacy/v1/grpc/proto/appfs_adapter_v1.proto`
 
 Service:
 
@@ -79,9 +79,9 @@ Equivalent env vars:
 
 Reference files:
 
-1. `examples/appfs/grpc-bridge/python/grpc_server.py`
-2. `examples/appfs/grpc-bridge/python/http_gateway.py`
-3. `examples/appfs/grpc-bridge/python/README.md`
+1. `examples/appfs/bridges/grpc-python/grpc_server.py`
+2. `examples/appfs/legacy/v1/grpc/python/http_gateway.py`
+3. `examples/appfs/bridges/grpc-python/README.md`
 
 `http_gateway.py` exposes:
 
@@ -98,7 +98,7 @@ Runtime-side gRPC bridge dispatch includes:
 2. circuit breaker on repeated transport-level failures
 3. transport metrics logs (`requests/attempts/retries/success/fail/short_circuit`) for observability
 
-Reference Python gRPC bridge (`examples/appfs/grpc-bridge/python/grpc_server.py`) supports optional fault injection knobs for contract testing:
+Reference Python gRPC bridge (`examples/appfs/bridges/grpc-python/grpc_server.py`) supports optional fault injection knobs for contract testing:
 
 1. `APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION` (int, default `0`)
 2. `APPFS_BRIDGE_FAIL_PATH_PREFIX` (only fail matching action paths)

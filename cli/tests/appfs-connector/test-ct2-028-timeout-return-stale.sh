@@ -25,7 +25,7 @@ trap cleanup EXIT INT TERM
 
 prepare_fixture() {
     rm -rf "$TMP_ROOT/aiim"
-    cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
+    cp -R "$REPO_DIR/examples/appfs/fixtures/aiim" "$TMP_ROOT/"
 }
 
 patch_manifest_timeout_return_stale() {

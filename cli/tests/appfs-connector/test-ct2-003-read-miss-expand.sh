@@ -39,7 +39,7 @@ assert_json_expr() {
 
 prepare_fixture() {
     rm -rf "$TMP_ROOT/aiim"
-    cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
+    cp -R "$REPO_DIR/examples/appfs/fixtures/aiim" "$TMP_ROOT/"
 }
 
 patch_manifest_timeout_fail() {

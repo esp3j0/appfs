@@ -1,64 +1,66 @@
-﻿# AppFS Example Tree
+# AppFS Examples
 
-This directory contains AppFS v0.3 connectorization examples and reference fixtures.
+This directory is the current AppFS example and integration entrypoint.
+
+It is organized around the shipping runtime model:
+
+1. start AppFS with `agentfs appfs up`
+2. register apps through `/_appfs/register_app.act`
+3. use ordinary file reads, scope switches, and `.act` writes against the mounted tree
+
+`mount` and `serve appfs` still exist for debugging, but they are no longer the recommended examples path.
 
 ## Layout
 
-1. `.well-known/apps.res.json` for app discovery.
-2. `aiim/_meta/*` for manifest/context/permissions/schema metadata.
-3. `aiim/_stream/*` sample event stream + replay snapshots.
-4. `aiim/_paging/*` action sinks for live resource paging protocol.
-5. `aiim/_snapshot/refresh.act` for explicit snapshot materialization checks.
-6. Resource/action sample paths under `contacts/`, `files/`, `chats/`, `feed/`.
-7. `http-bridge/python/` and `grpc-bridge/python/` out-of-process bridge examples.
-8. `adapter-template/rust-minimal/` legacy v0.1 (`AppAdapterV1`) template kept for reference.
-9. `new-adapter.sh` one-command scaffold for new Python HTTP bridge adapters.
+1. `fixtures/aiim/`
+   Canonical demo fixture used by contract tests, live harnesses, and smoke examples.
+2. `bridges/http-python/`
+   Current Python HTTP connector bridge reference.
+3. `bridges/grpc-python/`
+   Current Python gRPC connector bridge reference.
+4. `templates/http-python/`
+   Current Python connector scaffold used by `new-connector.sh`.
+5. `legacy/v1/`
+   Historical `AppAdapterV1` assets kept only for reference.
+6. `.well-known/apps.res.json`
+   Discovery/fixture example, not the primary startup path.
 
-## V0.3 Contract Checks
+## Recommended Start
 
-Static fixture check:
+Use the repository root README for platform-specific startup commands.
+Once AppFS is mounted, register an app through the root control plane:
 
 ```bash
-cd cli
-APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT="$PWD/../examples/appfs" sh ./tests/test-appfs-contract.sh
+echo '{"app_id":"aiim","transport":{"kind":"http","endpoint":"http://127.0.0.1:8080","http_timeout_ms":5000,"grpc_timeout_ms":5000,"bridge_max_retries":2,"bridge_initial_backoff_ms":100,"bridge_max_backoff_ms":1000,"bridge_circuit_breaker_failures":5,"bridge_circuit_breaker_cooldown_ms":3000},"client_token":"reg-http-001"}' >> /mount/_appfs/register_app.act
 ```
 
-Live conformance (v0.3 connector main path):
+After registration:
+
+1. read snapshot resources directly, for example `chats/chat-001/messages.res.jsonl`
+2. switch structure with `/_app/enter_scope.act`
+3. refresh structure with `/_app/refresh_structure.act`
+4. submit actions by appending JSON to `.act` files
+
+`_snapshot/refresh.act` remains a control-plane example under the fixture, but it is not the normal snapshot read path.
+
+## Conformance
+
+From this directory:
 
 ```bash
-cd examples/appfs
 sh ./run-conformance.sh inprocess
 sh ./run-conformance.sh http-python
 sh ./run-conformance.sh grpc-python
 ```
 
-## V0.3 Demo Connector Parity
+These scripts exercise the live AppFS harness and the current connector transport examples.
 
-`sdk/rust/src/appfs_demo_adapter.rs` (`DemoAppConnector`) is the canonical demo behavior surface.
-In-process / HTTP / gRPC should match on business semantics for:
+## Adapter / Connector Onboarding
 
-1. `connector_info` / `health`
-2. `prewarm_snapshot_meta`
-3. `fetch_snapshot_chunk`
-4. `fetch_live_page`
-5. `submit_action`
+See:
 
-Only transport-specific differences should remain:
+1. `ADAPTER-QUICKSTART.md`
+2. `templates/http-python/`
+3. `new-connector.sh`
 
-1. `connector_id`
-2. `transport`
-3. bridge wrapper details (serialization / endpoint envelope)
-
-Parity fixture highlights:
-
-1. snapshot start records: `rk-001/rk-002` with `{"id":"m-1","text":"hello"}` and `{"id":"m-2","text":"world"}`
-2. snapshot cursor follow-up (`cursor-2`): `rk-003` with `{"id":"m-3","text":"done"}`
-3. snapshot `emitted_bytes`: compact JSON line bytes + newline (`+1`) per record
-4. live page: `handle_id=demo-live-handle-1`, page 1 -> `next_cursor=cursor-1`, page 2 -> no next cursor
-5. live items: `{"id":"item-{page_no}","resource":"<resource_path>"}`
-6. inline submit outcome: `{"ok":true,"path":"...","echo":<payload>}`
-7. streaming submit plan: accepted `{"state":"accepted"}`, progress `{"percent":50}`, terminal `{"ok":true}`
-
-See `ADAPTER-QUICKSTART.md` for v0.3 adapter workflow.
-Legacy v0.1 guidance is reference-only: `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`.
-
+If you need historical `AppAdapterV1` reference material, use `legacy/v1/`.

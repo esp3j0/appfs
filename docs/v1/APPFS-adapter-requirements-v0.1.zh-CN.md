@@ -372,7 +372,7 @@ pub trait AppAdapterV1: Send {
 | 17 | PASS | `sdk/rust/src/appfs_adapter.rs` + `cli/src/cmd/appfs.rs` + `run-live-with-adapter.sh` (`CT-001` 到 `CT-016`) | Runtime 通过冻结 `AppAdapterV1` 分发业务处理，且保持 live 一致性 |
 | 18 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate`) + `cli/tests/appfs/run-live-with-adapter.sh` | Linux CI 将 static + live 作为合并门禁 |
 | 19 | PASS | `.github/workflows/rust.yml` (`appfs-contract-gate-http-bridge`, `appfs-contract-gate-grpc-bridge`) | CI 对 HTTP/gRPC bridge 执行同一 live 套件验证传输一致性 |
-| 20 | PASS | `examples/appfs/ADAPTER-QUICKSTART.md` + `examples/appfs/run-conformance.sh` + `examples/appfs/adapter-template/rust-minimal/` | 提供最小可复现接入路径（quickstart + 一键 conformance + SDK 模板） |
+| 20 | PASS | `examples/appfs/ADAPTER-QUICKSTART.md` + `examples/appfs/run-conformance.sh` + `examples/appfs/legacy/v1/templates/rust-minimal/` | 提供最小可复现接入路径（quickstart + 一键 conformance + SDK 模板） |
 | 21 | PASS | `cli/src/cmd/appfs/bridge_resilience.rs` + `cli/src/cmd/appfs/http_bridge_adapter.rs` + `cli/src/cmd/appfs/grpc_bridge_adapter.rs` + `run-live-with-adapter.sh` (`CT-017`) | Bridge 路径支持可配置重试/退避/断路器并输出指标，live 契约覆盖 retry/circuit/cooldown 恢复 |
 
 ## 9. 交付计划

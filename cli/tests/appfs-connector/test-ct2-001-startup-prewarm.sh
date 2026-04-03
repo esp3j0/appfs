@@ -51,7 +51,7 @@ wait_log_contains() {
 
 reload_fixture_app() {
     rm -rf "$TMP_ROOT/aiim"
-    cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
+    cp -R "$REPO_DIR/examples/appfs/fixtures/aiim" "$TMP_ROOT/"
     APP_DIR="$TMP_ROOT/aiim"
     MANIFEST="$APP_DIR/_meta/manifest.res.json"
     SNAPSHOT_FILE="$APP_DIR/chats/chat-001/messages.res.jsonl"

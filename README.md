@@ -63,7 +63,7 @@ Prerequisites:
 Start the reference HTTP bridge:
 
 ```powershell
-cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
+cd C:\Users\esp3j\rep\agentfs\examples\appfs\bridges\http-python
 uv run python bridge_server.py
 ```
 
@@ -99,7 +99,7 @@ Add-Content C:\mnt\appfs-managed-http\aiim\contacts\zhangsan\send_message.act '{
 Start the reference HTTP bridge:
 
 ```bash
-cd /path/to/agentfs/examples/appfs/http-bridge/python
+cd /path/to/agentfs/examples/appfs/bridges/http-python
 uv run python bridge_server.py
 ```
 
@@ -195,6 +195,7 @@ Key entry points:
 - [Current AppFS milestone (v4)](docs/v4/README.md)
 - [Connectorization milestone (v3)](docs/v3/README.md)
 - [Backend-native milestone (v2)](docs/v2/README.md)
+- [examples/appfs guide](examples/appfs/README.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
 - [Runtime closure design plan](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
 
@@ -235,7 +236,7 @@ Notes:
 - `sdk/typescript/`: TypeScript SDK
 - `sdk/python/`: Python SDK
 - `sandbox/`: Linux-only syscall interception sandbox
-- `examples/appfs/`: fixtures and bridge reference implementations
+- `examples/appfs/`: AppFS examples, split into `fixtures/`, `bridges/`, `templates/`, and `legacy/`
 - `docs/`: ADRs, plans, contracts, and release notes
 
 ## Testing

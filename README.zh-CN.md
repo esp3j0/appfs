@@ -63,7 +63,7 @@ managed runtime 的共享状态文件位于：
 启动参考 HTTP bridge：
 
 ```powershell
-cd C:\Users\esp3j\rep\agentfs\examples\appfs\http-bridge\python
+cd C:\Users\esp3j\rep\agentfs\examples\appfs\bridges\http-python
 uv run python bridge_server.py
 ```
 
@@ -99,7 +99,7 @@ Add-Content C:\mnt\appfs-managed-http\aiim\contacts\zhangsan\send_message.act '{
 启动参考 HTTP bridge：
 
 ```bash
-cd /path/to/agentfs/examples/appfs/http-bridge/python
+cd /path/to/agentfs/examples/appfs/bridges/http-python
 uv run python bridge_server.py
 ```
 
@@ -195,6 +195,7 @@ uv run ruff format .
 - [当前 AppFS 文档主入口（v4）](docs/v4/README.md)
 - [Connectorization 里程碑（v3）](docs/v3/README.md)
 - [Backend-native 里程碑（v2）](docs/v2/README.md)
+- [examples/appfs 使用说明](examples/appfs/README.md)
 - [cli/TEST-WINDOWS.md](cli/TEST-WINDOWS.md)
 - [Runtime 收口设计计划](docs/plans/2026-03-26-appfs-runtime-closure-design.md)
 
@@ -235,7 +236,7 @@ flowchart TD
 - `sdk/typescript/`：TypeScript SDK
 - `sdk/python/`：Python SDK
 - `sandbox/`：Linux-only syscall interception sandbox
-- `examples/appfs/`：夹具与 bridge 参考实现
+- `examples/appfs/`：AppFS 示例，按 `fixtures/`、`bridges/`、`templates/`、`legacy/` 分层
 - `docs/`：ADR、计划、契约与发布文档
 
 ## 测试

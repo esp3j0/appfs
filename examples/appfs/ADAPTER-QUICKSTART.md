@@ -1,69 +1,97 @@
 # AppFS Connector Quickstart
 
-This is the default quickstart for AppFS connector shipping path.
-Treat Rust in-process `DemoAppConnector` as canonical behavior; HTTP/gRPC demos must match it.
+This quickstart is for the current AppFS connector path.
+
+Design against the canonical `AppConnector` surface and the managed AppFS runtime.
+Treat the in-process demo connector as the behavior reference; HTTP and gRPC bridges should match it.
 
 Primary references:
 
-1. `docs/v4/README.md`
-2. `docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
-3. `docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
+1. `../../docs/v4/README.md`
+2. `../../docs/v4/APPFS-v0.4-AppStructureSync-ADR.zh-CN.md`
+3. `../../docs/v4/APPFS-v0.4-Connector结构接口.zh-CN.md`
 
-## 1. Choose Connector Path
+## 1. Choose a Connector Path
 
-1. In-process connector (Rust runtime demo path)
-2. Out-of-process HTTP connector bridge
-3. Out-of-process gRPC connector bridge
+1. in-process connector
+2. out-of-process HTTP bridge
+3. out-of-process gRPC bridge
 
-## 2. Run Conformance
+## 2. Start from the Current Scaffold
+
+Generate a Python HTTP connector scaffold:
+
+```bash
+sh ./new-connector.sh my-app
+```
+
+This creates:
+
+```text
+examples/appfs/connectors/my-app/http-python
+```
+
+The scaffold is based on the current `AppConnector` surface and current bridge contract.
+
+## 3. Implement the Connector Surface
+
+A complete connector should define:
+
+1. `connector_info`
+2. `health`
+3. `prewarm_snapshot_meta`
+4. `fetch_snapshot_chunk`
+5. `fetch_live_page`
+6. `submit_action`
+7. `get_app_structure`
+8. `refresh_app_structure`
+
+Structure and fixture design should start from:
+
+1. the connector-owned tree
+2. scope transitions
+3. snapshot resources
+4. live pageable resources
+5. action sinks
+
+## 4. Verify Against the Live Harness
 
 From this directory:
 
 ```bash
-cd examples/appfs
 sh ./run-conformance.sh inprocess
 sh ./run-conformance.sh http-python
 sh ./run-conformance.sh grpc-python
 ```
 
-What it runs:
+For a generated connector:
 
-1. Mount AgentFS live filesystem.
-2. Start runtime + selected connector transport path.
-3. Execute contract tests via `cli/tests/appfs/run-live-with-adapter.sh`.
+```bash
+cd connectors/my-app/http-python
+uv run python -m unittest discover -s tests -t . -p "test_*.py"
+APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080 sh ./run-conformance.sh
+```
 
-## 3. Canonical Demo Parity Checklist
+## 5. Runtime Model
 
-Keep HTTP/gRPC behavior aligned with in-process canonical for:
+The recommended user-facing runtime path is:
 
-1. `connector_info` / `health`
-2. `prewarm_snapshot_meta`
-3. `fetch_snapshot_chunk`
-4. `fetch_live_page`
-5. `submit_action`
+```bash
+agentfs appfs up <id-or-path> <mountpoint>
+```
 
-Only transport-specific differences are allowed:
+Then register the app through `/_appfs/register_app.act`.
 
-1. `connector_id`
-2. `transport`
-3. transport envelope details
+Do not design around:
 
-Key parity fixtures:
+1. `AppAdapterV1`
+2. `/v1/submit-action` as the main integration surface
+3. `/_snapshot/refresh.act` as the normal snapshot read path
+4. `mount + serve appfs` as the main examples flow
 
-1. snapshot start: `rk-001/rk-002`; cursor follow-up (`cursor-2`): `rk-003`
-2. snapshot `emitted_bytes`: compact JSON line bytes + newline (`+1`) per record
-3. live paging: `handle_id=demo-live-handle-1`, `cursor-1` progression
-4. inline submit: `{"ok":true,"path":"...","echo":<payload>}`
-5. streaming submit: accepted `{"state":"accepted"}`, progress `{"percent":50}`, terminal `{"ok":true}`
+## 6. Legacy Reference
 
-## 4. HTTP / gRPC Starters
+Historical v0.1 materials are kept under:
 
-1. HTTP: `examples/appfs/http-bridge/python/`
-2. gRPC: `examples/appfs/grpc-bridge/python/` (run `./generate_stubs.sh` before server start)
-
-## 5. Legacy Reference (v0.1)
-
-The v0.1 `AppAdapterV1` guides/templates are retained only as legacy reference:
-
-1. `../../docs/v1/APPFS-adapter-developer-guide-v0.1.md`
-2. `examples/appfs/adapter-template/rust-minimal`
+1. `legacy/v1/`
+2. `../../docs/v1/`

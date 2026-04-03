@@ -82,7 +82,7 @@ ensure_agentfs_bin "$CLI_DIR"
 
 mkdir -p "$CLI_DIR/target"
 TMP_ROOT="$(mktemp -d "$CLI_DIR/target/ct2-connector-007.XXXXXX")"
-cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
+cp -R "$REPO_DIR/examples/appfs/fixtures/aiim" "$TMP_ROOT/"
 
 APP_DIR="$TMP_ROOT/aiim"
 ACTION="$APP_DIR/contacts/zhangsan/send_message.act"

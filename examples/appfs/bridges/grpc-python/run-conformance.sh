@@ -64,8 +64,10 @@ PY
 trap cleanup EXIT INT TERM
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "missing python interpreter: $PYTHON_BIN"
-[ -f "$SCRIPT_DIR/appfs_adapter_v1_pb2.py" ] || fail "missing generated protobuf stubs: appfs_adapter_v1_pb2.py"
-[ -f "$SCRIPT_DIR/appfs_adapter_v1_pb2_grpc.py" ] || fail "missing generated protobuf stubs: appfs_adapter_v1_pb2_grpc.py"
+[ -f "$SCRIPT_DIR/appfs_connector_pb2.py" ] || fail "missing generated protobuf stubs: appfs_connector_pb2.py"
+[ -f "$SCRIPT_DIR/appfs_connector_pb2_grpc.py" ] || fail "missing generated protobuf stubs: appfs_connector_pb2_grpc.py"
+[ -f "$SCRIPT_DIR/appfs_structure_pb2.py" ] || fail "missing generated protobuf stubs: appfs_structure_pb2.py"
+[ -f "$SCRIPT_DIR/appfs_structure_pb2_grpc.py" ] || fail "missing generated protobuf stubs: appfs_structure_pb2_grpc.py"
 
 say "Starting Python gRPC bridge..."
 "$PYTHON_BIN" "$SCRIPT_DIR/grpc_server.py" >"$BRIDGE_LOG" 2>&1 &

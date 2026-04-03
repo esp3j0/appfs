@@ -38,7 +38,7 @@ jobs:
       env:
         APPFS_CONTRACT_TESTS: "1"
         APPFS_STATIC_FIXTURE: "1"
-        APPFS_ROOT: ${{ github.workspace }}/examples/appfs
+        APPFS_ROOT: ${{ github.workspace }}/examples/appfs/fixtures
       run: sh ./tests/test-appfs-contract.sh
 
     - name: Run AppFS v0.1 live contract suite (baseline smoke)
@@ -95,12 +95,12 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
         APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_HTTP_STATUS=503 \
@@ -189,12 +189,12 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-http-bridge.pid"
         uv run python - <<'PY'
@@ -287,12 +287,12 @@ jobs:
 
     - name: Run HTTP bridge unit tests
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         uv run python -m unittest discover -s tests -t . -p "test_*.py"
 
     - name: Start HTTP bridge (high-risk)
       run: |
-        cd ../examples/appfs/http-bridge/python
+        cd ../examples/appfs/bridges/http-python
         nohup uv run python bridge_server.py >"$RUNNER_TEMP/appfs-http-bridge-high-risk.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-http-bridge-high-risk.pid"
         uv run python - <<'PY'
@@ -378,7 +378,7 @@ jobs:
 
     - name: Install gRPC bridge dependencies
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
         chmod +x ./generate_stubs.sh
@@ -386,7 +386,7 @@ jobs:
 
     - name: Start gRPC bridge
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         APPFS_BRIDGE_FAIL_NEXT_SUBMIT_ACTION=4 \
         APPFS_BRIDGE_FAIL_PATH_PREFIX=/contacts/resilience- \
         APPFS_BRIDGE_FAIL_GRPC_CODE=UNAVAILABLE \
@@ -469,7 +469,7 @@ jobs:
 
     - name: Install gRPC bridge dependencies
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         python3 -m pip install --upgrade pip
         python3 -m pip install -r requirements.txt
         chmod +x ./generate_stubs.sh
@@ -477,7 +477,7 @@ jobs:
 
     - name: Start gRPC bridge
       run: |
-        cd ../examples/appfs/grpc-bridge/python
+        cd ../examples/appfs/bridges/grpc-python
         nohup python3 grpc_server.py >"$RUNNER_TEMP/appfs-grpc-bridge.log" 2>&1 &
         echo $! >"$RUNNER_TEMP/appfs-grpc-bridge.pid"
         python3 - <<'PY'

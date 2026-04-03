@@ -42,10 +42,11 @@ fn main() {
 }
 
 fn compile_appfs_grpc_bridge_proto() {
-    let proto_v1 = "../examples/appfs/grpc-bridge/proto/appfs_adapter_v1.proto";
-    let connector_proto = "../examples/appfs/grpc-bridge/proto/appfs_connector.proto";
-    let structure_proto = "../examples/appfs/grpc-bridge/proto/appfs_structure.proto";
-    let include_dir = "../examples/appfs/grpc-bridge/proto";
+    let proto_v1 = "../examples/appfs/legacy/v1/grpc/proto/appfs_adapter_v1.proto";
+    let connector_proto = "../examples/appfs/bridges/grpc-python/proto/appfs_connector.proto";
+    let structure_proto = "../examples/appfs/bridges/grpc-python/proto/appfs_structure.proto";
+    let legacy_include_dir = "../examples/appfs/legacy/v1/grpc/proto";
+    let connector_include_dir = "../examples/appfs/bridges/grpc-python/proto";
 
     println!("cargo:rerun-if-changed={proto_v1}");
     println!("cargo:rerun-if-changed={connector_proto}");
@@ -66,21 +67,21 @@ fn compile_appfs_grpc_bridge_proto() {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[proto_v1], &[include_dir])
+            .compile_protos(&[proto_v1], &[legacy_include_dir])
             .expect("failed to compile AppFS gRPC bridge v1 proto");
     }
     if connector_exists {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[connector_proto], &[include_dir])
+            .compile_protos(&[connector_proto], &[connector_include_dir])
             .expect("failed to compile AppFS connector proto");
     }
     if structure_exists {
         tonic_build::configure()
             .build_server(true)
             .build_client(true)
-            .compile_protos(&[structure_proto], &[include_dir])
+            .compile_protos(&[structure_proto], &[connector_include_dir])
             .expect("failed to compile AppFS structure proto");
     }
 }

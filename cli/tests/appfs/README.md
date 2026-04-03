@@ -19,7 +19,7 @@ For static fixture validation (without mounted runtime):
 
 ```bash
 cd cli
-APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT=/mnt/c/Users/esp3j/rep/agentfs/examples/appfs ./tests/test-appfs-contract.sh
+APPFS_CONTRACT_TESTS=1 APPFS_STATIC_FIXTURE=1 APPFS_ROOT=/mnt/c/Users/esp3j/rep/agentfs/examples/appfs/fixtures ./tests/test-appfs-contract.sh
 ```
 
 To run through the existing aggregate test entry:
@@ -44,8 +44,8 @@ export APPFS_ADAPTER_HTTP_ENDPOINT=http://127.0.0.1:8080
 
 For gRPC bridge example, use:
 
-1. `examples/appfs/grpc-bridge/python/grpc_server.py`
-2. `examples/appfs/grpc-bridge/python/http_gateway.py`
+1. `examples/appfs/bridges/grpc-python/grpc_server.py`
+2. `examples/appfs/legacy/v1/grpc/python/http_gateway.py`
 
 For runtime native gRPC bridge mode, export:
 
@@ -73,7 +73,7 @@ export APPFS_ADAPTER_GRPC_ENDPOINT=http://127.0.0.1:50051
 
 | Variable | Default |
 |---|---|
-| `APPFS_FIXTURE_DIR` | `../examples/appfs` (from repo root) |
+| `APPFS_FIXTURE_DIR` | `../examples/appfs/fixtures` (from repo root) |
 | `APPFS_LIVE_AGENT_ID` | `appfs-live-$$` |
 | `APPFS_LIVE_MOUNTPOINT` | `/tmp/agentfs-appfs-live-$$` |
 | `APPFS_APP_ID` | `aiim` |

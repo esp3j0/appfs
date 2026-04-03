@@ -88,7 +88,7 @@ detect_platform() {
 
 reload_fixture_app() {
     rm -rf "$TMP_ROOT/aiim"
-    cp -R "$REPO_DIR/examples/appfs/aiim" "$TMP_ROOT/"
+    cp -R "$REPO_DIR/examples/appfs/fixtures/aiim" "$TMP_ROOT/"
     APP_DIR="$TMP_ROOT/aiim"
     SNAPSHOT_FILE="$APP_DIR/chats/chat-001/messages.res.jsonl"
     LIVE_FILE="$APP_DIR/feed/recommendations.res.json"

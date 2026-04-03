@@ -1522,7 +1522,7 @@ mod tests {
 
     fn fixture_adapter() -> (TempDir, AppfsAdapter) {
         let temp = TempDir::new().expect("tempdir");
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/fixtures/aiim");
         let app_dir = temp.path().join("aiim");
         copy_dir_recursive(&fixture, &app_dir);
 

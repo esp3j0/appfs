@@ -1568,7 +1568,8 @@ mod windows_overlay_tests {
     async fn winfsp_overlay_uses_hostfs_base_without_hydrating_delta() {
         let fixture_root = TempDir::new().expect("fixture tempdir");
         let app_dir = fixture_root.path().join("aiim");
-        let source_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/aiim");
+        let source_fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/appfs/fixtures/aiim");
         copy_dir_recursive(&source_fixture, &app_dir);
 
         let id = format!("winfsp-hydrate-{}", uuid::Uuid::new_v4().simple());
