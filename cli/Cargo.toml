@@ -84,6 +84,9 @@ aegis = { version = "0.9.6", features = ["pure-rust"] }
 # Note: Requires WinFsp to be installed from https://winfsp.dev/rel/
 # The winfsp crate includes pre-built bindings, no LLVM/bindgen needed
 [target.'cfg(target_os = "windows")'.dependencies]
+# Force the pure-Rust aegis backend on Windows as well so self-hosted runners
+# do not need an additional clang-cl toolchain just to build turso's crypto deps.
+aegis = { version = "0.9.8", features = ["pure-rust"] }
 winfsp = { version = "0.12", default-features = false, features = ["delayload"] }
 
 # Build dependencies for Windows (needed for winfsp_link_delayload in build.rs)
