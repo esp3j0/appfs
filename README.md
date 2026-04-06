@@ -60,6 +60,12 @@ Prerequisites:
 
 ### Windows
 
+Install WinFsp first. AppFS uses WinFsp as the Windows mount backend for `--backend winfsp`.
+
+- Download and install the latest WinFsp release from [winfsp.dev/rel](https://winfsp.dev/rel/)
+- After installation, open a new terminal before running `agentfs appfs up`
+- A reboot is usually not required, but if Windows reports the driver is busy or mounts still fail after install, reboot once and retry
+
 Start the reference HTTP bridge:
 
 ```powershell

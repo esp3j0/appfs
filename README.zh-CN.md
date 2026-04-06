@@ -60,6 +60,12 @@ managed runtime 的共享状态文件位于：
 
 ### Windows
 
+请先安装 WinFsp。AppFS 在 Windows 上通过 `--backend winfsp` 使用 WinFsp 作为挂载后端。
+
+- 从 [winfsp.dev/rel](https://winfsp.dev/rel/) 下载并安装最新版本的 WinFsp
+- 安装完成后，请重新打开一个终端，再运行 `agentfs appfs up`
+- 通常不需要重启；如果安装后仍然提示驱动忙碌，或者挂载还是失败，再重启一次后重试
+
 启动参考 HTTP bridge：
 
 ```powershell
