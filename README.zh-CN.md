@@ -154,6 +154,79 @@ cargo run -- appfs up .agentfs/managed-http.db /tmp/appfs-managed-http --backend
 
 ## 手动编译
 
+### 环境依赖
+
+在一台全新的 Windows 机器上，运行 `cargo build` 之前需要先安装 Rust toolchain 和 Visual Studio Build Tools。
+
+如果你看到：
+
+```text
+error: linker `link.exe` not found
+```
+
+通常说明当前 shell 里还没有加载 MSVC 的编译环境。
+
+1. 安装 Rust
+
+```powershell
+winget install --id Rustlang.Rustup -e
+rustup default stable-x86_64-pc-windows-msvc
+```
+
+2. 安装 Visual Studio Build Tools
+
+```powershell
+# 下载 Visual Studio Build Tools 安装器
+Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile vs_buildtools.exe
+
+# 安装 C++ Build Tools workload（不带完整 IDE）
+Start-Process -Wait -FilePath .\vs_buildtools.exe -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+3. 单独安装官方 LLVM Windows 发行版
+
+请从 LLVM 官方发布页下载最新的 Windows 安装包 `LLVM-*-win64.exe`：
+
+- [LLVM 官方发布页](https://github.com/llvm/llvm-project/releases)
+
+安装时如果看到“Add LLVM to PATH”之类的选项，建议勾上。默认安装目录通常是：
+
+```text
+C:\Program Files\LLVM\bin
+```
+
+4. 确保 MSVC 和 LLVM 编译器目录已经在 `PATH` 中
+
+重新打开一个终端后，再执行：
+
+```powershell
+$MsvcBin = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" -Directory |
+    Sort-Object Name -Descending |
+    Select-Object -First 1 |
+    ForEach-Object { Join-Path $_.FullName "bin\Hostx64\x64" }
+
+$LlvmBin = "C:\Program Files\LLVM\bin"
+
+$env:Path = "$MsvcBin;$LlvmBin;$env:Path"
+
+where.exe cl
+where.exe link
+where.exe clang-cl
+```
+
+在常见安装路径下，这两个目录通常会长这样：
+
+```text
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\<version>\bin\Hostx64\x64
+C:\Program Files\LLVM\bin
+```
+
+如果 `where.exe cl` 或 `where.exe link` 仍然找不到结果，先检查上面的 MSVC 目录是否存在。不存在的话，说明 Build Tools 没有安装完整，需要重新安装。
+
+如果 `where.exe clang-cl` 仍然找不到结果，说明 LLVM 还没有安装好，或者没有加入 `PATH`。这时请先检查 `C:\Program Files\LLVM\bin\clang-cl.exe` 是否存在，再把 `C:\Program Files\LLVM\bin` 加入 `PATH`。
+
+对 `cargo build` 来说，最关键的条件其实就是 `cl.exe`、`link.exe` 和 `clang-cl.exe` 都能通过 `PATH` 被找到。
+
 ### CLI 与 Rust SDK
 
 ```bash

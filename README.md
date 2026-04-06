@@ -154,6 +154,79 @@ Then use the same `/_appfs/register_app.act`, per-app `.act`, and ordinary file 
 
 ## Build From Source
 
+### Environment Dependencies
+
+On a fresh Windows machine, install the Rust toolchain and Visual Studio Build Tools before running `cargo build`.
+
+If you see:
+
+```text
+error: linker `link.exe` not found
+```
+
+the MSVC build environment is not available in the current shell yet.
+
+1. Install Rust
+
+```powershell
+winget install --id Rustlang.Rustup -e
+rustup default stable-x86_64-pc-windows-msvc
+```
+
+2. Install Visual Studio Build Tools
+
+```powershell
+# Download the Visual Studio Build Tools installer
+Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vs_buildtools.exe -OutFile vs_buildtools.exe
+
+# Install the C++ Build Tools workload (without the full IDE)
+Start-Process -Wait -FilePath .\vs_buildtools.exe -ArgumentList "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+3. Install the official LLVM Windows release
+
+Download the latest Windows installer (`LLVM-*-win64.exe`) from the official LLVM release page:
+
+- [LLVM official releases](https://github.com/llvm/llvm-project/releases)
+
+During installation, enable the option to add LLVM to `PATH` if the installer offers it. The default install location is usually:
+
+```text
+C:\Program Files\LLVM\bin
+```
+
+4. Make sure the MSVC and LLVM compiler directories are on `PATH`
+
+Open a new terminal, then run:
+
+```powershell
+$MsvcBin = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" -Directory |
+    Sort-Object Name -Descending |
+    Select-Object -First 1 |
+    ForEach-Object { Join-Path $_.FullName "bin\Hostx64\x64" }
+
+$LlvmBin = "C:\Program Files\LLVM\bin"
+
+$env:Path = "$MsvcBin;$LlvmBin;$env:Path"
+
+where.exe cl
+where.exe link
+where.exe clang-cl
+```
+
+On a typical machine these resolve to paths like:
+
+```text
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\<version>\bin\Hostx64\x64
+C:\Program Files\LLVM\bin
+```
+
+If `where.exe cl` or `where.exe link` still cannot find anything, check that the MSVC directory above exists first. If it does not, re-run the Build Tools installer.
+
+If `where.exe clang-cl` still cannot find anything, LLVM is either not installed yet or was not added to `PATH`. In that case, check whether `C:\Program Files\LLVM\bin\clang-cl.exe` exists and add `C:\Program Files\LLVM\bin` to `PATH`.
+
+For `cargo build`, the important part is simply that `cl.exe`, `link.exe`, and `clang-cl.exe` are reachable on `PATH`.
+
 ### CLI and Rust SDK
 
 ```bash
