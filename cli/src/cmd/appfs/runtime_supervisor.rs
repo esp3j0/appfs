@@ -4,6 +4,7 @@ use super::registry_manager::{self, RegistryRuntimeSnapshot};
 use super::runtime_entry::{
     build_runtime_entry, read_active_scope, transport_summary, AppRuntimeEntry,
 };
+use super::runtime_manifest;
 use super::supervisor_control;
 use super::ResolvedAppfsRuntimeCliArgs;
 use anyhow::Result;
@@ -12,6 +13,8 @@ use std::path::PathBuf;
 
 pub(super) struct AppfsRuntimeSupervisor {
     root: PathBuf,
+    managed: bool,
+    runtime_session_id: String,
     control_plane: supervisor_control::SupervisorControlPlane,
     pub(super) runtimes: BTreeMap<String, AppRuntimeEntry>,
 }
@@ -20,6 +23,7 @@ impl AppfsRuntimeSupervisor {
     pub(super) fn new(
         root: PathBuf,
         runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
+        managed: bool,
     ) -> Result<Self> {
         let mut runtimes = BTreeMap::new();
         for runtime in runtime_args {
@@ -32,6 +36,8 @@ impl AppfsRuntimeSupervisor {
             }
         }
         Ok(Self {
+            managed,
+            runtime_session_id: runtime_manifest::generate_runtime_session_id(),
             control_plane: supervisor_control::SupervisorControlPlane::new(
                 root.clone(),
                 std::env::var("APPFS_ACTIONLINE_STRICT")
@@ -64,6 +70,12 @@ impl AppfsRuntimeSupervisor {
     }
 
     pub(super) fn log_started(&self) {
+        eprintln!(
+            "AppFS runtime session started (mount_root={} runtime_session_id={} managed={})",
+            self.root.display(),
+            self.runtime_session_id,
+            self.managed
+        );
         for entry in self.runtimes.values() {
             let adapter = &entry.adapter;
             eprintln!(
@@ -87,7 +99,8 @@ impl AppfsRuntimeSupervisor {
                 app_dir: entry.adapter.app_dir.clone(),
             })
             .collect::<Vec<_>>();
-        registry_manager::persist_runtime_registry(&self.root, &snapshots, existing)
+        registry_manager::persist_runtime_registry(&self.root, &snapshots, existing)?;
+        runtime_manifest::write_runtime_manifest(&self.root, &self.runtime_session_id, self.managed)
     }
 
     fn handle_control_invocation(
