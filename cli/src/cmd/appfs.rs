@@ -22,6 +22,7 @@ pub(crate) mod registry;
 mod registry_manager;
 mod runtime_config;
 mod runtime_entry;
+mod runtime_manifest;
 mod runtime_supervisor;
 mod shared;
 mod snapshot_cache;
@@ -173,7 +174,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         )
     };
     let resolved_runtime_args = resolve_runtime_cli_args(runtime_args);
-    let mut supervisor = AppfsRuntimeSupervisor::new(root, resolved_runtime_args)?;
+    let mut supervisor = AppfsRuntimeSupervisor::new(root, resolved_runtime_args, managed)?;
     supervisor.prepare_action_sinks()?;
     supervisor.sync_registry_to_disk(existing_registry.as_ref())?;
     supervisor.log_started();
@@ -572,6 +573,7 @@ mod supervisor_tests {
         let mut supervisor = AppfsRuntimeSupervisor::new(
             temp.path().to_path_buf(),
             resolve_runtime_cli_args(runtime_args),
+            false,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -620,9 +622,11 @@ mod supervisor_tests {
         let mut supervisor = AppfsRuntimeSupervisor::new(
             temp.path().to_path_buf(),
             resolve_runtime_cli_args(runtime_args),
+            false,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
+        assert!(!super::runtime_manifest::runtime_manifest_path(temp.path()).exists());
         supervisor
             .sync_registry_to_disk(None)
             .expect("persist registry");
@@ -633,6 +637,22 @@ mod supervisor_tests {
         assert_eq!(stored.apps.len(), 1);
         assert_eq!(stored.apps[0].app_id, "aiim");
         assert_eq!(stored.apps[0].session_id, "sess-aiim");
+        let manifest_path = super::runtime_manifest::runtime_manifest_path(temp.path());
+        assert!(manifest_path.exists());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("read runtime manifest"))
+                .expect("parse runtime manifest");
+        assert_eq!(
+            manifest["runtime_session_id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("rt-"),
+            true
+        );
+        assert_eq!(
+            manifest["multi_agent_mode"].as_str(),
+            Some(super::runtime_manifest::APPFS_MULTI_AGENT_MODE_SHARED)
+        );
     }
 
     #[test]
@@ -649,6 +669,7 @@ mod supervisor_tests {
         let mut supervisor = AppfsRuntimeSupervisor::new(
             temp.path().to_path_buf(),
             resolve_runtime_cli_args(runtime_args),
+            false,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -704,7 +725,8 @@ mod supervisor_tests {
     fn supervisor_can_register_app_dynamically_from_empty_runtime() {
         let temp = TempDir::new().expect("tempdir");
         let mut supervisor =
-            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new()).expect("supervisor");
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false)
+                .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
 
         append_text(
@@ -744,6 +766,7 @@ mod supervisor_tests {
         let mut supervisor = AppfsRuntimeSupervisor::new(
             temp.path().to_path_buf(),
             resolve_runtime_cli_args(runtime_args),
+            false,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
