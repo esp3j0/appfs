@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::process::{Child, Command as ProcessCommand};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -322,18 +322,16 @@ fn terminate_launcher_child(child: &mut Child) {
         Ok(Some(_)) => {}
         Ok(None) => {
             let _ = child.kill();
-            if wait_for_child_exit(child, Duration::from_secs(5)) {
-                return;
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                let _ = ProcessCommand::new("taskkill")
-                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = wait_for_child_exit(child, Duration::from_secs(5));
+            if !wait_for_child_exit(child, Duration::from_secs(5)) {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = ProcessCommand::new("taskkill")
+                        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let _ = wait_for_child_exit(child, Duration::from_secs(5));
+                }
             }
         }
         Err(_) => {}
@@ -835,7 +833,7 @@ mod supervisor_tests {
     #[test]
     fn appfs_launch_workspace_path_rejects_parent_escape() {
         let mount_root = std::path::Path::new("C:\\mnt\\appfs");
-        let workspace = std::path::Path::new("..\\outside");
+        let workspace = std::path::Path::new("../outside");
         let err = super::resolve_launch_workspace_path(mount_root, workspace)
             .expect_err("workspace path escape must fail");
         assert!(err.to_string().contains("cannot escape"));
@@ -1011,13 +1009,10 @@ mod supervisor_tests {
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).expect("read runtime manifest"))
                 .expect("parse runtime manifest");
-        assert_eq!(
-            manifest["runtime_session_id"]
-                .as_str()
-                .unwrap_or_default()
-                .starts_with("rt-"),
-            true
-        );
+        assert!(manifest["runtime_session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("rt-"));
         assert_eq!(
             manifest["multi_agent_mode"].as_str(),
             Some(super::runtime_manifest::APPFS_MULTI_AGENT_MODE_SHARED)
