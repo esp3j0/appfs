@@ -459,6 +459,45 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+            AppfsCommand::Launch {
+                id_or_path,
+                mountpoint,
+                agent_bin,
+                backend,
+                allow_root,
+                system,
+                uid,
+                gid,
+                poll_ms,
+                workspace,
+                attach_id,
+                attach_role,
+                startup_timeout_ms,
+                agent_args,
+            } => {
+                let rt = get_runtime();
+                if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_launch_command(
+                    cmd::appfs::AppfsLaunchArgs {
+                        id_or_path,
+                        mountpoint,
+                        backend,
+                        allow_root,
+                        allow_other: system,
+                        uid,
+                        gid,
+                        poll_ms,
+                        agent_bin,
+                        workspace,
+                        attach_id,
+                        attach_role,
+                        startup_timeout_ms,
+                        agent_args,
+                    },
+                )) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         },
         Command::Ps => {
             if let Err(e) = cmd::ps::list_ps(&mut std::io::stdout()) {
