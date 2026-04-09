@@ -95,6 +95,8 @@ pub struct MountArgs {
     pub adapter_bridge_circuit_breaker_failures: u32,
     /// Circuit breaker cooldown in milliseconds before retrying bridge calls.
     pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
+    /// Optional in-process action wake handle for AppFS hybrid action dispatch.
+    pub action_wake: Option<appfs::ActionWakeHandle>,
 }
 
 #[cfg(any(unix, target_os = "windows"))]
@@ -158,6 +160,7 @@ fn wrap_mount_fs_if_appfs_enabled(
         appfs::mount_runtime::MountSnapshotReadThroughConfig {
             runtimes: runtime_args,
             managed: args.managed_appfs,
+            action_wake: args.action_wake.clone(),
         },
     ))
 }
@@ -1471,6 +1474,7 @@ mod appfs_mount_mode_tests {
             adapter_bridge_max_backoff_ms: 1000,
             adapter_bridge_circuit_breaker_failures: 5,
             adapter_bridge_circuit_breaker_cooldown_ms: 3000,
+            action_wake: None,
         }
     }
 

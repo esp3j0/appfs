@@ -511,7 +511,7 @@ pub enum ServeCommand {
         #[arg(long)]
         session_id: Option<String>,
 
-        /// Poll interval in milliseconds for action sink scanning
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
         #[arg(long, default_value_t = 200)]
         poll_ms: u64,
 
@@ -617,7 +617,7 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Poll interval in milliseconds for action sink scanning
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
         #[arg(long, default_value_t = 200)]
         poll_ms: u64,
     },
@@ -655,7 +655,7 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Poll interval in milliseconds for action sink scanning
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
         #[arg(long, default_value_t = 200)]
         poll_ms: u64,
 

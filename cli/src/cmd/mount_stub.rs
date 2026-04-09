@@ -51,6 +51,8 @@ pub struct MountArgs {
     pub adapter_bridge_circuit_breaker_failures: u32,
     /// Circuit breaker cooldown in milliseconds before retrying bridge calls.
     pub adapter_bridge_circuit_breaker_cooldown_ms: u64,
+    /// Optional in-process action wake handle for AppFS hybrid action dispatch.
+    pub action_wake: Option<crate::cmd::appfs::ActionWakeHandle>,
 }
 
 /// List all currently mounted agentfs filesystems

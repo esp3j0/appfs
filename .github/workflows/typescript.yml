@@ -1,13 +1,13 @@
 name: TypeScript CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
+    types: [opened, synchronize, reopened, closed]
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -37,6 +37,7 @@ jobs:
       run: npm test
 
   test-browser:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -69,6 +70,7 @@ jobs:
       run: npm run test:browser
 
   check:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Check
     runs-on: ubuntu-latest
     defaults:
@@ -88,6 +90,7 @@ jobs:
       run: npm ci
 
   examples:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Test Examples
     runs-on: ubuntu-latest
     steps:
