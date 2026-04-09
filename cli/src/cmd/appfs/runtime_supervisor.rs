@@ -65,7 +65,7 @@ impl AppfsRuntimeSupervisor {
         for entry in self.runtimes.values_mut() {
             entry.adapter.poll_once()?;
         }
-        self.sync_registry_to_disk(None)?;
+        self.sync_runtime_registry_to_disk(None)?;
         Ok(())
     }
 
@@ -91,6 +91,14 @@ impl AppfsRuntimeSupervisor {
         &self,
         existing: Option<&registry::AppfsAppsRegistryDoc>,
     ) -> Result<()> {
+        self.sync_runtime_registry_to_disk(existing)?;
+        runtime_manifest::write_runtime_manifest(&self.root, &self.runtime_session_id, self.managed)
+    }
+
+    fn sync_runtime_registry_to_disk(
+        &self,
+        existing: Option<&registry::AppfsAppsRegistryDoc>,
+    ) -> Result<()> {
         let snapshots = self
             .runtimes
             .values()
@@ -99,8 +107,7 @@ impl AppfsRuntimeSupervisor {
                 app_dir: entry.adapter.app_dir.clone(),
             })
             .collect::<Vec<_>>();
-        registry_manager::persist_runtime_registry(&self.root, &snapshots, existing)?;
-        runtime_manifest::write_runtime_manifest(&self.root, &self.runtime_session_id, self.managed)
+        registry_manager::persist_runtime_registry(&self.root, &snapshots, existing)
     }
 
     fn handle_control_invocation(

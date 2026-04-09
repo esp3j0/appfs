@@ -17,10 +17,12 @@ use super::journal::{SnapshotExpandJournalDoc, SnapshotExpandJournalEntry};
 use super::registry;
 use super::shared::{
     action_template_matches, decode_jsonl_line, deterministic_shorten_segment,
-    snapshot_expand_delay_ms, snapshot_force_expand_on_refresh, snapshot_publish_delay_ms,
+    is_safe_action_rel_path, snapshot_expand_delay_ms, snapshot_force_expand_on_refresh,
+    snapshot_publish_delay_ms,
 };
 use super::{
-    AppfsRuntimeCliArgs, SnapshotOnTimeoutPolicy, SnapshotSpec, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
+    ActionWakeHandle, AppfsRuntimeCliArgs, SnapshotOnTimeoutPolicy, SnapshotSpec,
+    SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
 const ROOT_INO: i64 = 1;
@@ -46,6 +48,7 @@ type DynFs = Arc<Mutex<dyn FileSystem + Send>>;
 pub(crate) struct MountSnapshotReadThroughConfig {
     pub runtimes: Vec<AppfsRuntimeCliArgs>,
     pub managed: bool,
+    pub action_wake: Option<ActionWakeHandle>,
 }
 
 pub(crate) fn wrap_mount_runtime_filesystem(
@@ -71,6 +74,12 @@ struct MountSnapshotRuntime {
     snapshot_specs: Vec<SnapshotSpec>,
     snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
     connector: Box<dyn agentfs_sdk::AppConnector>,
+}
+
+struct ActionWakeFile {
+    inner: BoxedFile,
+    rel_path: String,
+    wake: Option<ActionWakeHandle>,
 }
 
 impl MountSnapshotRuntime {
@@ -140,6 +149,25 @@ fn open_requests_read(flags: i32) -> bool {
     }
     let access_mode = flags & OPEN_ACCESS_MODE_MASK;
     access_mode != OPEN_WRITE_ONLY
+}
+
+fn action_wake_is_relevant_path(rel_path: &str) -> bool {
+    is_safe_action_rel_path(rel_path)
+}
+
+fn wrap_action_wake_file(
+    file: BoxedFile,
+    rel_path: Option<String>,
+    wake: Option<ActionWakeHandle>,
+) -> BoxedFile {
+    let Some(rel_path) = rel_path.filter(|rel_path| action_wake_is_relevant_path(rel_path)) else {
+        return file;
+    };
+    Arc::new(ActionWakeFile {
+        inner: file,
+        rel_path,
+        wake,
+    })
 }
 
 fn should_skip_existing_expand(
@@ -837,6 +865,44 @@ impl MountSnapshotReadThroughFs {
 }
 
 #[async_trait]
+impl agentfs_sdk::File for ActionWakeFile {
+    async fn pread(&self, offset: u64, size: u64) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
+        self.inner.pread(offset, size).await
+    }
+
+    async fn pwrite(&self, offset: u64, data: &[u8]) -> Result<(), agentfs_sdk::error::Error> {
+        self.inner.pwrite(offset, data).await?;
+        if let Some(wake) = self.wake.as_ref() {
+            tracing::trace!(
+                rel_path = self.rel_path,
+                offset,
+                bytes = data.len(),
+                "mount action write wake"
+            );
+            wake.signal();
+        }
+        Ok(())
+    }
+
+    async fn truncate(&self, size: u64) -> Result<(), agentfs_sdk::error::Error> {
+        self.inner.truncate(size).await?;
+        if let Some(wake) = self.wake.as_ref() {
+            tracing::trace!(rel_path = self.rel_path, size, "mount action truncate wake");
+            wake.signal();
+        }
+        Ok(())
+    }
+
+    async fn fsync(&self) -> Result<(), agentfs_sdk::error::Error> {
+        self.inner.fsync().await
+    }
+
+    async fn fstat(&self) -> Result<Stats, agentfs_sdk::error::Error> {
+        self.inner.fstat().await
+    }
+}
+
+#[async_trait]
 impl FileSystem for MountSnapshotReadThroughFs {
     async fn lookup(
         &self,
@@ -948,8 +1014,9 @@ impl FileSystem for MountSnapshotReadThroughFs {
         flags: i32,
     ) -> std::result::Result<BoxedFile, agentfs_sdk::error::Error> {
         let mut target_ino = ino;
+        let mut target_rel_path = self.cached_path_for_ino(ino).await;
         if open_requests_read(flags) {
-            if let Some(rel_path) = self.cached_path_for_ino(ino).await {
+            if let Some(rel_path) = target_rel_path.clone() {
                 if let Some((resource_app_id, resource_rel)) = self
                     .maybe_snapshot_resource_from_fs_path(&rel_path)
                     .await
@@ -988,7 +1055,8 @@ impl FileSystem for MountSnapshotReadThroughFs {
                             .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
                         {
                             target_ino = stats.ino;
-                            self.cache_path(target_ino, rel_path).await;
+                            self.cache_path(target_ino, rel_path.clone()).await;
+                            target_rel_path = Some(rel_path);
                         } else {
                             return Err(FsError::NotFound.into());
                         }
@@ -996,7 +1064,12 @@ impl FileSystem for MountSnapshotReadThroughFs {
                 }
             }
         }
-        self.inner.lock().await.open(target_ino, flags).await
+        let file = self.inner.lock().await.open(target_ino, flags).await?;
+        Ok(wrap_action_wake_file(
+            file,
+            target_rel_path,
+            self.config.action_wake.clone(),
+        ))
     }
 
     async fn mkdir(
@@ -1126,11 +1199,32 @@ impl FileSystem for MountSnapshotReadThroughFs {
         newparent_ino: i64,
         newname: &str,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
+        let old_rel = self
+            .cached_path_for_ino(oldparent_ino)
+            .await
+            .map(|parent| join_rel_path(&parent, oldname));
+        let new_rel = self
+            .cached_path_for_ino(newparent_ino)
+            .await
+            .map(|parent| join_rel_path(&parent, newname));
         self.inner
             .lock()
             .await
             .rename(oldparent_ino, oldname, newparent_ino, newname)
-            .await
+            .await?;
+        if let Some(wake) = self.config.action_wake.as_ref() {
+            let should_wake = old_rel.as_deref().is_some_and(action_wake_is_relevant_path)
+                || new_rel.as_deref().is_some_and(action_wake_is_relevant_path);
+            if should_wake {
+                tracing::trace!(
+                    old_rel = old_rel.as_deref().unwrap_or("<unknown>"),
+                    new_rel = new_rel.as_deref().unwrap_or("<unknown>"),
+                    "mount action rename wake"
+                );
+                wake.signal();
+            }
+        }
+        Ok(())
     }
 
     async fn statfs(
@@ -1176,10 +1270,17 @@ fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sd
 #[cfg(test)]
 mod tests {
     use super::{
-        open_requests_read, should_expand_on_open, should_skip_existing_expand, OPEN_NO_READ_HINT,
-        OPEN_READ_ONLY, OPEN_READ_WRITE, OPEN_WRITE_ONLY,
+        action_wake_is_relevant_path, open_requests_read, should_expand_on_open,
+        should_skip_existing_expand, ActionWakeHandle, MountSnapshotReadThroughConfig,
+        MountSnapshotReadThroughFs, OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE,
+        OPEN_WRITE_ONLY, ROOT_INO,
     };
-    use agentfs_sdk::{Stats, DEFAULT_FILE_MODE};
+    use agentfs_sdk::{FileSystem, HostFS, Stats, DEFAULT_FILE_MODE};
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     fn file_stats(size: u64) -> Stats {
         Stats {
@@ -1239,5 +1340,128 @@ mod tests {
         assert!(open_requests_read(OPEN_READ_WRITE));
         assert!(!open_requests_read(OPEN_WRITE_ONLY));
         assert!(!open_requests_read(OPEN_READ_ONLY | OPEN_NO_READ_HINT));
+    }
+
+    fn build_wrapper(root: &TempDir, wake: Option<ActionWakeHandle>) -> MountSnapshotReadThroughFs {
+        let inner = Arc::new(Mutex::new(HostFS::new(root.path()).expect("host fs")));
+        MountSnapshotReadThroughFs::new(
+            inner,
+            MountSnapshotReadThroughConfig {
+                runtimes: Vec::new(),
+                managed: false,
+                action_wake: wake,
+            },
+        )
+    }
+
+    #[test]
+    fn direct_act_write_signals_wake() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("_appfs")).expect("create _appfs");
+        fs::write(temp.path().join("_appfs/register_app.act"), b"").expect("seed act");
+        let wake = ActionWakeHandle::new();
+        let wrapper = build_wrapper(&temp, Some(wake.clone()));
+
+        crate::get_runtime().block_on(async move {
+            let control_dir = wrapper
+                .lookup(ROOT_INO, "_appfs")
+                .await
+                .expect("lookup _appfs")
+                .expect("_appfs stats");
+            let action = wrapper
+                .lookup(control_dir.ino, "register_app.act")
+                .await
+                .expect("lookup action")
+                .expect("action stats");
+            let file = wrapper
+                .open(action.ino, OPEN_WRITE_ONLY)
+                .await
+                .expect("open action for write");
+            file.pwrite(0, b"{\"app_id\":\"aiim\"}\n")
+                .await
+                .expect("write action");
+
+            tokio::time::timeout(Duration::from_millis(100), wake.wait())
+                .await
+                .expect("act write should wake runtime");
+        });
+    }
+
+    #[test]
+    fn rename_to_act_path_signals_wake() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("_appfs")).expect("create _appfs");
+        fs::write(
+            temp.path().join("_appfs/register_app.tmp"),
+            b"{\"app_id\":\"aiim\"}\n",
+        )
+        .expect("seed temp file");
+        let wake = ActionWakeHandle::new();
+        let wrapper = build_wrapper(&temp, Some(wake.clone()));
+
+        crate::get_runtime().block_on(async move {
+            let control_dir = wrapper
+                .lookup(ROOT_INO, "_appfs")
+                .await
+                .expect("lookup _appfs")
+                .expect("_appfs stats");
+            wrapper
+                .rename(
+                    control_dir.ino,
+                    "register_app.tmp",
+                    control_dir.ino,
+                    "register_app.act",
+                )
+                .await
+                .expect("rename temp to act");
+
+            tokio::time::timeout(Duration::from_millis(100), wake.wait())
+                .await
+                .expect("rename into act path should wake runtime");
+        });
+    }
+
+    #[test]
+    fn non_action_paths_do_not_signal_wake() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("workspace")).expect("create workspace");
+        fs::write(temp.path().join("workspace/notes.txt"), b"").expect("seed notes");
+        let wake = ActionWakeHandle::new();
+        let wrapper = build_wrapper(&temp, Some(wake.clone()));
+
+        crate::get_runtime().block_on(async move {
+            let workspace_dir = wrapper
+                .lookup(ROOT_INO, "workspace")
+                .await
+                .expect("lookup workspace")
+                .expect("workspace stats");
+            let note = wrapper
+                .lookup(workspace_dir.ino, "notes.txt")
+                .await
+                .expect("lookup note")
+                .expect("note stats");
+            let file = wrapper
+                .open(note.ino, OPEN_WRITE_ONLY)
+                .await
+                .expect("open note for write");
+            file.pwrite(0, b"hello").await.expect("write note");
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), wake.wait())
+                    .await
+                    .is_err(),
+                "non-action writes should not wake runtime"
+            );
+        });
+    }
+
+    #[test]
+    fn only_safe_action_paths_trigger_wake() {
+        assert!(action_wake_is_relevant_path("_appfs/register_app.act"));
+        assert!(action_wake_is_relevant_path(
+            "contacts/zhangsan/send_message.act"
+        ));
+        assert!(!action_wake_is_relevant_path("workspace/notes.txt"));
+        assert!(!action_wake_is_relevant_path("../escape.act"));
     }
 }

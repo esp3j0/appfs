@@ -246,6 +246,7 @@ fn main() {
                     adapter_bridge_max_backoff_ms,
                     adapter_bridge_circuit_breaker_failures,
                     adapter_bridge_circuit_breaker_cooldown_ms,
+                    action_wake: None,
                 }) {
                     eprintln!("Error: {}", e);
                     // Print error chain for debugging
@@ -413,6 +414,7 @@ fn main() {
                         app_ids,
                         session_id,
                         poll_ms,
+                        action_wake: None,
                         adapter_http_endpoint,
                         adapter_http_timeout_ms,
                         adapter_grpc_endpoint,
