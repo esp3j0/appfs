@@ -1,13 +1,13 @@
 name: Python CI
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
-    types: [opened, synchronize, reopened, closed]
 
 jobs:
   test:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -37,7 +37,6 @@ jobs:
       run: uv run pytest
 
   check:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Check
     runs-on: ubuntu-latest
     defaults:

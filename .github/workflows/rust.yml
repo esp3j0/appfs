@@ -1,9 +1,10 @@
 name: Rust CI
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
-    types: [opened, synchronize, reopened, closed]
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,7 +12,6 @@ env:
 jobs:
   # Required AppFS gate: in-process runtime path + connector required set (linux).
   appfs-contract-gate:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: AppFS Contract Gate (linux)
     runs-on: ubuntu-latest
     defaults:
@@ -62,7 +62,6 @@ jobs:
 
   # Legacy baseline bridge gate (required): v0.1 live HTTP bridge smoke
   appfs-contract-gate-http-bridge:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     # Keep check-run name stable for branch protection; semantic: http legacy baseline gate.
     name: AppFS Contract Gate (linux, http bridge)
     runs-on: ubuntu-latest
@@ -153,7 +152,6 @@ jobs:
   # Informational AppFS bridge signal: CT2 subset over HTTP bridge path.
   # Required gate is the in-process job above; bridge jobs are non-blocking diagnostics.
   appfs-contract-signal-http-bridge:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: AppFS Contract Signal (informational, linux, http bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -252,7 +250,6 @@ jobs:
 
   # Informational AppFS bridge signal: higher-risk CT2 coverage over HTTP bridge path.
   appfs-contract-signal-http-bridge-high-risk:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: AppFS Contract Signal (informational, linux, http bridge high-risk)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -351,7 +348,6 @@ jobs:
 
   # Legacy baseline bridge gate (informational): v0.1 live gRPC bridge smoke
   appfs-contract-gate-grpc-bridge:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     # Keep check-run name stable for branch protection; semantic: grpc legacy baseline gate.
     name: AppFS Contract Gate (linux, grpc bridge)
     runs-on: ubuntu-latest
@@ -441,7 +437,6 @@ jobs:
 
   # Informational AppFS bridge signal: CT2 subset over gRPC bridge path.
   appfs-contract-signal-grpc-bridge:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: AppFS Contract Signal (informational, linux, grpc bridge)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -537,7 +532,6 @@ jobs:
         fi
 
   test:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Test (${{ matrix.os }}, ${{ matrix.project }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -597,7 +591,6 @@ jobs:
       run: tests/all.sh
 
   check:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Check (${{ matrix.os }}, ${{ matrix.project }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -623,7 +616,6 @@ jobs:
       run: cargo check --all-features
 
   check-no-default-features:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Check no-default-features (cli)
     runs-on: ubuntu-latest
     defaults:
@@ -641,7 +633,6 @@ jobs:
       run: cargo check --no-default-features
 
   build-linux-arm64:
-    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     name: Build (Linux arm64)
     runs-on: ubuntu-24.04-arm
     steps:
