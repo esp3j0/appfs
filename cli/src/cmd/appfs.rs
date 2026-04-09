@@ -556,7 +556,9 @@ pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
     match mount_thread.join() {
         Ok(Ok(())) => runtime_result,
         Ok(Err(err)) => Err(err),
-        Err(_) => Err(anyhow::anyhow!("AppFS mount thread panicked during shutdown")),
+        Err(_) => Err(anyhow::anyhow!(
+            "AppFS mount thread panicked during shutdown"
+        )),
     }
 }
 

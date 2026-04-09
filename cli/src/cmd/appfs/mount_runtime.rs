@@ -17,8 +17,8 @@ use super::journal::{SnapshotExpandJournalDoc, SnapshotExpandJournalEntry};
 use super::registry;
 use super::shared::{
     action_template_matches, decode_jsonl_line, deterministic_shorten_segment,
-    is_safe_action_rel_path,
-    snapshot_expand_delay_ms, snapshot_force_expand_on_refresh, snapshot_publish_delay_ms,
+    is_safe_action_rel_path, snapshot_expand_delay_ms, snapshot_force_expand_on_refresh,
+    snapshot_publish_delay_ms,
 };
 use super::{
     ActionWakeHandle, AppfsRuntimeCliArgs, SnapshotOnTimeoutPolicy, SnapshotSpec,
@@ -887,11 +887,7 @@ impl agentfs_sdk::File for ActionWakeFile {
     async fn truncate(&self, size: u64) -> Result<(), agentfs_sdk::error::Error> {
         self.inner.truncate(size).await?;
         if let Some(wake) = self.wake.as_ref() {
-            tracing::trace!(
-                rel_path = self.rel_path,
-                size,
-                "mount action truncate wake"
-            );
+            tracing::trace!(rel_path = self.rel_path, size, "mount action truncate wake");
             wake.signal();
         }
         Ok(())
@@ -1217,12 +1213,8 @@ impl FileSystem for MountSnapshotReadThroughFs {
             .rename(oldparent_ino, oldname, newparent_ino, newname)
             .await?;
         if let Some(wake) = self.config.action_wake.as_ref() {
-            let should_wake = old_rel
-                .as_deref()
-                .is_some_and(action_wake_is_relevant_path)
-                || new_rel
-                    .as_deref()
-                    .is_some_and(action_wake_is_relevant_path);
+            let should_wake = old_rel.as_deref().is_some_and(action_wake_is_relevant_path)
+                || new_rel.as_deref().is_some_and(action_wake_is_relevant_path);
             if should_wake {
                 tracing::trace!(
                     old_rel = old_rel.as_deref().unwrap_or("<unknown>"),
@@ -1350,10 +1342,7 @@ mod tests {
         assert!(!open_requests_read(OPEN_READ_ONLY | OPEN_NO_READ_HINT));
     }
 
-    fn build_wrapper(
-        root: &TempDir,
-        wake: Option<ActionWakeHandle>,
-    ) -> MountSnapshotReadThroughFs {
+    fn build_wrapper(root: &TempDir, wake: Option<ActionWakeHandle>) -> MountSnapshotReadThroughFs {
         let inner = Arc::new(Mutex::new(HostFS::new(root.path()).expect("host fs")));
         MountSnapshotReadThroughFs::new(
             inner,
@@ -1402,8 +1391,11 @@ mod tests {
     fn rename_to_act_path_signals_wake() {
         let temp = TempDir::new().expect("tempdir");
         fs::create_dir_all(temp.path().join("_appfs")).expect("create _appfs");
-        fs::write(temp.path().join("_appfs/register_app.tmp"), b"{\"app_id\":\"aiim\"}\n")
-            .expect("seed temp file");
+        fs::write(
+            temp.path().join("_appfs/register_app.tmp"),
+            b"{\"app_id\":\"aiim\"}\n",
+        )
+        .expect("seed temp file");
         let wake = ActionWakeHandle::new();
         let wrapper = build_wrapper(&temp, Some(wake.clone()));
 
@@ -1466,7 +1458,9 @@ mod tests {
     #[test]
     fn only_safe_action_paths_trigger_wake() {
         assert!(action_wake_is_relevant_path("_appfs/register_app.act"));
-        assert!(action_wake_is_relevant_path("contacts/zhangsan/send_message.act"));
+        assert!(action_wake_is_relevant_path(
+            "contacts/zhangsan/send_message.act"
+        ));
         assert!(!action_wake_is_relevant_path("workspace/notes.txt"));
         assert!(!action_wake_is_relevant_path("../escape.act"));
     }
