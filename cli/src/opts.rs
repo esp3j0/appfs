@@ -511,8 +511,9 @@ pub enum ServeCommand {
         #[arg(long)]
         session_id: Option<String>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
-        #[arg(long, default_value_t = 200)]
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Set to 0 to disable fallback polling (default).
+        #[arg(long, default_value_t = 0)]
         poll_ms: u64,
 
         /// Optional HTTP bridge endpoint for out-of-process adapters.
@@ -617,8 +618,9 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
-        #[arg(long, default_value_t = 200)]
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Set to 0 to disable fallback polling (default).
+        #[arg(long, default_value_t = 0)]
         poll_ms: u64,
     },
     /// Launch one appfs-agent process inside an AppFS-backed workspace
@@ -655,8 +657,9 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
-        #[arg(long, default_value_t = 200)]
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Set to 0 to disable fallback polling (default).
+        #[arg(long, default_value_t = 0)]
         poll_ms: u64,
 
         /// Relative workspace path inside the mounted AppFS view
@@ -861,7 +864,7 @@ mod tests {
                 assert!(!system);
                 assert_eq!(uid, None);
                 assert_eq!(gid, None);
-                assert_eq!(poll_ms, 200);
+                assert_eq!(poll_ms, 0);
                 assert_eq!(workspace, PathBuf::from("workspace"));
                 assert_eq!(attach_id.as_deref(), Some("agent-planner"));
                 assert_eq!(attach_role.as_deref(), Some("planner"));
