@@ -412,7 +412,7 @@ function Main {
     $bridgeUri = [Uri]$HttpEndpoint
     $bridgeHost = $bridgeUri.Host
     $bridgePort = $bridgeUri.Port
-    $bridgeDir = Join-Path $script:RepoRoot "examples\appfs\http-bridge\python"
+    $bridgeDir = Join-Path $script:RepoRoot "examples\appfs\bridges\http-python"
     $bridgeCommand = "set `"APPFS_BRIDGE_HOST=$bridgeHost`" && set `"APPFS_BRIDGE_PORT=$bridgePort`" && python -u bridge_server.py"
     $script:BridgeHandle = New-LogHandle -Name "bridge" -FilePath "cmd.exe" -ArgumentList @("/c", $bridgeCommand) -WorkingDirectory $bridgeDir
     Wait-Until -Description "HTTP bridge startup" -TimeoutSec 15 -Condition {

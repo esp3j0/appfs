@@ -246,6 +246,7 @@ fn main() {
                     adapter_bridge_max_backoff_ms,
                     adapter_bridge_circuit_breaker_failures,
                     adapter_bridge_circuit_breaker_cooldown_ms,
+                    action_wake: None,
                 }) {
                     eprintln!("Error: {}", e);
                     // Print error chain for debugging
@@ -413,6 +414,7 @@ fn main() {
                         app_ids,
                         session_id,
                         poll_ms,
+                        action_wake: None,
                         adapter_http_endpoint,
                         adapter_http_timeout_ms,
                         adapter_grpc_endpoint,
@@ -453,6 +455,45 @@ fn main() {
                         uid,
                         gid,
                         poll_ms,
+                    },
+                )) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            AppfsCommand::Launch {
+                id_or_path,
+                mountpoint,
+                agent_bin,
+                backend,
+                allow_root,
+                system,
+                uid,
+                gid,
+                poll_ms,
+                workspace,
+                attach_id,
+                attach_role,
+                startup_timeout_ms,
+                agent_args,
+            } => {
+                let rt = get_runtime();
+                if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_launch_command(
+                    cmd::appfs::AppfsLaunchArgs {
+                        id_or_path,
+                        mountpoint,
+                        backend,
+                        allow_root,
+                        allow_other: system,
+                        uid,
+                        gid,
+                        poll_ms,
+                        agent_bin,
+                        workspace,
+                        attach_id,
+                        attach_role,
+                        startup_timeout_ms,
+                        agent_args,
                     },
                 )) {
                     eprintln!("Error: {}", e);

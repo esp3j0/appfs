@@ -1,10 +1,16 @@
 use agentfs_sdk::AppConnector;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command as ProcessCommand};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 mod action_dispatcher;
 mod bridge_resilience;
@@ -41,6 +47,7 @@ use runtime_supervisor::AppfsRuntimeSupervisor;
 
 const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
+const DEFAULT_ACTION_FALLBACK_POLL_MS: u64 = 500;
 const ACTION_CURSORS_FILENAME: &str = "action-cursors.res.json";
 const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
@@ -55,11 +62,66 @@ const SNAPSHOT_PUBLISH_DELAY_ENV: &str = "APPFS_SNAPSHOT_PUBLISH_DELAY_MS";
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS: u64 = 120;
 const SNAPSHOT_EXPAND_JOURNAL_FILENAME: &str = "snapshot-expand.state.res.json";
 const APP_STRUCTURE_SYNC_STATE_FILENAME: &str = "app-structure-sync.state.res.json";
+const APPFS_ATTACH_SCHEMA_ENV: &str = "APPFS_ATTACH_SCHEMA";
+const APPFS_RUNTIME_MANIFEST_ENV: &str = "APPFS_RUNTIME_MANIFEST";
+const APPFS_MOUNT_ROOT_ENV: &str = "APPFS_MOUNT_ROOT";
+const APPFS_RUNTIME_SESSION_ID_ENV: &str = "APPFS_RUNTIME_SESSION_ID";
+const APPFS_ATTACH_ID_ENV: &str = "APPFS_ATTACH_ID";
+const APPFS_AGENT_ROLE_ENV: &str = "APPFS_AGENT_ROLE";
 
 const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-~";
+
+#[derive(Clone)]
+pub struct ActionWakeHandle {
+    inner: Arc<ActionWakeState>,
+}
+
+struct ActionWakeState {
+    notify: tokio::sync::Notify,
+    pending: AtomicBool,
+}
+
+impl Default for ActionWakeHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for ActionWakeHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionWakeHandle").finish_non_exhaustive()
+    }
+}
+
+impl ActionWakeHandle {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(ActionWakeState {
+                notify: tokio::sync::Notify::new(),
+                pending: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    pub(crate) fn signal(&self) {
+        if !self.inner.pending.swap(true, Ordering::SeqCst) {
+            self.inner.notify.notify_one();
+        }
+    }
+
+    async fn wait(&self) {
+        loop {
+            let notified = self.inner.notify.notified();
+            if self.inner.pending.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppfsServeArgs {
@@ -69,6 +131,7 @@ pub struct AppfsServeArgs {
     pub app_ids: Vec<String>,
     pub session_id: Option<String>,
     pub poll_ms: u64,
+    pub action_wake: Option<ActionWakeHandle>,
     pub adapter_http_endpoint: Option<String>,
     pub adapter_http_timeout_ms: u64,
     pub adapter_grpc_endpoint: Option<String>,
@@ -91,6 +154,24 @@ pub struct AppfsUpArgs {
     pub uid: Option<u32>,
     pub gid: Option<u32>,
     pub poll_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppfsLaunchArgs {
+    pub id_or_path: String,
+    pub mountpoint: PathBuf,
+    pub backend: crate::cmd::mount::MountBackend,
+    pub allow_root: bool,
+    pub allow_other: bool,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub poll_ms: u64,
+    pub agent_bin: PathBuf,
+    pub workspace: PathBuf,
+    pub attach_id: Option<String>,
+    pub attach_role: Option<String>,
+    pub startup_timeout_ms: u64,
+    pub agent_args: Vec<String>,
 }
 
 fn build_managed_mount_args(args: &AppfsUpArgs) -> crate::cmd::MountArgs {
@@ -117,6 +198,199 @@ fn build_managed_mount_args(args: &AppfsUpArgs) -> crate::cmd::MountArgs {
         adapter_bridge_max_backoff_ms: 1_000,
         adapter_bridge_circuit_breaker_failures: 5,
         adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        action_wake: None,
+    }
+}
+
+fn build_appfs_up_launcher_command(args: &AppfsLaunchArgs) -> Result<ProcessCommand> {
+    let current_exe = std::env::current_exe()
+        .context("failed to resolve current agentfs executable for launcher startup")?;
+    let mut command = ProcessCommand::new(current_exe);
+    command
+        .arg("appfs")
+        .arg("up")
+        .arg(&args.id_or_path)
+        .arg(&args.mountpoint)
+        .arg("--backend")
+        .arg(args.backend.to_string())
+        .arg("--poll-ms")
+        .arg(args.poll_ms.to_string())
+        .arg("--auto-unmount");
+
+    if args.allow_root {
+        command.arg("--allow-root");
+    }
+    if args.allow_other {
+        command.arg("--system");
+    }
+    if let Some(uid) = args.uid {
+        command.arg("--uid").arg(uid.to_string());
+    }
+    if let Some(gid) = args.gid {
+        command.arg("--gid").arg(gid.to_string());
+    }
+
+    Ok(command)
+}
+
+fn validate_workspace_path(workspace: &Path) -> Result<()> {
+    if workspace.is_absolute() {
+        anyhow::bail!(
+            "launcher workspace path must be relative to the AppFS mount root: {}",
+            workspace.display()
+        );
+    }
+
+    for component in workspace.components() {
+        match component {
+            Component::CurDir | Component::Normal(_) => {}
+            Component::ParentDir => {
+                anyhow::bail!(
+                    "launcher workspace path cannot escape the AppFS mount root: {}",
+                    workspace.display()
+                );
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                anyhow::bail!(
+                    "launcher workspace path must stay inside the AppFS mount root: {}",
+                    workspace.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_launch_workspace_path(mount_root: &Path, workspace: &Path) -> Result<PathBuf> {
+    validate_workspace_path(workspace)?;
+    Ok(mount_root.join(workspace))
+}
+
+fn generate_launcher_attach_id() -> String {
+    let uuid = Uuid::new_v4().simple().to_string();
+    format!("agent-{}", &uuid[..8])
+}
+
+fn build_launch_agent_environment(
+    manifest_path: &Path,
+    manifest: &runtime_manifest::AppfsRuntimeManifestDoc,
+    attach_id: &str,
+    attach_role: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut envs = vec![
+        (APPFS_ATTACH_SCHEMA_ENV.to_string(), "1".to_string()),
+        (
+            APPFS_RUNTIME_MANIFEST_ENV.to_string(),
+            manifest_path.display().to_string(),
+        ),
+        (
+            APPFS_MOUNT_ROOT_ENV.to_string(),
+            manifest.mount_root.display().to_string(),
+        ),
+        (
+            APPFS_RUNTIME_SESSION_ID_ENV.to_string(),
+            manifest.runtime_session_id.clone(),
+        ),
+        (APPFS_ATTACH_ID_ENV.to_string(), attach_id.to_string()),
+    ];
+
+    if let Some(role) = attach_role.filter(|role| !role.trim().is_empty()) {
+        envs.push((APPFS_AGENT_ROLE_ENV.to_string(), role.to_string()));
+    }
+
+    envs
+}
+
+async fn wait_for_runtime_manifest_ready(
+    mount_root: &Path,
+    timeout: Duration,
+    appfs_child: &mut Child,
+) -> Result<(PathBuf, runtime_manifest::AppfsRuntimeManifestDoc)> {
+    let manifest_path = runtime_manifest::runtime_manifest_path(mount_root);
+    let started = Instant::now();
+    let mut last_manifest_error: Option<String> = None;
+
+    loop {
+        if let Some(status) = appfs_child.try_wait()? {
+            anyhow::bail!(
+                "AppFS launcher child exited before runtime manifest became ready (status: {})",
+                status
+            );
+        }
+
+        if manifest_path.exists() {
+            match std::fs::read(&manifest_path) {
+                Ok(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(manifest) => return Ok((manifest_path, manifest)),
+                    Err(err) => {
+                        last_manifest_error = Some(format!(
+                            "failed to parse AppFS runtime manifest {}: {err}",
+                            manifest_path.display()
+                        ));
+                    }
+                },
+                Err(err) => {
+                    last_manifest_error = Some(format!(
+                        "failed to read AppFS runtime manifest {}: {err}",
+                        manifest_path.display()
+                    ));
+                }
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            if let Some(last_error) = last_manifest_error {
+                anyhow::bail!(
+                    "timed out waiting for AppFS runtime manifest readiness at {} ({last_error})",
+                    manifest_path.display()
+                );
+            }
+            anyhow::bail!(
+                "timed out waiting for AppFS runtime manifest readiness at {}",
+                manifest_path.display()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+
+        if started.elapsed() >= timeout {
+            return false;
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn terminate_launcher_child(child: &mut Child) {
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let _ = child.kill();
+            if !wait_for_child_exit(child, Duration::from_secs(5)) {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = ProcessCommand::new("taskkill")
+                        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let _ = wait_for_child_exit(child, Duration::from_secs(5));
+                }
+            }
+        }
+        Err(_) => {}
     }
 }
 
@@ -128,6 +402,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         app_ids,
         session_id,
         poll_ms,
+        action_wake,
         adapter_http_endpoint,
         adapter_http_timeout_ms,
         adapter_grpc_endpoint,
@@ -180,16 +455,39 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     supervisor.log_started();
     eprintln!("Press Ctrl+C to stop.");
 
-    let mut interval = tokio::time::interval(Duration::from_millis(poll_ms.max(MIN_POLL_MS)));
+    let fallback_poll_ms = poll_ms
+        .max(DEFAULT_ACTION_FALLBACK_POLL_MS)
+        .max(MIN_POLL_MS);
+    let mut interval = tokio::time::interval(Duration::from_millis(fallback_poll_ms));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("AppFS adapter stopping...");
-                return Ok(());
+        if let Some(wake) = action_wake.as_ref() {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("AppFS adapter stopping...");
+                    return Ok(());
+                }
+                _ = wake.wait() => {
+                    if let Err(err) = supervisor.poll_once() {
+                        eprintln!("AppFS adapter poll error: {err:#}");
+                    }
+                }
+                _ = interval.tick() => {
+                    if let Err(err) = supervisor.poll_once() {
+                        eprintln!("AppFS adapter poll error: {err:#}");
+                    }
+                }
             }
-            _ = interval.tick() => {
-                if let Err(err) = supervisor.poll_once() {
-                    eprintln!("AppFS adapter poll error: {err:#}");
+        } else {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("AppFS adapter stopping...");
+                    return Ok(());
+                }
+                _ = interval.tick() => {
+                    if let Err(err) = supervisor.poll_once() {
+                        eprintln!("AppFS adapter poll error: {err:#}");
+                    }
                 }
             }
         }
@@ -197,7 +495,9 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
 }
 
 pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
-    let mount_args = build_managed_mount_args(&args);
+    let action_wake = ActionWakeHandle::new();
+    let mut mount_args = build_managed_mount_args(&args);
+    mount_args.action_wake = Some(action_wake.clone());
     let mountpoint = mount_args.mountpoint.clone();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let mount_thread = std::thread::spawn(move || {
@@ -236,6 +536,7 @@ pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
         app_ids: Vec::new(),
         session_id: None,
         poll_ms: args.poll_ms,
+        action_wake: Some(action_wake),
         adapter_http_endpoint: None,
         adapter_http_timeout_ms: 5_000,
         adapter_grpc_endpoint: None,
@@ -259,6 +560,65 @@ pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
             "AppFS mount thread panicked during shutdown"
         )),
     }
+}
+
+pub async fn handle_appfs_launch_command(args: AppfsLaunchArgs) -> Result<()> {
+    let mut appfs_up_command = build_appfs_up_launcher_command(&args)?;
+    let mut appfs_up_child = appfs_up_command
+        .spawn()
+        .context("failed to spawn AppFS launcher child process")?;
+
+    let launch_result = async {
+        let timeout = Duration::from_millis(args.startup_timeout_ms.max(1));
+        let (manifest_path, manifest) =
+            wait_for_runtime_manifest_ready(&args.mountpoint, timeout, &mut appfs_up_child).await?;
+
+        let workspace_dir = resolve_launch_workspace_path(&manifest.mount_root, &args.workspace)?;
+        std::fs::create_dir_all(&workspace_dir).with_context(|| {
+            format!(
+                "failed to prepare AppFS launcher workspace {}",
+                workspace_dir.display()
+            )
+        })?;
+
+        let attach_id = args
+            .attach_id
+            .clone()
+            .unwrap_or_else(generate_launcher_attach_id);
+        let launch_env = build_launch_agent_environment(
+            &manifest_path,
+            &manifest,
+            &attach_id,
+            args.attach_role.as_deref(),
+        );
+
+        let mut child_command = ProcessCommand::new(&args.agent_bin);
+        child_command.current_dir(&workspace_dir);
+        child_command.args(&args.agent_args);
+        for (key, value) in launch_env {
+            child_command.env(key, value);
+        }
+
+        let mut agent_child = child_command.spawn().with_context(|| {
+            format!(
+                "failed to spawn appfs-agent child {}",
+                args.agent_bin.display()
+            )
+        })?;
+        let status = agent_child
+            .wait()
+            .context("failed while waiting for appfs-agent child process")?;
+
+        if !status.success() {
+            anyhow::bail!("appfs-agent child exited with non-zero status: {status}");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    terminate_launcher_child(&mut appfs_up_child);
+    launch_result
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,11 +818,12 @@ struct AppfsAdapter {
 mod supervisor_tests {
     use super::{
         build_runtime_cli_args, registry, resolve_runtime_cli_args, runtime_config,
-        AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
+        ActionWakeHandle, AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
     };
     use serde_json::{json, Value as JsonValue};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn bridge_args() -> AppfsBridgeCliArgs {
@@ -506,6 +867,108 @@ mod supervisor_tests {
         assert!(mount_args.appfs_app_ids.is_empty());
         assert!(mount_args.adapter_http_endpoint.is_none());
         assert!(mount_args.adapter_grpc_endpoint.is_none());
+    }
+
+    #[test]
+    fn action_wake_handle_does_not_drop_pending_signal() {
+        let wake = ActionWakeHandle::new();
+        wake.signal();
+
+        crate::get_runtime().block_on(async move {
+            tokio::time::timeout(Duration::from_millis(50), wake.wait())
+                .await
+                .expect("wake should resolve immediately when already pending");
+        });
+    }
+
+    #[test]
+    fn appfs_launch_builds_appfs_up_launcher_command() {
+        let args = super::AppfsLaunchArgs {
+            id_or_path: ".agentfs/demo.db".to_string(),
+            mountpoint: std::path::PathBuf::from("C:\\mnt\\demo"),
+            backend: crate::cmd::mount::MountBackend::Winfsp,
+            allow_root: false,
+            allow_other: true,
+            uid: Some(1000),
+            gid: Some(1000),
+            poll_ms: 150,
+            agent_bin: std::path::PathBuf::from("C:\\tools\\claw.exe"),
+            workspace: std::path::PathBuf::from("workspace"),
+            attach_id: Some("agent-a".to_string()),
+            attach_role: Some("planner".to_string()),
+            startup_timeout_ms: 15_000,
+            agent_args: vec!["status".to_string()],
+        };
+
+        let command = super::build_appfs_up_launcher_command(&args)
+            .expect("launcher command should be built");
+        let rendered = format!("{command:?}");
+        assert!(rendered.contains("appfs"));
+        assert!(rendered.contains("up"));
+        assert!(rendered.contains("--auto-unmount"));
+        assert!(rendered.contains("--backend"));
+        assert!(rendered.contains("winfsp"));
+        assert!(rendered.contains("--system"));
+        assert!(rendered.contains("--uid"));
+        assert!(rendered.contains("--gid"));
+        assert!(rendered.contains("--poll-ms"));
+    }
+
+    #[test]
+    fn appfs_launch_workspace_path_stays_under_mount_root() {
+        let mount_root = std::path::Path::new("C:\\mnt\\appfs");
+        let workspace = std::path::Path::new("workspace\\nested");
+        let resolved = super::resolve_launch_workspace_path(mount_root, workspace)
+            .expect("workspace path should resolve");
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("C:\\mnt\\appfs").join("workspace\\nested")
+        );
+    }
+
+    #[test]
+    fn appfs_launch_workspace_path_rejects_parent_escape() {
+        let mount_root = std::path::Path::new("C:\\mnt\\appfs");
+        let workspace = std::path::Path::new("../outside");
+        let err = super::resolve_launch_workspace_path(mount_root, workspace)
+            .expect_err("workspace path escape must fail");
+        assert!(err.to_string().contains("cannot escape"));
+    }
+
+    #[test]
+    fn appfs_launch_builds_child_attach_environment_from_manifest() {
+        let mount_root = std::env::temp_dir().join("appfs-launch-manifest");
+        let manifest_path = super::runtime_manifest::runtime_manifest_path(&mount_root);
+        let manifest =
+            super::runtime_manifest::build_runtime_manifest(&mount_root, "rt-shared-01", true);
+        let envs = super::build_launch_agent_environment(
+            &manifest_path,
+            &manifest,
+            "agent-planner",
+            Some("planner"),
+        );
+        let env_map: std::collections::HashMap<String, String> = envs.into_iter().collect();
+
+        assert_eq!(
+            env_map.get(super::APPFS_ATTACH_SCHEMA_ENV),
+            Some(&"1".to_string())
+        );
+        assert_eq!(
+            env_map.get(super::APPFS_RUNTIME_SESSION_ID_ENV),
+            Some(&"rt-shared-01".to_string())
+        );
+        assert_eq!(
+            env_map.get(super::APPFS_ATTACH_ID_ENV),
+            Some(&"agent-planner".to_string())
+        );
+        assert_eq!(
+            env_map.get(super::APPFS_AGENT_ROLE_ENV),
+            Some(&"planner".to_string())
+        );
+        assert_eq!(
+            env_map.get(super::APPFS_RUNTIME_MANIFEST_ENV),
+            Some(&manifest_path.display().to_string())
+        );
     }
 
     fn append_text(path: &std::path::Path, text: &str) {
@@ -642,16 +1105,47 @@ mod supervisor_tests {
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).expect("read runtime manifest"))
                 .expect("parse runtime manifest");
-        assert_eq!(
-            manifest["runtime_session_id"]
-                .as_str()
-                .unwrap_or_default()
-                .starts_with("rt-"),
-            true
-        );
+        assert!(manifest["runtime_session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("rt-"));
         assert_eq!(
             manifest["multi_agent_mode"].as_str(),
             Some(super::runtime_manifest::APPFS_MULTI_AGENT_MODE_SHARED)
+        );
+    }
+
+    #[test]
+    fn supervisor_poll_does_not_rewrite_runtime_manifest_without_changes() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime_args = build_runtime_cli_args(
+            Some("aiim".to_string()),
+            Vec::new(),
+            Some("sess-aiim".to_string()),
+            bridge_args(),
+            None,
+        )
+        .expect("build runtime args");
+        let mut supervisor = AppfsRuntimeSupervisor::new(
+            temp.path().to_path_buf(),
+            resolve_runtime_cli_args(runtime_args),
+            false,
+        )
+        .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        supervisor
+            .sync_registry_to_disk(None)
+            .expect("persist registry and manifest");
+
+        let manifest_path = super::runtime_manifest::runtime_manifest_path(temp.path());
+        let before = fs::read(&manifest_path).expect("read manifest before poll");
+
+        supervisor.poll_once().expect("poll once");
+
+        let after = fs::read(&manifest_path).expect("read manifest after poll");
+        assert_eq!(
+            before, after,
+            "runtime manifest should remain byte-for-byte stable when poll_once() has no state changes"
         );
     }
 

@@ -511,7 +511,7 @@ pub enum ServeCommand {
         #[arg(long)]
         session_id: Option<String>,
 
-        /// Poll interval in milliseconds for action sink scanning
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
         #[arg(long, default_value_t = 200)]
         poll_ms: u64,
 
@@ -617,9 +617,67 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Poll interval in milliseconds for action sink scanning
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
         #[arg(long, default_value_t = 200)]
         poll_ms: u64,
+    },
+    /// Launch one appfs-agent process inside an AppFS-backed workspace
+    Launch {
+        /// Agent ID or database path
+        #[arg(value_name = "ID_OR_PATH", add = ArgValueCompleter::new(id_or_path_completer))]
+        id_or_path: String,
+
+        /// Mount point directory
+        #[arg(value_name = "MOUNTPOINT", add = ArgValueCompleter::new(PathCompleter::dir()))]
+        mountpoint: PathBuf,
+
+        /// Path to the appfs-agent executable to launch
+        #[arg(long, env = "APPFS_AGENT_BIN", add = ArgValueCompleter::new(PathCompleter::file()))]
+        agent_bin: PathBuf,
+
+        /// Backend to use for mounting
+        #[arg(long, default_value_t = MountBackend::default())]
+        backend: MountBackend,
+
+        /// Allow root user to access filesystem
+        #[arg(long)]
+        allow_root: bool,
+
+        /// Allow other system users to access this mount
+        #[arg(long = "system")]
+        system: bool,
+
+        /// User ID to report for all files (defaults to current user)
+        #[arg(long)]
+        uid: Option<u32>,
+
+        /// Group ID to report for all files (defaults to current group)
+        #[arg(long)]
+        gid: Option<u32>,
+
+        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives
+        #[arg(long, default_value_t = 200)]
+        poll_ms: u64,
+
+        /// Relative workspace path inside the mounted AppFS view
+        #[arg(long, default_value = "workspace")]
+        workspace: PathBuf,
+
+        /// Explicit attach id for the launched child agent
+        #[arg(long)]
+        attach_id: Option<String>,
+
+        /// Descriptive attach role for the launched child agent
+        #[arg(long)]
+        attach_role: Option<String>,
+
+        /// Maximum time to wait for AppFS runtime manifest readiness
+        #[arg(long, default_value_t = 10000)]
+        startup_timeout_ms: u64,
+
+        /// Arguments passed through to the launched appfs-agent child process
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        agent_args: Vec<String>,
     },
 }
 
@@ -744,6 +802,78 @@ mod tests {
                 assert_eq!(uid, None);
                 assert_eq!(gid, None);
                 assert_eq!(poll_ms, 150);
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_appfs_launch_command() {
+        let args = Args::parse_from([
+            "agentfs",
+            "appfs",
+            "launch",
+            ".agentfs/demo.db",
+            "C:\\mnt\\appfs",
+            "--agent-bin",
+            "C:\\tools\\claw.exe",
+            "--backend",
+            "winfsp",
+            "--workspace",
+            "workspace",
+            "--attach-id",
+            "agent-planner",
+            "--attach-role",
+            "planner",
+            "--startup-timeout-ms",
+            "15000",
+            "--",
+            "status",
+            "--output-format",
+            "json",
+        ]);
+
+        match args.command {
+            Command::Appfs {
+                command:
+                    AppfsCommand::Launch {
+                        id_or_path,
+                        mountpoint,
+                        agent_bin,
+                        backend,
+                        allow_root,
+                        system,
+                        uid,
+                        gid,
+                        poll_ms,
+                        workspace,
+                        attach_id,
+                        attach_role,
+                        startup_timeout_ms,
+                        agent_args,
+                    },
+            } => {
+                assert_eq!(id_or_path, ".agentfs/demo.db");
+                assert_eq!(mountpoint, PathBuf::from("C:\\mnt\\appfs"));
+                assert_eq!(agent_bin, PathBuf::from("C:\\tools\\claw.exe"));
+                assert!(matches!(backend, MountBackend::Winfsp));
+                assert!(!allow_root);
+                assert!(!system);
+                assert_eq!(uid, None);
+                assert_eq!(gid, None);
+                assert_eq!(poll_ms, 200);
+                assert_eq!(workspace, PathBuf::from("workspace"));
+                assert_eq!(attach_id.as_deref(), Some("agent-planner"));
+                assert_eq!(attach_role.as_deref(), Some("planner"));
+                assert_eq!(startup_timeout_ms, 15000);
+                assert_eq!(
+                    agent_args,
+                    vec![
+                        "status".to_string(),
+                        "--output-format".to_string(),
+                        "json".to_string()
+                    ]
+                );
             }
             other => panic!("unexpected command shape: {other:?}"),
         }

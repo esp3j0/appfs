@@ -541,7 +541,7 @@ impl FileSystemContext for AgentFSWinFsp {
     ) -> winfsp::Result<FileSecurity> {
         let path = Self::win_path_to_unix(file_name);
 
-        tracing::debug!("WinFsp::get_security_by_name: {}", path);
+        tracing::trace!("WinFsp::get_security_by_name: {}", path);
 
         match self.path_lookup(&path) {
             Ok(Some(stats)) => {
@@ -578,7 +578,7 @@ impl FileSystemContext for AgentFSWinFsp {
         let path = Self::win_path_to_unix(file_name);
         let delete_on_close = (create_options & FILE_DELETE_ON_CLOSE) != 0;
 
-        tracing::debug!(
+        tracing::trace!(
             "WinFsp::open: path={} create_options=0x{:x} granted_access=0x{:x} delete_on_close={}",
             path,
             create_options,
@@ -633,7 +633,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     match file {
                         Ok(file) => {
                             let refreshed_stats = self.refresh_open_stats(&path, &stats);
-                            tracing::debug!(
+                            tracing::trace!(
                                 "WinFsp::open refreshed path={} ino={} -> {} size={}",
                                 path,
                                 stats.ino,
@@ -705,7 +705,7 @@ impl FileSystemContext for AgentFSWinFsp {
             Ok(Some(stats)) => {
                 // File already exists - open it directly
                 // WinFsp will call overwrite() if truncation is needed
-                tracing::debug!(
+                tracing::trace!(
                     "WinFsp::create: file exists, opening {} (ino={})",
                     path,
                     stats.ino
@@ -753,7 +753,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     match file {
                         Ok(file) => {
                             let refreshed_stats = self.refresh_open_stats(&path, &stats);
-                            tracing::debug!(
+                            tracing::trace!(
                                 "WinFsp::create refreshed existing path={} ino={} -> {} size={}",
                                 path,
                                 stats.ino,
@@ -919,7 +919,7 @@ impl FileSystemContext for AgentFSWinFsp {
             )
         };
 
-        tracing::debug!(
+        tracing::trace!(
             "WinFsp::cleanup: fh={} flags=0x{:x} should_delete={} is_dir={} path={}",
             context.fh,
             flags,
@@ -1152,7 +1152,7 @@ impl FileSystemContext for AgentFSWinFsp {
             .inner_as_cstr()
             .map(|m| m.to_string_lossy())
             .unwrap_or_else(|| "<none>".to_string());
-        tracing::debug!(
+        tracing::trace!(
             "WinFsp::read_directory: fh={} marker={} is_none={} is_current={} is_parent={}",
             context.fh,
             marker_str,
@@ -1205,7 +1205,7 @@ impl FileSystemContext for AgentFSWinFsp {
                 for entry in entries {
                     all_entries.push((entry.name, entry.stats));
                 }
-                tracing::debug!(
+                tracing::trace!(
                     "WinFsp::read_directory: fh={} entry_count={} entries={:?}",
                     context.fh,
                     all_entries.len(),
@@ -1555,7 +1555,7 @@ impl FileSystemContext for AgentFSWinFsp {
         buffer: &mut [u8],
     ) -> winfsp::Result<u64> {
         let path = Self::win_path_to_unix(file_name);
-        tracing::debug!("WinFsp::get_reparse_point_by_name path={}", path);
+        tracing::trace!("WinFsp::get_reparse_point_by_name path={}", path);
         let stats = self
             .path_lookup(&path)
             .map_err(|e| FspError::NTSTATUS(anyhow_to_ntstatus(&e)))?;
