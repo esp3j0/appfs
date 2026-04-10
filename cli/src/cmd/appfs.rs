@@ -47,7 +47,6 @@ use runtime_supervisor::AppfsRuntimeSupervisor;
 
 const DEFAULT_RETENTION_HINT_SEC: i64 = 86400;
 const MIN_POLL_MS: u64 = 50;
-const DEFAULT_ACTION_FALLBACK_POLL_MS: u64 = 500;
 const ACTION_CURSORS_FILENAME: &str = "action-cursors.res.json";
 const ACTION_CURSOR_PROBE_WINDOW: usize = 64;
 const MAX_RECOVERY_LINES: usize = 32;
@@ -394,6 +393,14 @@ fn terminate_launcher_child(child: &mut Child) {
     }
 }
 
+fn fallback_poll_interval(poll_ms: u64) -> Option<Duration> {
+    if poll_ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(poll_ms.max(MIN_POLL_MS)))
+    }
+}
+
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let AppfsServeArgs {
         root,
@@ -453,42 +460,84 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     supervisor.prepare_action_sinks()?;
     supervisor.sync_registry_to_disk(existing_registry.as_ref())?;
     supervisor.log_started();
+    match (action_wake.as_ref(), fallback_poll_interval(poll_ms)) {
+        (Some(_), Some(interval)) => {
+            eprintln!(
+                "AppFS adapter fallback polling enabled at {} ms alongside write wake events.",
+                interval.as_millis()
+            );
+        }
+        (Some(_), None) => {
+            eprintln!("AppFS adapter fallback polling disabled; relying on write wake events.");
+        }
+        (None, Some(interval)) => {
+            eprintln!(
+                "AppFS adapter fallback polling enabled at {} ms.",
+                interval.as_millis()
+            );
+        }
+        (None, None) => {
+            eprintln!(
+                "AppFS adapter fallback polling disabled and no write wake source is attached; action sinks will remain idle until --poll-ms is set."
+            );
+        }
+    }
     eprintln!("Press Ctrl+C to stop.");
 
-    let fallback_poll_ms = poll_ms
-        .max(DEFAULT_ACTION_FALLBACK_POLL_MS)
-        .max(MIN_POLL_MS);
-    let mut interval = tokio::time::interval(Duration::from_millis(fallback_poll_ms));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut interval = fallback_poll_interval(poll_ms).map(tokio::time::interval);
+    if let Some(interval) = interval.as_mut() {
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    }
     loop {
-        if let Some(wake) = action_wake.as_ref() {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("AppFS adapter stopping...");
-                    return Ok(());
-                }
-                _ = wake.wait() => {
-                    if let Err(err) = supervisor.poll_once() {
-                        eprintln!("AppFS adapter poll error: {err:#}");
+        match (action_wake.as_ref(), interval.as_mut()) {
+            (Some(wake), Some(interval)) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("AppFS adapter stopping...");
+                        return Ok(());
                     }
-                }
-                _ = interval.tick() => {
-                    if let Err(err) = supervisor.poll_once() {
-                        eprintln!("AppFS adapter poll error: {err:#}");
+                    _ = wake.wait() => {
+                        if let Err(err) = supervisor.poll_once() {
+                            eprintln!("AppFS adapter poll error: {err:#}");
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if let Err(err) = supervisor.poll_once() {
+                            eprintln!("AppFS adapter poll error: {err:#}");
+                        }
                     }
                 }
             }
-        } else {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    eprintln!("AppFS adapter stopping...");
-                    return Ok(());
-                }
-                _ = interval.tick() => {
-                    if let Err(err) = supervisor.poll_once() {
-                        eprintln!("AppFS adapter poll error: {err:#}");
+            (Some(wake), None) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("AppFS adapter stopping...");
+                        return Ok(());
+                    }
+                    _ = wake.wait() => {
+                        if let Err(err) = supervisor.poll_once() {
+                            eprintln!("AppFS adapter poll error: {err:#}");
+                        }
                     }
                 }
+            }
+            (None, Some(interval)) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("AppFS adapter stopping...");
+                        return Ok(());
+                    }
+                    _ = interval.tick() => {
+                        if let Err(err) = supervisor.poll_once() {
+                            eprintln!("AppFS adapter poll error: {err:#}");
+                        }
+                    }
+                }
+            }
+            (None, None) => {
+                tokio::signal::ctrl_c().await?;
+                eprintln!("AppFS adapter stopping...");
+                return Ok(());
             }
         }
     }
@@ -879,6 +928,19 @@ mod supervisor_tests {
                 .await
                 .expect("wake should resolve immediately when already pending");
         });
+    }
+
+    #[test]
+    fn fallback_poll_interval_is_disabled_by_default() {
+        assert_eq!(super::fallback_poll_interval(0), None);
+    }
+
+    #[test]
+    fn fallback_poll_interval_clamps_small_explicit_values() {
+        assert_eq!(
+            super::fallback_poll_interval(10),
+            Some(Duration::from_millis(super::MIN_POLL_MS))
+        );
     }
 
     #[test]

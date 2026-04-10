@@ -10,6 +10,72 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  appfs-action-wake-guard:
+    name: AppFS Action Wake Guard (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+        - label: linux
+          os: ubuntu-latest
+        - label: macos
+          os: macos-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Install system dependencies
+      run: ../scripts/install-deps.sh
+
+    - name: Run AppFS action wake guard tests
+      run: cargo test --lib wake -- --nocapture
+
+  appfs-action-wake-guard-windows-self-hosted:
+    name: AppFS Action Wake Guard (windows self-hosted)
+    runs-on:
+    - self-hosted
+    - windows
+    - winfsp
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Prepare VM tool paths
+      shell: powershell
+      run: |
+        @(
+          'C:\Users\esp3j\.cargo\bin'
+          'C:\Program Files\Git\cmd'
+          'C:\Program Files\Git\bin'
+          'C:\actions-runner\tools\libclang\clang\native'
+        ) | ForEach-Object { Add-Content -Path $env:GITHUB_PATH -Value $_ }
+        Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_HOME=C:\Users\esp3j\.cargo'
+        Add-Content -Path $env:GITHUB_ENV -Value 'RUSTUP_HOME=C:\Users\esp3j\.rustup'
+        Add-Content -Path $env:GITHUB_ENV -Value 'LIBCLANG_PATH=C:\actions-runner\tools\libclang\clang\native'
+
+    - name: Run AppFS action wake guard tests
+      shell: powershell
+      env:
+        CARGO_TARGET_DIR: ${{ github.workspace }}\cli\target-wake-guard
+      run: |
+        . ..\scripts\windows-rust-build-env.ps1
+        Initialize-WindowsRustBuildEnv
+        cargo test --lib wake -- --nocapture
+
   # Required AppFS gate: in-process runtime path + connector required set (linux).
   appfs-contract-gate:
     name: AppFS Contract Gate (linux)

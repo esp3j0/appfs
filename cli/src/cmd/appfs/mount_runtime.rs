@@ -8,7 +8,10 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::io::{BufRead, Cursor};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -80,6 +83,7 @@ struct ActionWakeFile {
     inner: BoxedFile,
     rel_path: String,
     wake: Option<ActionWakeHandle>,
+    dirty: AtomicBool,
 }
 
 impl MountSnapshotRuntime {
@@ -167,6 +171,7 @@ fn wrap_action_wake_file(
         inner: file,
         rel_path,
         wake,
+        dirty: AtomicBool::new(false),
     })
 }
 
@@ -872,6 +877,7 @@ impl agentfs_sdk::File for ActionWakeFile {
 
     async fn pwrite(&self, offset: u64, data: &[u8]) -> Result<(), agentfs_sdk::error::Error> {
         self.inner.pwrite(offset, data).await?;
+        self.dirty.store(true, Ordering::SeqCst);
         if let Some(wake) = self.wake.as_ref() {
             tracing::trace!(
                 rel_path = self.rel_path,
@@ -886,6 +892,7 @@ impl agentfs_sdk::File for ActionWakeFile {
 
     async fn truncate(&self, size: u64) -> Result<(), agentfs_sdk::error::Error> {
         self.inner.truncate(size).await?;
+        self.dirty.store(true, Ordering::SeqCst);
         if let Some(wake) = self.wake.as_ref() {
             tracing::trace!(rel_path = self.rel_path, size, "mount action truncate wake");
             wake.signal();
@@ -894,7 +901,14 @@ impl agentfs_sdk::File for ActionWakeFile {
     }
 
     async fn fsync(&self) -> Result<(), agentfs_sdk::error::Error> {
-        self.inner.fsync().await
+        self.inner.fsync().await?;
+        if self.dirty.swap(false, Ordering::SeqCst) {
+            if let Some(wake) = self.wake.as_ref() {
+                tracing::trace!(rel_path = self.rel_path, "mount action fsync wake");
+                wake.signal();
+            }
+        }
+        Ok(())
     }
 
     async fn fstat(&self) -> Result<Stats, agentfs_sdk::error::Error> {
@@ -1107,11 +1121,17 @@ impl FileSystem for MountSnapshotReadThroughFs {
             .await
             .create_file(parent_ino, name, mode, uid, gid)
             .await?;
-        if let Some(parent_path) = self.cached_path_for_ino(parent_ino).await {
-            self.cache_path(stats.ino, join_rel_path(&parent_path, name))
-                .await;
+        let rel_path = self
+            .cached_path_for_ino(parent_ino)
+            .await
+            .map(|parent_path| join_rel_path(&parent_path, name));
+        if let Some(rel_path) = rel_path.clone() {
+            self.cache_path(stats.ino, rel_path).await;
         }
-        Ok((stats, file))
+        Ok((
+            stats,
+            wrap_action_wake_file(file, rel_path, self.config.action_wake.clone()),
+        ))
     }
 
     async fn mknod(
@@ -1384,6 +1404,70 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(100), wake.wait())
                 .await
                 .expect("act write should wake runtime");
+        });
+    }
+
+    #[test]
+    fn action_fsync_signals_followup_wake_after_write() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("_appfs")).expect("create _appfs");
+        fs::write(temp.path().join("_appfs/register_app.act"), b"").expect("seed act");
+        let wake = ActionWakeHandle::new();
+        let wrapper = build_wrapper(&temp, Some(wake.clone()));
+
+        crate::get_runtime().block_on(async move {
+            let control_dir = wrapper
+                .lookup(ROOT_INO, "_appfs")
+                .await
+                .expect("lookup _appfs")
+                .expect("_appfs stats");
+            let action = wrapper
+                .lookup(control_dir.ino, "register_app.act")
+                .await
+                .expect("lookup action")
+                .expect("action stats");
+            let file = wrapper
+                .open(action.ino, OPEN_WRITE_ONLY)
+                .await
+                .expect("open action for write");
+            file.pwrite(0, b"{\"app_id\":\"aiim\"}\n")
+                .await
+                .expect("write action");
+            tokio::time::timeout(Duration::from_millis(100), wake.wait())
+                .await
+                .expect("act write should wake runtime");
+
+            file.fsync().await.expect("fsync action");
+            tokio::time::timeout(Duration::from_millis(100), wake.wait())
+                .await
+                .expect("fsync should emit a follow-up wake after writes");
+        });
+    }
+
+    #[test]
+    fn create_file_wraps_action_wake_for_new_action_sink() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("_appfs")).expect("create _appfs");
+        let wake = ActionWakeHandle::new();
+        let wrapper = build_wrapper(&temp, Some(wake.clone()));
+
+        crate::get_runtime().block_on(async move {
+            let control_dir = wrapper
+                .lookup(ROOT_INO, "_appfs")
+                .await
+                .expect("lookup _appfs")
+                .expect("_appfs stats");
+            let (_stats, file) = wrapper
+                .create_file(control_dir.ino, "register_app.act", DEFAULT_FILE_MODE, 0, 0)
+                .await
+                .expect("create action file");
+            file.pwrite(0, b"{\"app_id\":\"aiim\"}\n")
+                .await
+                .expect("write new action");
+
+            tokio::time::timeout(Duration::from_millis(100), wake.wait())
+                .await
+                .expect("newly created action sink should wake runtime");
         });
     }
 
