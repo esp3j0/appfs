@@ -42,6 +42,7 @@ jobs:
     runs-on:
     - self-hosted
     - windows
+    - winfsp
     defaults:
       run:
         working-directory: cli
@@ -53,8 +54,21 @@ jobs:
       with:
         toolchain: nightly
 
+    - name: Prepare VM tool paths
+      shell: powershell
+      run: |
+        @(
+          'C:\Users\esp3j\.cargo\bin'
+          'C:\Program Files\Git\cmd'
+          'C:\Program Files\Git\bin'
+          'C:\actions-runner\tools\libclang\clang\native'
+        ) | ForEach-Object { Add-Content -Path $env:GITHUB_PATH -Value $_ }
+        Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_HOME=C:\Users\esp3j\.cargo'
+        Add-Content -Path $env:GITHUB_ENV -Value 'RUSTUP_HOME=C:\Users\esp3j\.rustup'
+        Add-Content -Path $env:GITHUB_ENV -Value 'LIBCLANG_PATH=C:\actions-runner\tools\libclang\clang\native'
+
     - name: Run AppFS action wake guard tests
-      shell: pwsh
+      shell: powershell
       env:
         CARGO_TARGET_DIR: ${{ github.workspace }}\cli\target-wake-guard
       run: |
