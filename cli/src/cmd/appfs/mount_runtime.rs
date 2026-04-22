@@ -926,8 +926,10 @@ impl SnapshotReadThroughFile {
             state.file = None;
         }
 
+        // Preserve the existing ordinary-read contract label even though the
+        // actual expansion is deferred until the first pread().
         self.ctx
-            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "read")
+            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "open")
             .await
             .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
         let file = self.open_backing_file().await?;
