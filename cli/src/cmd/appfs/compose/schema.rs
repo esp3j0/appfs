@@ -363,7 +363,7 @@ fn normalize_apps(
             );
         }
         let session_id =
-            normalize_optional_string(raw_app.session_id, &format!("apps.{app_id}.session_id"))?;
+            normalize_optional_string(raw_app.session_id, format!("apps.{app_id}.session_id"))?;
         connector_usage
             .entry(connector.clone())
             .or_default()
