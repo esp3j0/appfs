@@ -44,6 +44,8 @@ What it covers:
 - `/_appfs/register_app.act`
 - `/_app/enter_scope.act`
 - snapshot read-through after scope switch
+- shell compatibility on the mounted app tree:
+  PowerShell `Get-ChildItem`, PowerShell 7 `pwsh`, `-Filter`, and `cmd dir`
 - `/_appfs/unregister_app.act`
 
 Useful flags:
