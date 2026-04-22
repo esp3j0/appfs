@@ -331,6 +331,75 @@ impl AgentFSWinFsp {
         name.trim_end_matches('\0')
     }
 
+    fn directory_pattern_matches(name: &str, pattern: &str) -> bool {
+        if pattern.is_empty() {
+            return true;
+        }
+
+        // Win32 treats "*.*" as "match everything", including names without dots.
+        if matches!(pattern, "*" | "*.*") {
+            return true;
+        }
+
+        let lowered_name: Vec<char> = name.to_lowercase().chars().collect();
+        let lowered_pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+
+        let mut name_idx = 0usize;
+        let mut pattern_idx = 0usize;
+        let mut star_idx: Option<usize> = None;
+        let mut match_idx = 0usize;
+
+        while name_idx < lowered_name.len() {
+            if pattern_idx < lowered_pattern.len()
+                && (lowered_pattern[pattern_idx] == '?'
+                    || lowered_pattern[pattern_idx] == lowered_name[name_idx])
+            {
+                name_idx += 1;
+                pattern_idx += 1;
+                continue;
+            }
+
+            if pattern_idx < lowered_pattern.len() && lowered_pattern[pattern_idx] == '*' {
+                star_idx = Some(pattern_idx);
+                match_idx = name_idx;
+                pattern_idx += 1;
+                continue;
+            }
+
+            if let Some(star_idx) = star_idx {
+                pattern_idx = star_idx + 1;
+                match_idx += 1;
+                name_idx = match_idx;
+                continue;
+            }
+
+            return false;
+        }
+
+        while pattern_idx < lowered_pattern.len() && lowered_pattern[pattern_idx] == '*' {
+            pattern_idx += 1;
+        }
+
+        pattern_idx == lowered_pattern.len()
+    }
+
+    fn should_include_dir_entry(name: &str, pattern: Option<&str>) -> bool {
+        match pattern {
+            Some(pattern) => Self::directory_pattern_matches(name, pattern),
+            None => true,
+        }
+    }
+
+    fn set_dir_entry_name<const BUFFER_SIZE: usize>(
+        dir_info: &mut DirInfo<BUFFER_SIZE>,
+        name: &str,
+    ) -> winfsp::Result<()> {
+        let encoded: Vec<u16> = name.encode_utf16().collect();
+        dir_info
+            .set_name_raw(encoded.as_slice())
+            .map_err(|_| FspError::NTSTATUS(STATUS_OBJECT_NAME_INVALID))
+    }
+
     /// Delete a file or directory by path.
     fn delete_path(&self, path: &str, is_dir: bool) -> Result<()> {
         let (parent_ino, name) = self.parse_path(path)?;
@@ -1144,17 +1213,19 @@ impl FileSystemContext for AgentFSWinFsp {
     fn read_directory(
         &self,
         context: &Self::FileContext,
-        _pattern: Option<&U16CStr>,
+        pattern: Option<&U16CStr>,
         marker: winfsp::filesystem::DirMarker<'_>,
         buffer: &mut [u8],
     ) -> winfsp::Result<u32> {
+        let pattern_str = pattern.map(|p| p.to_string_lossy());
         let marker_str = marker
             .inner_as_cstr()
             .map(|m| m.to_string_lossy())
             .unwrap_or_else(|| "<none>".to_string());
         tracing::trace!(
-            "WinFsp::read_directory: fh={} marker={} is_none={} is_current={} is_parent={}",
+            "WinFsp::read_directory: fh={} pattern={} marker={} is_none={} is_current={} is_parent={}",
             context.fh,
+            pattern_str.as_deref().unwrap_or("<none>"),
             marker_str,
             marker.is_none(),
             marker.is_current(),
@@ -1205,11 +1276,22 @@ impl FileSystemContext for AgentFSWinFsp {
                 for entry in entries {
                     all_entries.push((entry.name, entry.stats));
                 }
+                let original_entry_count = all_entries.len();
+                let filtered_entries: Vec<(String, Stats)> = all_entries
+                    .into_iter()
+                    .filter(|(name, _stats)| {
+                        Self::should_include_dir_entry(
+                            Self::sanitize_dir_entry_name(name),
+                            pattern_str.as_deref(),
+                        )
+                    })
+                    .collect();
                 tracing::trace!(
-                    "WinFsp::read_directory: fh={} entry_count={} entries={:?}",
+                    "WinFsp::read_directory: fh={} entry_count={} filtered_count={} entries={:?}",
                     context.fh,
-                    all_entries.len(),
-                    all_entries
+                    original_entry_count,
+                    filtered_entries.len(),
+                    filtered_entries
                         .iter()
                         .map(|(name, _)| name.clone())
                         .collect::<Vec<_>>()
@@ -1222,7 +1304,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     let marker_str = marker_name.to_string_lossy();
                     let marker_str = Self::sanitize_dir_entry_name(&marker_str);
                     let mut idx = 0usize;
-                    for (i, (name, _stats)) in all_entries.iter().enumerate() {
+                    for (i, (name, _stats)) in filtered_entries.iter().enumerate() {
                         if Self::sanitize_dir_entry_name(name) == marker_str {
                             idx = i + 1;
                             break;
@@ -1234,13 +1316,15 @@ impl FileSystemContext for AgentFSWinFsp {
                 };
                 let mut cursor = 0u32;
 
-                for (name, stats) in all_entries.iter().skip(start_idx) {
+                for (name, stats) in filtered_entries.iter().skip(start_idx) {
                     let mut dir_info: DirInfo<255> = DirInfo::default();
                     fill_file_info(stats, dir_info.file_info_mut());
                     let name = Self::sanitize_dir_entry_name(name);
 
-                    // Set the name using WideNameInfo trait
-                    if dir_info.set_name(name).is_ok() {
+                    // Directory entries must not include a trailing NUL in their
+                    // reported name, otherwise PowerShell/.NET treats the name as
+                    // containing an embedded null character.
+                    if Self::set_dir_entry_name(&mut dir_info, name).is_ok() {
                         // Use the proper WinFsp API to append to buffer
                         // This handles variable-length entries correctly
                         if !dir_info.append_to_buffer(buffer, &mut cursor) {
@@ -1986,5 +2070,28 @@ mod tests {
             AgentFSWinFsp::sanitize_dir_entry_name("settings.json"),
             "settings.json"
         );
+    }
+
+    #[test]
+    fn directory_pattern_matches_exact_name_case_insensitively() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "info.res.jsonl",
+            "INFO.RES.JSONL"
+        ));
+        assert!(!AgentFSWinFsp::directory_pattern_matches(
+            "other.res.jsonl",
+            "info.res.jsonl"
+        ));
+    }
+
+    #[test]
+    fn directory_pattern_matches_common_wildcards() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "info.res.jsonl",
+            "*.jsonl"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches("huoyan", "*.*"));
+        assert!(AgentFSWinFsp::directory_pattern_matches("a1", "a?"));
+        assert!(!AgentFSWinFsp::directory_pattern_matches("a12", "a?"));
     }
 }
