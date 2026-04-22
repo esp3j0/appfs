@@ -255,6 +255,9 @@ class HuoyanBackend:
     app_id: str = field(default_factory=lambda: os.getenv("APPFS_HUOYAN_APP_ID", "huoyan"))
     user_id: int = field(default_factory=lambda: _env_int("APPFS_HUOYAN_USER_ID", 1))
     case_mode: str = field(default_factory=lambda: os.getenv("APPFS_HUOYAN_CASE_MODE", "singlebox").strip().lower() or "singlebox")
+    bootstrap_mode: str = field(
+        default_factory=lambda: os.getenv("APPFS_HUOYAN_BOOTSTRAP_MODE", "").strip().lower()
+    )
     default_case_id: int | None = field(
         default_factory=lambda: (_env_int("APPFS_HUOYAN_CASE_ID", 0) or None)
     )
@@ -274,6 +277,14 @@ class HuoyanBackend:
     def __post_init__(self) -> None:
         if self.client is None:
             self.client = HuoyanClient()
+        if self.bootstrap_mode == "":
+            self.bootstrap_mode = "case" if self.default_scope == "case" else "home"
+        if self.bootstrap_mode not in {"home", "case", "attached_case"}:
+            raise ValueError(f"unsupported huoyan bootstrap mode: {self.bootstrap_mode}")
+        if self.bootstrap_mode in {"case", "attached_case"} and self.default_case_id is None:
+            raise ValueError(
+                f"APPFS_HUOYAN_BOOTSTRAP_MODE={self.bootstrap_mode} requires APPFS_HUOYAN_CASE_ID"
+            )
 
     def _snapshot_manifest(self, template: str) -> dict[str, Any]:
         return {
@@ -298,9 +309,23 @@ class HuoyanBackend:
         }
 
     def _initial_scope(self) -> str:
-        if self.default_scope == "case" and self.default_case_id is not None:
-            return self._case_scope(self.default_case_id)
+        if self.bootstrap_mode in {"case", "attached_case"}:
+            return self._attached_case_scope()
         return DEFAULT_HOME_SCOPE
+
+    def _attached_case_scope(self) -> str:
+        if self.default_case_id is None:
+            raise ValueError("huoyan case bootstrap requires default_case_id")
+        return self._case_scope(self.default_case_id)
+
+    def _assert_attached_scope(self, scope: str) -> None:
+        if self.bootstrap_mode != "attached_case":
+            return
+        attached_scope = self._attached_case_scope()
+        if scope != attached_scope:
+            raise ValueError(
+                f"attached_case bootstrap only supports current case scope {attached_scope}, got {scope}"
+            )
 
     def _case_scope(self, case_id: int) -> str:
         return f"case:{case_id}"
@@ -328,7 +353,12 @@ class HuoyanBackend:
             "supports_snapshot": True,
             "supports_live": False,
             "supports_action": False,
-            "optional_features": ["structure_sync", "case_scope", "fireeye_tree"],
+            "optional_features": [
+                "structure_sync",
+                "case_scope",
+                "fireeye_tree",
+                "attached_case_bootstrap",
+            ],
         }
 
     def health(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -345,6 +375,7 @@ class HuoyanBackend:
     def get_app_structure(self, request: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         session_id = str(context.get("session_id", ""))
         scope = self.session_scopes.get(session_id, self._initial_scope())
+        self._assert_attached_scope(scope)
         built = self._build_scope(scope, force_refresh=True)
         self.session_scopes[session_id] = scope
         return self._structure_response(request, built.snapshot)
@@ -360,6 +391,15 @@ class HuoyanBackend:
             scope = target_scope.strip()
         else:
             scope = previous_scope
+
+        if self.bootstrap_mode == "attached_case":
+            attached_scope = self._attached_case_scope()
+            if previous_scope != attached_scope:
+                previous_scope = attached_scope
+            if scope != attached_scope:
+                raise ValueError(
+                    f"attached_case bootstrap does not support leaving current case scope {attached_scope}"
+                )
 
         self._transition_scope(previous_scope, scope, reason)
         built = self._build_scope(scope, force_refresh=True)
@@ -475,6 +515,16 @@ class HuoyanBackend:
             time.sleep(self.open_wait_sec)
 
     def _transition_scope(self, previous_scope: str, next_scope: str, reason: str) -> None:
+        if self.bootstrap_mode == "attached_case":
+            attached_scope = self._attached_case_scope()
+            if previous_scope != attached_scope:
+                previous_scope = attached_scope
+            if next_scope != attached_scope:
+                raise ValueError(
+                    f"attached_case bootstrap does not support leaving current case scope {attached_scope}"
+                )
+            return
+
         if previous_scope == next_scope:
             return
 

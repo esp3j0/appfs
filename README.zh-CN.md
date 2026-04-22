@@ -32,7 +32,13 @@ AppFS 主要面向真实的 LLM + shell 工作流：
 
 也就是说：AppFS 是面向用户的协议与交互层，AgentFS 是在底下提供能力的引擎。
 
-推荐启动入口：
+面向真实项目集成时，推荐的高层启动入口是：
+
+```bash
+agentfs appfs compose up -f appfs-compose.yaml
+```
+
+底层 managed runtime 原语仍然是：
 
 ```bash
 agentfs appfs up <id-or-path> <mountpoint>
@@ -51,7 +57,13 @@ managed runtime 的共享状态文件位于：
 
 ## Quick Start
 
-标准 AppFS 流程如下：
+现在更推荐的高层 AppFS 流程是：
+
+1. 在 `appfs-compose.yaml` 中声明 runtime、connectors、apps
+2. 运行 `agentfs appfs compose up`
+3. 直接使用挂载树
+
+底层 managed 流程仍然保留：
 
 1. 启动 bridge 或进程内 connector
 2. 初始化一个空的 AgentFS 数据库，作为 AppFS 的存储与挂载底座
@@ -59,7 +71,54 @@ managed runtime 的共享状态文件位于：
 4. 通过 `/_appfs/register_app.act` 注册 app
 5. 在挂载树中直接读文件、切换 scope、触发动作
 
-也就是说，当前推荐路径会显式跨过两层：先用 AgentFS 初始化底座，再用 AppFS 子命令启动面向应用侧的协议与 runtime。
+也就是说，当前更推荐 compose-first 的集成路径；`agentfs appfs up` 继续保留给需要直接调试 mount/runtime 行为的场景。
+
+一个 Huoyan attached-case 的 compose 示例位于 [examples/appfs/appfs-compose.huoyan-attached-case.example.yaml](./examples/appfs/appfs-compose.huoyan-attached-case.example.yaml)。
+
+下面是参考 HTTP bridge 的最小 compose 结构：
+
+```yaml
+version: 1
+
+runtime:
+  db: ./.agentfs/compose-aiim.db
+  mountpoint: C:/mnt/appfs-compose-aiim
+  backend: winfsp
+  init: if_missing
+  reset: false
+
+connectors:
+  aiim-http:
+    mode: command
+    transport: http
+    endpoint: http://127.0.0.1:8080
+    healthcheck:
+      kind: connector
+      interval_ms: 500
+      timeout_ms: 2000
+      max_attempts: 40
+    command:
+      cwd: ./examples/appfs/bridges/http-python
+      program: uv
+      args: ["run", "python", "bridge_server.py"]
+
+apps:
+  aiim:
+    connector: aiim-http
+```
+
+有了这个文件之后，直接运行：
+
+```bash
+agentfs appfs compose up -f appfs-compose.yaml
+```
+
+compose 是当前推荐的主路径，因为它会在一个前台进程里完成：
+
+- 准备或复用 AgentFS runtime 数据库
+- 拉起并监管 external / command 模式的 connector
+- 预填充 managed AppFS registry
+- 挂载树并启动 runtime
 
 环境前置：
 
@@ -77,6 +136,16 @@ managed runtime 的共享状态文件位于：
 - 从 [winfsp.dev/rel](https://winfsp.dev/rel/) 下载并安装最新版本的 WinFsp
 - 安装完成后，请重新打开一个终端，再运行 `agentfs appfs up`
 - 通常不需要重启；如果安装后仍然提示驱动忙碌，或者挂载还是失败，再重启一次后重试
+- 对 WinFsp 来说，挂载点路径本身应该不存在。保留父目录，例如 `C:\mnt`，但不要提前创建 `C:\mnt\appfs-compose-aiim`。现在 `appfs compose up` 已兼容这个约束；如果旧版本运行残留了一个空目录占位符，也会在启动时自动清理掉。
+
+Windows 下的 compose 启动方式：
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- appfs compose up -f ..\examples\appfs\appfs-compose.huoyan-attached-case.example.yaml
+```
+
+如果目标软件本身已经处在案件或其他附着 scope 内，推荐像 Huoyan 示例那样，通过 compose 里的 connector 环境变量传入 attached-case bootstrap 信息，而不是再额外触发一次 `enter_scope`。
 
 启动参考 HTTP bridge：
 

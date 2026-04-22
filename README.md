@@ -32,7 +32,13 @@ AppFS is the primary product story in this repository, but it is currently shipp
 
 In other words: AppFS is the app-facing protocol and UX; AgentFS is the engine that powers it.
 
-The recommended runtime entrypoint is:
+The recommended integration entrypoint for real app projects is:
+
+```bash
+agentfs appfs compose up -f appfs-compose.yaml
+```
+
+The lower-level managed runtime primitive remains:
 
 ```bash
 agentfs appfs up <id-or-path> <mountpoint>
@@ -51,7 +57,13 @@ Low-level debug commands still exist:
 
 ## Quick Start
 
-The normal AppFS flow is:
+The higher-level AppFS flow is now:
+
+1. declare runtime, connectors, and apps in `appfs-compose.yaml`
+2. run `agentfs appfs compose up`
+3. use the mounted tree directly
+
+The lower-level managed flow is still:
 
 1. start a bridge or in-process connector
 2. initialize an empty AgentFS database that AppFS will use as its storage and mount substrate
@@ -59,7 +71,54 @@ The normal AppFS flow is:
 4. register an app through `/_appfs/register_app.act`
 5. read files, switch scope, and trigger actions through the mounted tree
 
-Today this flow intentionally spans both layers: initialize storage with AgentFS, then launch the app-facing protocol/runtime with the AppFS subcommand.
+Today the recommended integration path is compose-first. `agentfs appfs up` remains the lower-level runtime primitive when you want to debug mount/runtime behavior directly.
+
+A Huoyan attached-case compose example lives at [examples/appfs/appfs-compose.huoyan-attached-case.example.yaml](./examples/appfs/appfs-compose.huoyan-attached-case.example.yaml).
+
+Minimal compose shape for the reference HTTP bridge:
+
+```yaml
+version: 1
+
+runtime:
+  db: ./.agentfs/compose-aiim.db
+  mountpoint: C:/mnt/appfs-compose-aiim
+  backend: winfsp
+  init: if_missing
+  reset: false
+
+connectors:
+  aiim-http:
+    mode: command
+    transport: http
+    endpoint: http://127.0.0.1:8080
+    healthcheck:
+      kind: connector
+      interval_ms: 500
+      timeout_ms: 2000
+      max_attempts: 40
+    command:
+      cwd: ./examples/appfs/bridges/http-python
+      program: uv
+      args: ["run", "python", "bridge_server.py"]
+
+apps:
+  aiim:
+    connector: aiim-http
+```
+
+With that file in place:
+
+```bash
+agentfs appfs compose up -f appfs-compose.yaml
+```
+
+Compose is the recommended path when you want one command to:
+
+- prepare or reopen the AgentFS runtime database
+- supervise an external or command-launched connector
+- bootstrap the managed AppFS registry
+- mount the tree and start the runtime in one foreground process
 
 Prerequisites:
 
@@ -77,6 +136,16 @@ Install WinFsp first. AppFS uses WinFsp as the Windows mount backend for `--back
 - Download and install the latest WinFsp release from [winfsp.dev/rel](https://winfsp.dev/rel/)
 - After installation, open a new terminal before running `agentfs appfs up`
 - A reboot is usually not required, but if Windows reports the driver is busy or mounts still fail after install, reboot once and retry
+- For WinFsp, the mountpoint path itself should be absent before mount. Keep the parent directory, such as `C:\mnt`, but do not pre-create `C:\mnt\appfs-compose-aiim`. `appfs compose up` now preserves this WinFsp expectation and will clean up an empty stale placeholder directory if an older run left one behind.
+
+Compose-first startup on Windows:
+
+```powershell
+cd C:\Users\esp3j\rep\agentfs\cli
+cargo run -- appfs compose up -f ..\examples\appfs\appfs-compose.huoyan-attached-case.example.yaml
+```
+
+If the target software is already inside a case or other attached scope, prefer passing that bootstrap mode through connector env in the compose file, as shown in the Huoyan example. That avoids issuing an extra `enter_scope` just to land on the working tree.
 
 Start the reference HTTP bridge:
 

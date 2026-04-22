@@ -1,4 +1,4 @@
-use agentfs_sdk::AppConnector;
+use agentfs_sdk::{AgentFSOptions, AppConnector};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 mod action_dispatcher;
 mod bridge_resilience;
+pub(crate) mod compose;
 mod core;
 mod errors;
 mod events;
@@ -401,6 +402,218 @@ fn fallback_poll_interval(poll_ms: u64) -> Option<Duration> {
     }
 }
 
+async fn prepare_compose_runtime(runtime: &compose::schema::AppfsComposeRuntime) -> Result<String> {
+    if let Some(parent) = runtime.db.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create compose runtime db parent directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    if runtime.backend == crate::cmd::mount::MountBackend::Winfsp {
+        let mount_parent = runtime
+            .mountpoint
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "compose runtime winfsp mountpoint must include a parent directory: {}",
+                    runtime.mountpoint.display()
+                )
+            })?;
+        std::fs::create_dir_all(mount_parent).with_context(|| {
+            format!(
+                "failed to create compose runtime winfsp mountpoint parent directory {}",
+                mount_parent.display()
+            )
+        })?;
+        if runtime.mountpoint.exists() {
+            if !runtime.mountpoint.is_dir() {
+                anyhow::bail!(
+                    "compose runtime mountpoint exists but is not a directory: {}",
+                    runtime.mountpoint.display()
+                );
+            }
+            let is_empty = std::fs::read_dir(&runtime.mountpoint)
+                .with_context(|| {
+                    format!(
+                        "failed to inspect compose runtime winfsp mountpoint directory {}",
+                        runtime.mountpoint.display()
+                    )
+                })?
+                .next()
+                .is_none();
+            if !is_empty {
+                anyhow::bail!(
+                    "compose runtime winfsp mountpoint must be empty or absent: {}",
+                    runtime.mountpoint.display()
+                );
+            }
+            std::fs::remove_dir(&runtime.mountpoint).with_context(|| {
+                format!(
+                    "failed to remove empty compose runtime winfsp mountpoint placeholder {}",
+                    runtime.mountpoint.display()
+                )
+            })?;
+        }
+    } else if runtime.mountpoint.exists() {
+        if !runtime.mountpoint.is_dir() {
+            anyhow::bail!(
+                "compose runtime mountpoint exists but is not a directory: {}",
+                runtime.mountpoint.display()
+            );
+        }
+    } else {
+        std::fs::create_dir_all(&runtime.mountpoint).with_context(|| {
+            format!(
+                "failed to create compose runtime mountpoint directory {}",
+                runtime.mountpoint.display()
+            )
+        })?;
+    }
+
+    let db_path = runtime
+        .db
+        .to_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "compose runtime db path must be valid UTF-8: {}",
+                runtime.db.display()
+            )
+        })?
+        .to_string();
+    let sidecar_info_path = PathBuf::from(format!("{db_path}-info"));
+
+    if runtime.reset {
+        if runtime.db.exists() {
+            std::fs::remove_file(&runtime.db).with_context(|| {
+                format!(
+                    "failed to remove compose runtime db {}",
+                    runtime.db.display()
+                )
+            })?;
+        }
+        if sidecar_info_path.exists() {
+            std::fs::remove_file(&sidecar_info_path).with_context(|| {
+                format!(
+                    "failed to remove compose runtime sync sidecar {}",
+                    sidecar_info_path.display()
+                )
+            })?;
+        }
+    }
+
+    match runtime.init {
+        compose::schema::AppfsComposeInitMode::Never => {
+            if !runtime.db.exists() {
+                anyhow::bail!(
+                    "compose runtime db does not exist and runtime.init=never: {}",
+                    runtime.db.display()
+                );
+            }
+        }
+        compose::schema::AppfsComposeInitMode::IfMissing => {
+            if !runtime.db.exists() {
+                let _agent = crate::cmd::init::open_agentfs(AgentFSOptions::with_path(&db_path))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize compose runtime db {}",
+                            runtime.db.display()
+                        )
+                    })?;
+            }
+        }
+        compose::schema::AppfsComposeInitMode::Always => {
+            let _agent = crate::cmd::init::open_agentfs(AgentFSOptions::with_path(&db_path))
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to initialize compose runtime db {}",
+                        runtime.db.display()
+                    )
+                })?;
+        }
+    }
+
+    Ok(db_path)
+}
+
+async fn run_managed_appfs_with_bootstrap<F>(args: AppfsUpArgs, bootstrap: F) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    let action_wake = ActionWakeHandle::new();
+    let mut mount_args = build_managed_mount_args(&args);
+    mount_args.action_wake = Some(action_wake.clone());
+    let mountpoint = mount_args.mountpoint.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let mount_thread = std::thread::spawn(move || {
+        let startup_tx = ready_tx.clone();
+        let result = crate::cmd::mount::mount_with_ready(mount_args, Some(startup_tx));
+        if let Err(err) = &result {
+            let _ = ready_tx.send(Err(anyhow::anyhow!(err.to_string())));
+        }
+        result
+    });
+
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            let _ = mount_thread.join();
+            return Err(err);
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            return Err(anyhow::anyhow!(
+                "AppFS mount did not report readiness within 10 seconds: {}",
+                mountpoint.display()
+            ));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(anyhow::anyhow!(
+                "AppFS mount exited before reporting readiness: {}",
+                mountpoint.display()
+            ));
+        }
+    }
+
+    bootstrap(&mountpoint)?;
+
+    let runtime_result = handle_appfs_adapter_command(AppfsServeArgs {
+        root: mountpoint,
+        managed: true,
+        app_id: None,
+        app_ids: Vec::new(),
+        session_id: None,
+        poll_ms: args.poll_ms,
+        action_wake: Some(action_wake),
+        adapter_http_endpoint: None,
+        adapter_http_timeout_ms: 5_000,
+        adapter_grpc_endpoint: None,
+        adapter_grpc_timeout_ms: 5_000,
+        adapter_bridge_max_retries: 2,
+        adapter_bridge_initial_backoff_ms: 100,
+        adapter_bridge_max_backoff_ms: 1_000,
+        adapter_bridge_circuit_breaker_failures: 5,
+        adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+    })
+    .await;
+
+    if let Err(err) = runtime_result {
+        return Err(err);
+    }
+
+    match mount_thread.join() {
+        Ok(Ok(())) => runtime_result,
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow::anyhow!(
+            "AppFS mount thread panicked during shutdown"
+        )),
+    }
+}
+
 pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
     let AppfsServeArgs {
         root,
@@ -544,71 +757,38 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
 }
 
 pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
-    let action_wake = ActionWakeHandle::new();
-    let mut mount_args = build_managed_mount_args(&args);
-    mount_args.action_wake = Some(action_wake.clone());
-    let mountpoint = mount_args.mountpoint.clone();
-    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-    let mount_thread = std::thread::spawn(move || {
-        let startup_tx = ready_tx.clone();
-        let result = crate::cmd::mount::mount_with_ready(mount_args, Some(startup_tx));
-        if let Err(err) = &result {
-            let _ = ready_tx.send(Err(anyhow::anyhow!(err.to_string())));
-        }
-        result
-    });
+    run_managed_appfs_with_bootstrap(args, |_| Ok(())).await
+}
 
-    match ready_rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            let _ = mount_thread.join();
-            return Err(err);
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            return Err(anyhow::anyhow!(
-                "AppFS mount did not report readiness within 10 seconds: {}",
-                mountpoint.display()
-            ));
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            return Err(anyhow::anyhow!(
-                "AppFS mount exited before reporting readiness: {}",
-                mountpoint.display()
-            ));
-        }
-    }
+pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    let compose_doc = compose::loader::load_compose_doc(compose_path.as_deref(), &cwd)?;
+    let db_path = prepare_compose_runtime(&compose_doc.runtime).await?;
 
-    let runtime_result = handle_appfs_adapter_command(AppfsServeArgs {
-        root: mountpoint,
-        managed: true,
-        app_id: None,
-        app_ids: Vec::new(),
-        session_id: None,
-        poll_ms: args.poll_ms,
-        action_wake: Some(action_wake),
-        adapter_http_endpoint: None,
-        adapter_http_timeout_ms: 5_000,
-        adapter_grpc_endpoint: None,
-        adapter_grpc_timeout_ms: 5_000,
-        adapter_bridge_max_retries: 2,
-        adapter_bridge_initial_backoff_ms: 100,
-        adapter_bridge_max_backoff_ms: 1_000,
-        adapter_bridge_circuit_breaker_failures: 5,
-        adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
-    })
+    let (mut connector_supervisor, resolved_apps) =
+        compose::connector_supervisor::ComposeConnectorSupervisor::resolve_apps(&compose_doc)?;
+
+    let result = run_managed_appfs_with_bootstrap(
+        AppfsUpArgs {
+            id_or_path: db_path,
+            mountpoint: compose_doc.runtime.mountpoint.clone(),
+            backend: compose_doc.runtime.backend,
+            auto_unmount: compose_doc.runtime.auto_unmount,
+            allow_root: compose_doc.runtime.allow_root,
+            allow_other: compose_doc.runtime.allow_other,
+            uid: compose_doc.runtime.uid,
+            gid: compose_doc.runtime.gid,
+            poll_ms: compose_doc.runtime.poll_ms,
+        },
+        |root| {
+            compose::reconcile::bootstrap_registry_from_resolved_apps(root, &resolved_apps)?;
+            Ok(())
+        },
+    )
     .await;
 
-    if let Err(err) = runtime_result {
-        return Err(err);
-    }
-
-    match mount_thread.join() {
-        Ok(Ok(())) => runtime_result,
-        Ok(Err(err)) => Err(err),
-        Err(_) => Err(anyhow::anyhow!(
-            "AppFS mount thread panicked during shutdown"
-        )),
-    }
+    connector_supervisor.shutdown();
+    result
 }
 
 pub async fn handle_appfs_launch_command(args: AppfsLaunchArgs) -> Result<()> {
@@ -866,7 +1046,7 @@ struct AppfsAdapter {
 #[cfg(test)]
 mod supervisor_tests {
     use super::{
-        build_runtime_cli_args, registry, resolve_runtime_cli_args, runtime_config,
+        build_runtime_cli_args, compose, registry, resolve_runtime_cli_args, runtime_config,
         ActionWakeHandle, AppfsBridgeCliArgs, AppfsRuntimeSupervisor,
     };
     use serde_json::{json, Value as JsonValue};
@@ -1031,6 +1211,143 @@ mod supervisor_tests {
             env_map.get(super::APPFS_RUNTIME_MANIFEST_ENV),
             Some(&manifest_path.display().to_string())
         );
+    }
+
+    #[test]
+    fn prepare_compose_runtime_non_winfsp_creates_db_and_mountpoint_when_missing() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = compose::schema::AppfsComposeRuntime {
+            db: temp.path().join(".agentfs/compose.db"),
+            mountpoint: temp.path().join("mnt/appfs"),
+            backend: crate::cmd::mount::MountBackend::Nfs,
+            init: compose::schema::AppfsComposeInitMode::IfMissing,
+            reset: false,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: false,
+            uid: None,
+            gid: None,
+            poll_ms: 0,
+        };
+
+        let db_path = crate::get_runtime()
+            .block_on(super::prepare_compose_runtime(&runtime))
+            .expect("compose runtime should prepare");
+
+        assert_eq!(db_path, runtime.db.to_string_lossy().to_string());
+        assert!(runtime.db.exists());
+        assert!(runtime.mountpoint.exists());
+        assert!(runtime.mountpoint.is_dir());
+    }
+
+    #[test]
+    fn prepare_compose_runtime_winfsp_creates_parent_without_mountpoint() {
+        let temp = TempDir::new().expect("tempdir");
+        let mountpoint = temp.path().join("mnt/appfs");
+        let mount_parent = mountpoint.parent().expect("mount parent").to_path_buf();
+        let runtime = compose::schema::AppfsComposeRuntime {
+            db: temp.path().join(".agentfs/compose.db"),
+            mountpoint: mountpoint.clone(),
+            backend: crate::cmd::mount::MountBackend::Winfsp,
+            init: compose::schema::AppfsComposeInitMode::IfMissing,
+            reset: false,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: false,
+            uid: None,
+            gid: None,
+            poll_ms: 0,
+        };
+
+        let db_path = crate::get_runtime()
+            .block_on(super::prepare_compose_runtime(&runtime))
+            .expect("compose runtime should prepare");
+
+        assert_eq!(db_path, runtime.db.to_string_lossy().to_string());
+        assert!(runtime.db.exists());
+        assert!(mount_parent.exists());
+        assert!(mount_parent.is_dir());
+        assert!(!mountpoint.exists());
+    }
+
+    #[test]
+    fn prepare_compose_runtime_winfsp_removes_empty_mountpoint_placeholder() {
+        let temp = TempDir::new().expect("tempdir");
+        let mountpoint = temp.path().join("mnt/appfs");
+        fs::create_dir_all(&mountpoint).expect("create mountpoint placeholder");
+        let runtime = compose::schema::AppfsComposeRuntime {
+            db: temp.path().join(".agentfs/compose.db"),
+            mountpoint: mountpoint.clone(),
+            backend: crate::cmd::mount::MountBackend::Winfsp,
+            init: compose::schema::AppfsComposeInitMode::IfMissing,
+            reset: false,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: false,
+            uid: None,
+            gid: None,
+            poll_ms: 0,
+        };
+
+        crate::get_runtime()
+            .block_on(super::prepare_compose_runtime(&runtime))
+            .expect("compose runtime should prepare");
+
+        assert!(!mountpoint.exists());
+    }
+
+    #[test]
+    fn prepare_compose_runtime_reset_removes_existing_db_sidecar() {
+        let temp = TempDir::new().expect("tempdir");
+        let db_path = temp.path().join(".agentfs/compose.db");
+        let sidecar_path = std::path::PathBuf::from(format!("{}-info", db_path.display()));
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create parent");
+        fs::write(&db_path, b"stale").expect("write db");
+        fs::write(&sidecar_path, b"stale-sidecar").expect("write sidecar");
+
+        let runtime = compose::schema::AppfsComposeRuntime {
+            db: db_path.clone(),
+            mountpoint: temp.path().join("mnt/appfs"),
+            backend: crate::cmd::mount::MountBackend::default(),
+            init: compose::schema::AppfsComposeInitMode::IfMissing,
+            reset: true,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: false,
+            uid: None,
+            gid: None,
+            poll_ms: 0,
+        };
+
+        crate::get_runtime()
+            .block_on(super::prepare_compose_runtime(&runtime))
+            .expect("compose runtime should prepare");
+
+        assert!(db_path.exists());
+        assert!(!sidecar_path.exists());
+    }
+
+    #[test]
+    fn prepare_compose_runtime_never_requires_existing_db() {
+        let temp = TempDir::new().expect("tempdir");
+        let runtime = compose::schema::AppfsComposeRuntime {
+            db: temp.path().join(".agentfs/missing.db"),
+            mountpoint: temp.path().join("mnt/appfs"),
+            backend: crate::cmd::mount::MountBackend::default(),
+            init: compose::schema::AppfsComposeInitMode::Never,
+            reset: false,
+            auto_unmount: true,
+            allow_root: false,
+            allow_other: false,
+            uid: None,
+            gid: None,
+            poll_ms: 0,
+        };
+
+        let err = crate::get_runtime()
+            .block_on(super::prepare_compose_runtime(&runtime))
+            .expect_err("missing db should fail");
+        assert!(err.to_string().contains("runtime.init=never"));
     }
 
     fn append_text(path: &std::path::Path, text: &str) {
