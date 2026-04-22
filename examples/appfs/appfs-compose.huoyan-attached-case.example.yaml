@@ -1,0 +1,42 @@
+version: 1
+name: huoyan-attached-case
+
+runtime:
+  db: .agentfs/huoyan-compose.db
+  mountpoint: C:/mnt/appfs-huoyan
+  backend: winfsp
+  init: if_missing
+  reset: false
+  poll_ms: 0
+
+connectors:
+  huoyan-http:
+    mode: external_or_command
+    transport: http
+    endpoint: http://127.0.0.1:8080
+    healthcheck:
+      kind: connector
+      interval_ms: 1000
+      timeout_ms: 3000
+      max_attempts: 20
+    command:
+      cwd: ./examples/appfs/bridges/http-python
+      program: uv
+      args: ["run", "python", "bridge_server.py"]
+      env:
+        APPFS_HTTP_BRIDGE_BACKEND: huoyan
+        APPFS_HUOYAN_HOST: http://127.0.0.1:7777
+        APPFS_HUOYAN_CASE_ID: "1"
+        APPFS_HUOYAN_BOOTSTRAP_MODE: attached_case
+
+apps:
+  huoyan:
+    connector: huoyan-http
+    transport:
+      http_timeout_ms: 5000
+      grpc_timeout_ms: 5000
+      bridge_max_retries: 2
+      bridge_initial_backoff_ms: 100
+      bridge_max_backoff_ms: 1000
+      bridge_circuit_breaker_failures: 5
+      bridge_circuit_breaker_cooldown_ms: 3000

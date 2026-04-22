@@ -7,7 +7,7 @@ use clap_complete::{
 use std::path::{Path, PathBuf};
 
 /// Mount backend type
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum MountBackend {
     /// FUSE filesystem (Linux only)
     Fuse,
@@ -682,6 +682,27 @@ pub enum AppfsCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         agent_args: Vec<String>,
     },
+    /// Start AppFS from a declarative compose file
+    Compose {
+        #[command(subcommand)]
+        command: AppfsComposeCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AppfsComposeCommand {
+    /// Start AppFS from `appfs-compose.yaml`
+    Up {
+        /// Optional compose file path.
+        /// Defaults to appfs-compose.yaml / appfs-compose.yml in the current directory.
+        #[arg(
+            short = 'f',
+            long = "file",
+            value_name = "FILE",
+            add = ArgValueCompleter::new(PathCompleter::file())
+        )]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -762,7 +783,7 @@ fn id_or_path_completer(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppfsCommand, Args, Command, MountBackend};
+    use super::{AppfsCommand, AppfsComposeCommand, Args, Command, MountBackend};
     use clap::Parser;
     use std::path::PathBuf;
 
@@ -807,6 +828,30 @@ mod tests {
                 assert_eq!(poll_ms, 150);
             }
             other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_appfs_compose_up_command() {
+        let args = Args::parse_from([
+            "agentfs",
+            "appfs",
+            "compose",
+            "up",
+            "-f",
+            "appfs-compose.yaml",
+        ]);
+
+        match args.command {
+            Command::Appfs {
+                command:
+                    AppfsCommand::Compose {
+                        command: AppfsComposeCommand::Up { file },
+                    },
+            } => {
+                assert_eq!(file, Some(PathBuf::from("appfs-compose.yaml")));
+            }
+            _ => panic!("expected appfs compose up command"),
         }
     }
 

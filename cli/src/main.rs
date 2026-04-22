@@ -1,7 +1,10 @@
 use agentfs::{
     cmd::{self, completions::handle_completions},
     get_runtime,
-    opts::{AppfsCommand, Args, Command, FsCommand, PruneCommand, ServeCommand, SyncCommand},
+    opts::{
+        AppfsCommand, AppfsComposeCommand, Args, Command, FsCommand, PruneCommand, ServeCommand,
+        SyncCommand,
+    },
 };
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
@@ -500,6 +503,15 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+            AppfsCommand::Compose { command } => match command {
+                AppfsComposeCommand::Up { file } => {
+                    let rt = get_runtime();
+                    if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_compose_up_command(file)) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            },
         },
         Command::Ps => {
             if let Err(e) = cmd::ps::list_ps(&mut std::io::stdout()) {

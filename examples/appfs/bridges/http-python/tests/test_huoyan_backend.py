@@ -216,6 +216,109 @@ class HuoyanBackendTests(unittest.TestCase):
         self.assertEqual(self.client.last_fetch_params["pid"], 4000000302)
         self.assertEqual(self.client.last_fetch_params["datatype"], "immsginfo")
 
+    def test_attached_case_bootstrap_starts_inside_case_without_open(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        body = backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        snapshot = body["result"]["snapshot"]
+        paths = {node["path"] for node in snapshot["nodes"]}
+        self.assertEqual(snapshot["active_scope"], "case:7")
+        self.assertIn("检材A/微信/mzs(wxid_ykx86h8vvs7v12)/好友消息_张三.res.jsonl", paths)
+        self.assertEqual(self.client.opened_paths, [])
+        self.assertEqual(self.client.exited_case_ids, [])
+
+    def test_attached_case_same_scope_refresh_is_noop_for_host_case_state(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        refreshed = backend.refresh_app_structure(
+            {
+                "app_id": "huoyan",
+                "reason": "enter_scope",
+                "target_scope": "case:7",
+                "trigger_action_path": "/_app/enter_scope.act",
+            },
+            self.context,
+        )
+        snapshot = refreshed["result"]["snapshot"]
+        self.assertEqual(snapshot["active_scope"], "case:7")
+        self.assertEqual(self.client.opened_paths, [])
+        self.assertEqual(self.client.exited_case_ids, [])
+
+    def test_attached_case_rejects_enter_scope_home(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"attached_case bootstrap does not support leaving current case scope case:7",
+        ):
+            backend.refresh_app_structure(
+                {
+                    "app_id": "huoyan",
+                    "reason": "enter_scope",
+                    "target_scope": "home",
+                    "trigger_action_path": "/_app/enter_scope.act",
+                },
+                self.context,
+            )
+
+    def test_attached_case_rejects_switching_to_other_case(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"attached_case bootstrap does not support leaving current case scope case:7",
+        ):
+            backend.refresh_app_structure(
+                {
+                    "app_id": "huoyan",
+                    "reason": "enter_scope",
+                    "target_scope": "case:8",
+                    "trigger_action_path": "/_app/enter_scope.act",
+                },
+                self.context,
+            )
+
+    def test_attached_case_snapshot_reads_work_without_case_open(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        target_path = "检材A/微信/mzs(wxid_ykx86h8vvs7v12)/好友消息_张三.res.jsonl"
+        fetched = backend.fetch_snapshot_chunk(
+            {
+                "resource_path": f"/{target_path}",
+                "resume": {"kind": "start"},
+                "budget_bytes": 4096,
+            },
+            self.context,
+        )
+        self.assertEqual(len(fetched["records"]), 2)
+        self.assertEqual(fetched["records"][0]["line"]["Content"], "文本")
+        self.assertEqual(self.client.opened_paths, [])
+        self.assertEqual(self.client.exited_case_ids, [])
+
     def test_enter_scope_home_exits_current_case(self) -> None:
         self.backend.refresh_app_structure(
             {
