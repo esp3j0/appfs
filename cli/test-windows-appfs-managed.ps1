@@ -20,6 +20,7 @@ $script:BridgeHandle = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:LogDir = Join-Path ([System.IO.Path]::GetTempPath()) ("agentfs-win-managed-{0}-{1}" -f $AgentId, ([guid]::NewGuid().ToString("N")))
 $script:ProgressLog = $null
+$script:AgentfsExe = $null
 
 function Write-Success { Write-Host "✓ $args" -ForegroundColor Green }
 function Write-Fail { Write-Host "✗ $args" -ForegroundColor Red }
@@ -84,6 +85,7 @@ function Stop-LoggedProcess {
 function Cleanup-TestArtifacts {
     Stop-LoggedProcess $script:AppfsHandle
     Stop-LoggedProcess $script:BridgeHandle
+    Start-Sleep -Milliseconds 250
 
     if (!$SkipCleanup) {
         Remove-TestPath -Path $MountPoint -Recurse
@@ -93,7 +95,11 @@ function Cleanup-TestArtifacts {
     }
 
     if (!$KeepLogs -and (Test-Path $script:LogDir)) {
-        Remove-TestPath -Path $script:LogDir -Recurse
+        try {
+            Remove-Item -Path $script:LogDir -Force -Recurse -ErrorAction Stop
+        } catch {
+            Write-WarningLine "Leaving log directory in place because cleanup could not remove $script:LogDir"
+        }
     }
 }
 
@@ -111,7 +117,11 @@ function Fail-WithContext {
         )) {
             if (Test-Path $path) {
                 Write-Host "`n--- tail: $path ---" -ForegroundColor Gray
-                Get-Content $path -Tail 20 -ErrorAction SilentlyContinue
+                try {
+                    Get-Content $path -Tail 20 -ErrorAction Stop
+                } catch {
+                    Write-Host "(log file is still being held by a running process; inspect it after cleanup)" -ForegroundColor DarkGray
+                }
             }
         }
     }
@@ -213,7 +223,7 @@ function Read-DbVirtualJsonFile {
 
     Push-Location $PSScriptRoot
     try {
-        $output = & cargo run --quiet -- fs $script:DbPath cat $VirtualPath 2>$null
+        $output = & $script:AgentfsExe fs $script:DbPath cat $VirtualPath 2>$null
         if ($LASTEXITCODE -ne 0) {
             return $null
         }
@@ -370,6 +380,159 @@ function Read-FirstNonEmptyLines {
     return ,@($lines)
 }
 
+function Find-ShellExecutable {
+    param([string]$Name)
+
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        return $null
+    }
+    return $command.Source
+}
+
+function Resolve-AgentfsExecutable {
+    Push-Location $PSScriptRoot
+    try {
+        & cargo build | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            Fail-WithContext "cargo build failed"
+        }
+        $candidate = Join-Path $PSScriptRoot "target\debug\agentfs.exe"
+        if (!(Test-Path $candidate -PathType Leaf)) {
+            Fail-WithContext "built agentfs executable not found at $candidate"
+        }
+        return $candidate
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-ExternalShell {
+    param(
+        [string]$Executable,
+        [string]$Command,
+        [string]$WorkingDirectory,
+        [int]$TimeoutSec = 20
+    )
+
+    $stdout = Join-Path $script:LogDir ("shell-{0}.stdout.log" -f ([guid]::NewGuid().ToString("N")))
+    $stderr = Join-Path $script:LogDir ("shell-{0}.stderr.log" -f ([guid]::NewGuid().ToString("N")))
+    $proc = Start-Process -FilePath $Executable `
+        -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", $Command) `
+        -WorkingDirectory $WorkingDirectory `
+        -PassThru `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr
+
+    if (!$proc.WaitForExit($TimeoutSec * 1000)) {
+        try {
+            Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+            $null = $proc.WaitForExit(5000)
+        } catch {
+            Write-WarningLine "Failed to stop timed out shell ${Executable}: $_"
+        }
+
+        $stdoutText = if (Test-Path $stdout) {
+            (Get-Content -Path $stdout -ErrorAction SilentlyContinue) -join "`n"
+        } else {
+            ""
+        }
+        $stderrText = if (Test-Path $stderr) {
+            (Get-Content -Path $stderr -ErrorAction SilentlyContinue) -join "`n"
+        } else {
+            ""
+        }
+
+        return [pscustomobject]@{
+            ExitCode = -1
+            Output = @()
+            Text = $stdoutText
+            StdoutText = $stdoutText
+            StderrText = $stderrText
+            TimedOut = $true
+            WorkingDirectory = $WorkingDirectory
+        }
+    }
+
+    $stdoutLines = if (Test-Path $stdout) {
+        @(Get-Content -Path $stdout -ErrorAction SilentlyContinue)
+    } else {
+        @()
+    }
+    $stderrLines = if (Test-Path $stderr) {
+        @(Get-Content -Path $stderr -ErrorAction SilentlyContinue)
+    } else {
+        @()
+    }
+    $exitCode = 0
+    try {
+        $proc.Refresh()
+        if ($null -ne $proc.ExitCode) {
+            $exitCode = [int]$proc.ExitCode
+        }
+    } catch {
+        $exitCode = 0
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $stdoutLines
+        Text = ($stdoutLines -join "`n")
+        StdoutText = ($stdoutLines -join "`n")
+        StderrText = ($stderrLines -join "`n")
+        TimedOut = $false
+        WorkingDirectory = $WorkingDirectory
+    }
+}
+
+function Assert-ExternalCommand {
+    param(
+        [string]$Description,
+        [string]$Executable,
+        [string]$Command,
+        [string]$WorkingDirectory
+    )
+
+    $result = Invoke-ExternalShell -Executable $Executable -Command $Command -WorkingDirectory $WorkingDirectory
+    if ($result.TimedOut) {
+        Fail-WithContext "$Description timed out in $Executable after waiting for shell completion.`nSTDOUT:`n$($result.StdoutText)`nSTDERR:`n$($result.StderrText)"
+    }
+    if ($result.ExitCode -ne 0) {
+        Fail-WithContext "$Description failed in $Executable with exit code $($result.ExitCode):`nSTDOUT:`n$($result.StdoutText)`nSTDERR:`n$($result.StderrText)"
+    }
+    Write-Success "$Description ($Executable)"
+    return $result
+}
+
+function Test-PathListContains {
+    param(
+        [object[]]$Paths,
+        [string]$ExpectedLeafName
+    )
+
+    foreach ($path in $Paths) {
+        if ([System.IO.Path]::GetFileName([string]$path) -eq $ExpectedLeafName) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function ConvertFrom-JsonList {
+    param([string]$JsonText)
+
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        return @()
+    }
+
+    $parsed = $JsonText | ConvertFrom-Json -ErrorAction Stop
+    if ($parsed -is [System.Array]) {
+        return @($parsed)
+    }
+    return @($parsed)
+}
+
 function Wait-ReadableSnapshot {
     param(
         [string]$Path,
@@ -390,10 +553,88 @@ function Wait-ReadableSnapshot {
     }
 }
 
+function Test-ShellDirectoryCompatibility {
+    param(
+        [string]$MountRoot,
+        [string]$AppRoot,
+        [string]$ExpectedSnapshotLeafName
+    )
+
+    Write-Section "Verify Shell Directory Compatibility"
+    Write-ProgressLog "verifying shell directory compatibility"
+
+    $expectedRootNames = @(".well-known", "_appfs", $AppId)
+    $rootItems = Get-ChildItem -Path $MountRoot -ErrorAction Stop
+    $rootNames = @($rootItems | ForEach-Object { $_.Name })
+    foreach ($name in $expectedRootNames) {
+        Assert-True ($rootNames -contains $name) "Get-ChildItem lists root entry '$name'"
+    }
+
+    $directFilterResults = @(Get-ChildItem -Path $AppRoot -Recurse -Filter $ExpectedSnapshotLeafName -ErrorAction Stop)
+    Assert-True ($directFilterResults.Count -gt 0) "PowerShell Get-ChildItem -Filter finds $ExpectedSnapshotLeafName"
+
+    $powershellPath = Find-ShellExecutable -Name "powershell.exe"
+    if ($powershellPath) {
+        $psListCommand = @"
+Set-Location '$MountRoot'
+(@(Get-ChildItem | Select-Object -ExpandProperty Name) | ConvertTo-Json -Compress)
+"@
+        $psListResult = Assert-ExternalCommand -Description "powershell root listing" -Executable $powershellPath -Command $psListCommand -WorkingDirectory $MountRoot
+        $psRootNames = ConvertFrom-JsonList -JsonText $psListResult.Text
+        foreach ($name in $expectedRootNames) {
+            Assert-True ($psRootNames -contains $name) "powershell.exe lists root entry '$name'"
+        }
+
+        $psFilterCommand = @"
+Set-Location '$AppRoot'
+(Get-ChildItem -Recurse -Filter '$ExpectedSnapshotLeafName' | Select-Object -ExpandProperty FullName | ConvertTo-Json -Compress)
+"@
+        $psFilterResult = Assert-ExternalCommand -Description "powershell filter lookup" -Executable $powershellPath -Command $psFilterCommand -WorkingDirectory $AppRoot
+        $psFilterPaths = ConvertFrom-JsonList -JsonText $psFilterResult.Text
+        Assert-True (Test-PathListContains -Paths $psFilterPaths -ExpectedLeafName $ExpectedSnapshotLeafName) "powershell.exe filter lookup returns $ExpectedSnapshotLeafName"
+    }
+
+    $pwshPath = Find-ShellExecutable -Name "pwsh.exe"
+    if ($pwshPath) {
+        $pwshListCommand = @"
+Set-Location '$MountRoot'
+(@(Get-ChildItem | Select-Object -ExpandProperty Name) | ConvertTo-Json -Compress)
+"@
+        $pwshListResult = Assert-ExternalCommand -Description "pwsh root listing" -Executable $pwshPath -Command $pwshListCommand -WorkingDirectory $MountRoot
+        $pwshRootNames = ConvertFrom-JsonList -JsonText $pwshListResult.Text
+        foreach ($name in $expectedRootNames) {
+            Assert-True ($pwshRootNames -contains $name) "pwsh lists root entry '$name'"
+        }
+
+        $pwshFilterCommand = @"
+Set-Location '$AppRoot'
+(Get-ChildItem -Recurse -Filter '$ExpectedSnapshotLeafName' | Select-Object -ExpandProperty FullName | ConvertTo-Json -Compress)
+"@
+        $pwshFilterResult = Assert-ExternalCommand -Description "pwsh filter lookup" -Executable $pwshPath -Command $pwshFilterCommand -WorkingDirectory $AppRoot
+        $pwshFilterPaths = ConvertFrom-JsonList -JsonText $pwshFilterResult.Text
+        Assert-True (Test-PathListContains -Paths $pwshFilterPaths -ExpectedLeafName $ExpectedSnapshotLeafName) "pwsh filter lookup returns $ExpectedSnapshotLeafName"
+    } else {
+        Write-WarningLine "pwsh.exe not found; skipping PowerShell 7 compatibility checks"
+    }
+
+    $cmdOutput = cmd.exe /c "dir /b `"$MountRoot`""
+    if ($LASTEXITCODE -ne 0) {
+        Fail-WithContext "cmd dir failed for $MountRoot"
+    }
+    $cmdNames = @($cmdOutput | Where-Object { $_.Trim().Length -gt 0 })
+    foreach ($name in $expectedRootNames) {
+        Assert-True ($cmdNames -contains $name) "cmd dir lists root entry '$name'"
+    }
+
+    Write-ProgressLog "shell directory compatibility verified"
+}
+
 function Main {
     New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
     $script:ProgressLog = Join-Path $script:LogDir "progress.log"
     Write-ProgressLog "starting managed lifecycle regression"
+    $script:AgentfsExe = Resolve-AgentfsExecutable
+    Write-ProgressLog ("using agentfs executable {0}" -f $script:AgentfsExe)
 
     $mountParent = Split-Path -Parent $MountPoint
     if ($mountParent -and !(Test-Path $mountParent)) {
@@ -429,14 +670,9 @@ function Main {
 
     Write-Section "Init AgentFS"
     Write-ProgressLog "initializing agentfs db"
-    Push-Location $PSScriptRoot
-    try {
-        & cargo run -- init $AgentId --force
-        if ($LASTEXITCODE -ne 0) {
-            Fail-WithContext "agentfs init failed"
-        }
-    } finally {
-        Pop-Location
+    & $script:AgentfsExe init $AgentId --force
+    if ($LASTEXITCODE -ne 0) {
+        Fail-WithContext "agentfs init failed"
     }
     Assert-True (Test-Path $script:DbPath) "Created database $script:DbPath"
     Write-ProgressLog "db initialized"
@@ -444,11 +680,10 @@ function Main {
     Write-Section "Start AppFS Managed Runtime"
     Write-ProgressLog "starting appfs up"
     $appfsArgs = @(
-        "run", "--",
         "appfs", "up", $script:DbPath, $MountPoint,
         "--backend", "winfsp"
     )
-    $script:AppfsHandle = New-LogHandle -Name "appfs-up" -FilePath "cargo" -ArgumentList $appfsArgs -WorkingDirectory $PSScriptRoot
+    $script:AppfsHandle = New-LogHandle -Name "appfs-up" -FilePath $script:AgentfsExe -ArgumentList $appfsArgs -WorkingDirectory $PSScriptRoot
 
     $controlDir = Join-Path $MountPoint "_appfs"
     $controlStream = Join-Path $controlDir "_stream"
@@ -483,9 +718,12 @@ function Main {
         client_token = $registerToken
     } | ConvertTo-Json -Compress
     Append-Utf8JsonLine -Path $registerAction -JsonLine $registerPayload
-    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry contains registered app" -Condition {
+    $null = Wait-Event -Path $controlEvents -ClientToken $registerToken -ExpectedType "action.completed"
+    Write-Success "register_app emitted action.completed"
+    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry contains registered app after action.completed" -Condition {
         param($doc)
-        return $doc.apps.Count -eq 1 -and $doc.apps[0].app_id -eq $AppId
+        $apps = @($doc.apps)
+        return $apps.Count -eq 1 -and $apps[0].app_id -eq $AppId
     }
     Write-Success "register_app updated the managed registry"
     Write-ProgressLog "register_app observed in registry"
@@ -500,6 +738,7 @@ function Main {
     $initialLines = Read-FirstNonEmptyLines -Path $chat001Snapshot -Count 3
     Assert-True ($initialLines.Count -gt 0) "initial scope snapshot is readable"
     Write-ProgressLog "initial snapshot readable"
+    Test-ShellDirectoryCompatibility -MountRoot $MountPoint -AppRoot $appRoot -ExpectedSnapshotLeafName "messages.res.jsonl"
 
     Write-Section "Enter Scope And Refresh Structure"
     Write-ProgressLog "entering scope chat-long"
@@ -509,9 +748,12 @@ function Main {
         client_token = "scope-http-001"
     } | ConvertTo-Json -Compress
     Append-Utf8JsonLine -Path $enterScopeAction -JsonLine $enterScopePayload
-    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry active scope updated" -Condition {
+    $null = Wait-Event -Path $appEvents -ClientToken "scope-http-001" -ExpectedType "action.completed"
+    Write-Success "enter_scope emitted action.completed"
+    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry active scope updated after action.completed" -Condition {
         param($doc)
-        return $doc.apps.Count -eq 1 -and $doc.apps[0].active_scope -eq "chat-long"
+        $apps = @($doc.apps)
+        return $apps.Count -eq 1 -and $apps[0].active_scope -eq "chat-long"
     }
     Write-Success "enter_scope switched active scope to chat-long"
     Write-ProgressLog "registry active scope is chat-long"
@@ -535,9 +777,11 @@ function Main {
         client_token = "unreg-http-001"
     } | ConvertTo-Json -Compress
     Append-Utf8JsonLine -Path $unregisterAction -JsonLine $unregisterPayload
-    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry is empty after unregister" -Condition {
+    $null = Wait-Event -Path $controlEvents -ClientToken "unreg-http-001" -ExpectedType "action.completed"
+    Write-Success "unregister_app emitted action.completed"
+    Wait-DbJsonCondition -VirtualPath "/_appfs/apps.registry.json" -Description "registry is empty after unregister action.completed" -Condition {
         param($doc)
-        return $doc.apps.Count -eq 0
+        return @($doc.apps).Count -eq 0
     }
     Write-Success "unregister_app removed the app from managed registry"
     Assert-True (Test-Path $appRoot -PathType Container) "unregister_app keeps app tree for inspection"

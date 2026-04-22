@@ -148,6 +148,9 @@ class HuoyanApiClientProtocol(Protocol):
     def fetch_leaf_rows(self, *, params: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def reset_storage_host_cache(self) -> None:
+        ...
+
 
 @dataclass
 class HuoyanClient(HuoyanApiClientProtocol):
@@ -177,6 +180,23 @@ class HuoyanClient(HuoyanApiClientProtocol):
             raise RuntimeError("fireeye app options did not include storagehost")
         self.storage_host = storage_host.rstrip("/")
         return self.storage_host
+
+    def reset_storage_host_cache(self) -> None:
+        self.storage_host = None
+
+    def _storage_get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        had_cached_storage_host = self.storage_host is not None
+        storage_host = self._ensure_storage_host()
+        url = self._build_url(storage_host, path, params)
+        try:
+            return _json_request("GET", url, body=None, timeout_sec=self.timeout_sec)
+        except Exception:
+            if not had_cached_storage_host:
+                raise
+            self.reset_storage_host_cache()
+            refreshed_host = self._ensure_storage_host()
+            retry_url = self._build_url(refreshed_host, path, params)
+            return _json_request("GET", retry_url, body=None, timeout_sec=self.timeout_sec)
 
     def list_cases(
         self, *, limit: int, offset: int, desc: bool, column: str, keyword: str
@@ -213,19 +233,15 @@ class HuoyanClient(HuoyanApiClientProtocol):
         return _json_request("POST", url, body=body, timeout_sec=self.timeout_sec)
 
     def list_evidences(self, *, case_id: int) -> dict[str, Any]:
-        storage_host = self._ensure_storage_host()
-        url = self._build_url(storage_host, "/internal/v1/evidence/cid", {"cid": case_id})
-        return _json_request("GET", url, body=None, timeout_sec=self.timeout_sec)
+        return self._storage_get("/internal/v1/evidence/cid", {"cid": case_id})
 
     def list_nodes(self, *, analysis_cid: int, pid: int) -> dict[str, Any]:
         url = self._build_url(self.host, "/api/v1/data/node", {"cid": analysis_cid, "pid": pid})
         return _json_request("GET", url, body=None, timeout_sec=self.timeout_sec)
 
     def fetch_leaf_rows(self, *, params: dict[str, Any]) -> dict[str, Any]:
-        storage_host = self._ensure_storage_host()
-        internal_url = self._build_url(storage_host, "/internal/v1/data", params)
         try:
-            return _json_request("GET", internal_url, body=None, timeout_sec=self.timeout_sec)
+            return self._storage_get("/internal/v1/data", params)
         except Exception:
             public_url = self._build_url(self.host, "/api/v1/data", params)
             return _json_request("GET", public_url, body=None, timeout_sec=self.timeout_sec)
@@ -497,6 +513,9 @@ class HuoyanBackend:
         _ = (request, context)
         raise ValueError("huoyan backend does not expose custom action files yet")
 
+    def _reset_client_storage_host_cache(self) -> None:
+        self.client.reset_storage_host_cache()
+
     def _open_case(self, case_id: int) -> None:
         cases = self._list_cases()
         target = next((case for case in cases if int(case.get("Id", 0)) == case_id), None)
@@ -506,11 +525,13 @@ class HuoyanBackend:
         if path == "":
             raise ValueError(f"case {case_id} is missing openable path")
         self.client.open_case(path=path)
+        self._reset_client_storage_host_cache()
         if self.open_wait_sec > 0:
             time.sleep(self.open_wait_sec)
 
     def _exit_case(self, case_id: int) -> None:
         self.client.exit_case(cid=self._analysis_cid(case_id))
+        self._reset_client_storage_host_cache()
         if self.open_wait_sec > 0:
             time.sleep(self.open_wait_sec)
 
