@@ -41,6 +41,7 @@ pub async fn mount_winfsp(
     volume_params.case_sensitive_search(true);
     volume_params.case_preserved_names(true);
     volume_params.unicode_on_disk(true);
+    volume_params.pass_query_directory_pattern(true);
     volume_params.filesystem_name(&opts.fsname);
     volume_params.reparse_points(true);
     volume_params.reparse_points_access_check(true);
