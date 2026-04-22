@@ -62,13 +62,8 @@ pub(crate) fn wrap_mount_runtime_filesystem(
 }
 
 struct MountSnapshotReadThroughFs {
-    inner: DynFs,
-    config: MountSnapshotReadThroughConfig,
-    runtime_configs: Mutex<HashMap<String, AppfsRuntimeCliArgs>>,
-    registry_fingerprint: Mutex<Option<Vec<u8>>>,
-    path_cache: Mutex<HashMap<i64, String>>,
-    runtimes: Mutex<HashMap<String, MountSnapshotRuntime>>,
-    expand_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    ctx: SnapshotReadThroughContext,
+    action_wake: Option<ActionWakeHandle>,
 }
 
 struct MountSnapshotRuntime {
@@ -79,11 +74,37 @@ struct MountSnapshotRuntime {
     connector: Box<dyn agentfs_sdk::AppConnector>,
 }
 
+#[derive(Clone)]
+struct SnapshotReadThroughContext {
+    inner: DynFs,
+    managed: bool,
+    runtime_configs: Arc<Mutex<HashMap<String, AppfsRuntimeCliArgs>>>,
+    registry_fingerprint: Arc<Mutex<Option<Vec<u8>>>>,
+    path_cache: Arc<Mutex<HashMap<i64, String>>>,
+    runtimes: Arc<Mutex<HashMap<String, MountSnapshotRuntime>>>,
+    expand_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+}
+
 struct ActionWakeFile {
     inner: BoxedFile,
     rel_path: String,
     wake: Option<ActionWakeHandle>,
     dirty: AtomicBool,
+}
+
+struct SnapshotReadThroughFile {
+    ctx: SnapshotReadThroughContext,
+    rel_path: String,
+    app_id: String,
+    resource_rel: String,
+    flags: i32,
+    state: Mutex<SnapshotReadThroughFileState>,
+}
+
+#[derive(Default)]
+struct SnapshotReadThroughFileState {
+    file: Option<BoxedFile>,
+    read_prepared: bool,
 }
 
 impl MountSnapshotRuntime {
@@ -130,20 +151,6 @@ impl MountSnapshotRuntime {
             client_token: None,
             trace_id: None,
         }
-    }
-}
-
-fn should_expand_on_open(
-    stats: Option<&Stats>,
-    has_journal: bool,
-    force_expand_existing: bool,
-) -> bool {
-    if force_expand_existing || has_journal {
-        return true;
-    }
-    match stats {
-        None => true,
-        Some(stats) => stats.size == 0,
     }
 }
 
@@ -200,16 +207,21 @@ impl MountSnapshotReadThroughFs {
             .map(|runtime| (runtime.app_id.clone(), runtime))
             .collect();
         Self {
-            inner,
-            config,
-            runtime_configs: Mutex::new(runtime_configs),
-            registry_fingerprint: Mutex::new(None),
-            path_cache: Mutex::new(path_cache),
-            runtimes: Mutex::new(HashMap::new()),
-            expand_locks: Mutex::new(HashMap::new()),
+            ctx: SnapshotReadThroughContext {
+                inner,
+                managed: config.managed,
+                runtime_configs: Arc::new(Mutex::new(runtime_configs)),
+                registry_fingerprint: Arc::new(Mutex::new(None)),
+                path_cache: Arc::new(Mutex::new(path_cache)),
+                runtimes: Arc::new(Mutex::new(HashMap::new())),
+                expand_locks: Arc::new(Mutex::new(HashMap::new())),
+            },
+            action_wake: config.action_wake,
         }
     }
+}
 
+impl SnapshotReadThroughContext {
     async fn cached_path_for_ino(&self, ino: i64) -> Option<String> {
         self.path_cache.lock().await.get(&ino).cloned()
     }
@@ -275,7 +287,7 @@ impl MountSnapshotReadThroughFs {
     }
 
     async fn refresh_registry_snapshot(&self) -> Result<()> {
-        if !self.config.managed {
+        if !self.managed {
             return Ok(());
         }
         let Some(bytes) = self
@@ -869,6 +881,93 @@ impl MountSnapshotReadThroughFs {
     }
 }
 
+impl SnapshotReadThroughFile {
+    async fn open_backing_file(&self) -> Result<BoxedFile, agentfs_sdk::error::Error> {
+        {
+            let state = self.state.lock().await;
+            if let Some(file) = state.file.as_ref() {
+                return Ok(file.clone());
+            }
+        }
+
+        let stats = self
+            .ctx
+            .lookup_path(&self.rel_path)
+            .await
+            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
+            .ok_or(FsError::NotFound)?;
+        self.ctx.cache_path(stats.ino, self.rel_path.clone()).await;
+        let file = {
+            let fs = self.ctx.inner.lock().await;
+            fs.open(stats.ino, self.flags).await?
+        };
+
+        let mut state = self.state.lock().await;
+        if let Some(existing) = state.file.as_ref() {
+            return Ok(existing.clone());
+        }
+        state.file = Some(file.clone());
+        Ok(file)
+    }
+
+    async fn ensure_read_prepared(&self) -> Result<(), agentfs_sdk::error::Error> {
+        {
+            let state = self.state.lock().await;
+            if state.read_prepared {
+                return Ok(());
+            }
+        }
+
+        {
+            let mut state = self.state.lock().await;
+            if state.read_prepared {
+                return Ok(());
+            }
+            state.file = None;
+        }
+
+        self.ctx
+            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "read")
+            .await
+            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+        let file = self.open_backing_file().await?;
+
+        let mut state = self.state.lock().await;
+        state.file = Some(file);
+        state.read_prepared = true;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl agentfs_sdk::File for SnapshotReadThroughFile {
+    async fn pread(&self, offset: u64, size: u64) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
+        self.ensure_read_prepared().await?;
+        let file = self.open_backing_file().await?;
+        file.pread(offset, size).await
+    }
+
+    async fn pwrite(&self, offset: u64, data: &[u8]) -> Result<(), agentfs_sdk::error::Error> {
+        let file = self.open_backing_file().await?;
+        file.pwrite(offset, data).await
+    }
+
+    async fn truncate(&self, size: u64) -> Result<(), agentfs_sdk::error::Error> {
+        let file = self.open_backing_file().await?;
+        file.truncate(size).await
+    }
+
+    async fn fsync(&self) -> Result<(), agentfs_sdk::error::Error> {
+        let file = self.open_backing_file().await?;
+        file.fsync().await
+    }
+
+    async fn fstat(&self) -> Result<Stats, agentfs_sdk::error::Error> {
+        let file = self.open_backing_file().await?;
+        file.fstat().await
+    }
+}
+
 #[async_trait]
 impl agentfs_sdk::File for ActionWakeFile {
     async fn pread(&self, offset: u64, size: u64) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
@@ -923,14 +1022,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
         parent_ino: i64,
         name: &str,
     ) -> std::result::Result<Option<Stats>, agentfs_sdk::error::Error> {
-        let parent_path = self.cached_path_for_ino(parent_ino).await;
+        let parent_path = self.ctx.cached_path_for_ino(parent_ino).await;
         let initial = {
-            let fs = self.inner.lock().await;
+            let fs = self.ctx.inner.lock().await;
             fs.lookup(parent_ino, name).await?
         };
         if let Some(stats) = initial {
             if let Some(parent_path) = parent_path {
-                self.cache_path(stats.ino, join_rel_path(&parent_path, name))
+                self.ctx
+                    .cache_path(stats.ino, join_rel_path(&parent_path, name))
                     .await;
             }
             return Ok(Some(stats));
@@ -939,19 +1039,21 @@ impl FileSystem for MountSnapshotReadThroughFs {
         if let Some(parent_path) = parent_path {
             let candidate = join_rel_path(&parent_path, name);
             if let Some((resource_app_id, resource_rel)) = self
+                .ctx
                 .maybe_snapshot_resource_from_fs_path(&candidate)
                 .await
                 .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
             {
-                self.ensure_snapshot_materialized(&resource_app_id, &resource_rel, "lookup_miss")
+                self.ctx
+                    .ensure_snapshot_materialized(&resource_app_id, &resource_rel, "lookup_miss")
                     .await
                     .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
                 let retry = {
-                    let fs = self.inner.lock().await;
+                    let fs = self.ctx.inner.lock().await;
                     fs.lookup(parent_ino, name).await?
                 };
                 if let Some(stats) = retry {
-                    self.cache_path(stats.ino, candidate).await;
+                    self.ctx.cache_path(stats.ino, candidate).await;
                     return Ok(Some(stats));
                 }
             }
@@ -963,33 +1065,34 @@ impl FileSystem for MountSnapshotReadThroughFs {
         &self,
         ino: i64,
     ) -> std::result::Result<Option<Stats>, agentfs_sdk::error::Error> {
-        self.inner.lock().await.getattr(ino).await
+        self.ctx.inner.lock().await.getattr(ino).await
     }
 
     async fn readlink(
         &self,
         ino: i64,
     ) -> std::result::Result<Option<String>, agentfs_sdk::error::Error> {
-        self.inner.lock().await.readlink(ino).await
+        self.ctx.inner.lock().await.readlink(ino).await
     }
 
     async fn readdir(
         &self,
         ino: i64,
     ) -> std::result::Result<Option<Vec<String>>, agentfs_sdk::error::Error> {
-        self.inner.lock().await.readdir(ino).await
+        self.ctx.inner.lock().await.readdir(ino).await
     }
 
     async fn readdir_plus(
         &self,
         ino: i64,
     ) -> std::result::Result<Option<Vec<DirEntry>>, agentfs_sdk::error::Error> {
-        let entries = self.inner.lock().await.readdir_plus(ino).await?;
+        let entries = self.ctx.inner.lock().await.readdir_plus(ino).await?;
         if let (Some(parent_path), Some(entries)) =
-            (self.cached_path_for_ino(ino).await, entries.as_ref())
+            (self.ctx.cached_path_for_ino(ino).await, entries.as_ref())
         {
             for entry in entries {
-                self.cache_path(entry.stats.ino, join_rel_path(&parent_path, &entry.name))
+                self.ctx
+                    .cache_path(entry.stats.ino, join_rel_path(&parent_path, &entry.name))
                     .await;
             }
         }
@@ -1001,7 +1104,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
         ino: i64,
         mode: u32,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
-        self.inner.lock().await.chmod(ino, mode).await
+        self.ctx.inner.lock().await.chmod(ino, mode).await
     }
 
     async fn chown(
@@ -1010,7 +1113,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
         uid: Option<u32>,
         gid: Option<u32>,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
-        self.inner.lock().await.chown(ino, uid, gid).await
+        self.ctx.inner.lock().await.chown(ino, uid, gid).await
     }
 
     async fn utimens(
@@ -1019,7 +1122,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
         atime: TimeChange,
         mtime: TimeChange,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
-        self.inner.lock().await.utimens(ino, atime, mtime).await
+        self.ctx.inner.lock().await.utimens(ino, atime, mtime).await
     }
 
     async fn open(
@@ -1027,62 +1130,38 @@ impl FileSystem for MountSnapshotReadThroughFs {
         ino: i64,
         flags: i32,
     ) -> std::result::Result<BoxedFile, agentfs_sdk::error::Error> {
-        let mut target_ino = ino;
-        let mut target_rel_path = self.cached_path_for_ino(ino).await;
+        let target_rel_path = self.ctx.cached_path_for_ino(ino).await;
         if open_requests_read(flags) {
             if let Some(rel_path) = target_rel_path.clone() {
                 if let Some((resource_app_id, resource_rel)) = self
+                    .ctx
                     .maybe_snapshot_resource_from_fs_path(&rel_path)
                     .await
                     .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
                 {
-                    let should_force_expand = snapshot_force_expand_on_refresh();
-                    let has_journal = self
-                        .journal_contains(&resource_app_id, &resource_rel)
-                        .await
-                        .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                    let current_stats = self
-                        .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
-                        .await
-                        .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
                     tracing::debug!(
                         app_id = resource_app_id,
                         resource = format!("/{}", resource_rel),
                         flags = format_args!("0x{:x}", flags),
-                        size = current_stats.as_ref().map(|stats| stats.size).unwrap_or(-1),
-                        has_journal,
-                        force_expand = should_force_expand,
                         read_intent = true,
-                        "mount snapshot open evaluation"
+                        "mount snapshot open deferred until pread"
                     );
-                    if should_expand_on_open(
-                        current_stats.as_ref(),
-                        has_journal,
-                        should_force_expand,
-                    ) {
-                        self.ensure_snapshot_materialized(&resource_app_id, &resource_rel, "open")
-                            .await
-                            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-                        if let Some(stats) = self
-                            .lookup_path(&format!("{}/{}", resource_app_id, resource_rel))
-                            .await
-                            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?
-                        {
-                            target_ino = stats.ino;
-                            self.cache_path(target_ino, rel_path.clone()).await;
-                            target_rel_path = Some(rel_path);
-                        } else {
-                            return Err(FsError::NotFound.into());
-                        }
-                    }
+                    return Ok(Arc::new(SnapshotReadThroughFile {
+                        ctx: self.ctx.clone(),
+                        rel_path,
+                        app_id: resource_app_id,
+                        resource_rel,
+                        flags,
+                        state: Mutex::new(SnapshotReadThroughFileState::default()),
+                    }));
                 }
             }
         }
-        let file = self.inner.lock().await.open(target_ino, flags).await?;
+        let file = self.ctx.inner.lock().await.open(ino, flags).await?;
         Ok(wrap_action_wake_file(
             file,
             target_rel_path,
-            self.config.action_wake.clone(),
+            self.action_wake.clone(),
         ))
     }
 
@@ -1095,13 +1174,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
         gid: u32,
     ) -> std::result::Result<Stats, agentfs_sdk::error::Error> {
         let stats = self
+            .ctx
             .inner
             .lock()
             .await
             .mkdir(parent_ino, name, mode, uid, gid)
             .await?;
-        if let Some(parent_path) = self.cached_path_for_ino(parent_ino).await {
-            self.cache_path(stats.ino, join_rel_path(&parent_path, name))
+        if let Some(parent_path) = self.ctx.cached_path_for_ino(parent_ino).await {
+            self.ctx
+                .cache_path(stats.ino, join_rel_path(&parent_path, name))
                 .await;
         }
         Ok(stats)
@@ -1116,21 +1197,23 @@ impl FileSystem for MountSnapshotReadThroughFs {
         gid: u32,
     ) -> std::result::Result<(Stats, BoxedFile), agentfs_sdk::error::Error> {
         let (stats, file) = self
+            .ctx
             .inner
             .lock()
             .await
             .create_file(parent_ino, name, mode, uid, gid)
             .await?;
         let rel_path = self
+            .ctx
             .cached_path_for_ino(parent_ino)
             .await
             .map(|parent_path| join_rel_path(&parent_path, name));
         if let Some(rel_path) = rel_path.clone() {
-            self.cache_path(stats.ino, rel_path).await;
+            self.ctx.cache_path(stats.ino, rel_path).await;
         }
         Ok((
             stats,
-            wrap_action_wake_file(file, rel_path, self.config.action_wake.clone()),
+            wrap_action_wake_file(file, rel_path, self.action_wake.clone()),
         ))
     }
 
@@ -1144,13 +1227,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
         gid: u32,
     ) -> std::result::Result<Stats, agentfs_sdk::error::Error> {
         let stats = self
+            .ctx
             .inner
             .lock()
             .await
             .mknod(parent_ino, name, mode, rdev, uid, gid)
             .await?;
-        if let Some(parent_path) = self.cached_path_for_ino(parent_ino).await {
-            self.cache_path(stats.ino, join_rel_path(&parent_path, name))
+        if let Some(parent_path) = self.ctx.cached_path_for_ino(parent_ino).await {
+            self.ctx
+                .cache_path(stats.ino, join_rel_path(&parent_path, name))
                 .await;
         }
         Ok(stats)
@@ -1165,13 +1250,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
         gid: u32,
     ) -> std::result::Result<Stats, agentfs_sdk::error::Error> {
         let stats = self
+            .ctx
             .inner
             .lock()
             .await
             .symlink(parent_ino, name, target, uid, gid)
             .await?;
-        if let Some(parent_path) = self.cached_path_for_ino(parent_ino).await {
-            self.cache_path(stats.ino, join_rel_path(&parent_path, name))
+        if let Some(parent_path) = self.ctx.cached_path_for_ino(parent_ino).await {
+            self.ctx
+                .cache_path(stats.ino, join_rel_path(&parent_path, name))
                 .await;
         }
         Ok(stats)
@@ -1182,7 +1269,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
         parent_ino: i64,
         name: &str,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
-        self.inner.lock().await.unlink(parent_ino, name).await
+        self.ctx.inner.lock().await.unlink(parent_ino, name).await
     }
 
     async fn rmdir(
@@ -1190,7 +1277,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
         parent_ino: i64,
         name: &str,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
-        self.inner.lock().await.rmdir(parent_ino, name).await
+        self.ctx.inner.lock().await.rmdir(parent_ino, name).await
     }
 
     async fn link(
@@ -1200,13 +1287,15 @@ impl FileSystem for MountSnapshotReadThroughFs {
         newname: &str,
     ) -> std::result::Result<Stats, agentfs_sdk::error::Error> {
         let stats = self
+            .ctx
             .inner
             .lock()
             .await
             .link(ino, newparent_ino, newname)
             .await?;
-        if let Some(parent_path) = self.cached_path_for_ino(newparent_ino).await {
-            self.cache_path(stats.ino, join_rel_path(&parent_path, newname))
+        if let Some(parent_path) = self.ctx.cached_path_for_ino(newparent_ino).await {
+            self.ctx
+                .cache_path(stats.ino, join_rel_path(&parent_path, newname))
                 .await;
         }
         Ok(stats)
@@ -1220,19 +1309,22 @@ impl FileSystem for MountSnapshotReadThroughFs {
         newname: &str,
     ) -> std::result::Result<(), agentfs_sdk::error::Error> {
         let old_rel = self
+            .ctx
             .cached_path_for_ino(oldparent_ino)
             .await
             .map(|parent| join_rel_path(&parent, oldname));
         let new_rel = self
+            .ctx
             .cached_path_for_ino(newparent_ino)
             .await
             .map(|parent| join_rel_path(&parent, newname));
-        self.inner
+        self.ctx
+            .inner
             .lock()
             .await
             .rename(oldparent_ino, oldname, newparent_ino, newname)
             .await?;
-        if let Some(wake) = self.config.action_wake.as_ref() {
+        if let Some(wake) = self.action_wake.as_ref() {
             let should_wake = old_rel.as_deref().is_some_and(action_wake_is_relevant_path)
                 || new_rel.as_deref().is_some_and(action_wake_is_relevant_path);
             if should_wake {
@@ -1250,7 +1342,7 @@ impl FileSystem for MountSnapshotReadThroughFs {
     async fn statfs(
         &self,
     ) -> std::result::Result<agentfs_sdk::FilesystemStats, agentfs_sdk::error::Error> {
-        self.inner.lock().await.statfs().await
+        self.ctx.inner.lock().await.statfs().await
     }
 }
 
@@ -1290,14 +1382,26 @@ fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sd
 #[cfg(test)]
 mod tests {
     use super::{
-        action_wake_is_relevant_path, open_requests_read, should_expand_on_open,
-        should_skip_existing_expand, ActionWakeHandle, MountSnapshotReadThroughConfig,
-        MountSnapshotReadThroughFs, OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE,
-        OPEN_WRITE_ONLY, ROOT_INO,
+        action_wake_is_relevant_path, open_requests_read, should_skip_existing_expand,
+        ActionWakeHandle, AppfsRuntimeCliArgs, MountSnapshotReadThroughConfig,
+        MountSnapshotReadThroughFs, MountSnapshotRuntime, SnapshotOnTimeoutPolicy, SnapshotSpec,
+        OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE, OPEN_WRITE_ONLY, ROOT_INO,
     };
-    use agentfs_sdk::{FileSystem, HostFS, Stats, DEFAULT_FILE_MODE};
+    use crate::cmd::appfs::AppfsBridgeCliArgs;
+    use agentfs_sdk::{
+        AppConnector, AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo,
+        ConnectorTransport, FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
+        FetchSnapshotChunkResponse, FileSystem, HealthStatus, HostFS, LiveMode, LivePageInfo,
+        SnapshotMeta, SnapshotRecord, Stats, SubmitActionRequest, SubmitActionResponse,
+        DEFAULT_FILE_MODE,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
     use std::fs;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
@@ -1318,15 +1422,6 @@ mod tests {
             ctime_nsec: 0,
             rdev: 0,
         }
-    }
-
-    #[test]
-    fn open_expands_missing_placeholder_or_journaled_snapshot() {
-        assert!(should_expand_on_open(None, false, false));
-        assert!(should_expand_on_open(Some(&file_stats(0)), false, false));
-        assert!(should_expand_on_open(Some(&file_stats(128)), true, false));
-        assert!(should_expand_on_open(Some(&file_stats(128)), false, true));
-        assert!(!should_expand_on_open(Some(&file_stats(128)), false, false));
     }
 
     #[test]
@@ -1372,6 +1467,239 @@ mod tests {
                 action_wake: wake,
             },
         )
+    }
+
+    #[derive(Clone)]
+    struct FakeSnapshotConnector {
+        fetch_count: Arc<AtomicUsize>,
+        snapshot_lines: Vec<serde_json::Value>,
+    }
+
+    impl FakeSnapshotConnector {
+        fn new(fetch_count: Arc<AtomicUsize>, snapshot_lines: Vec<serde_json::Value>) -> Self {
+            Self {
+                fetch_count,
+                snapshot_lines,
+            }
+        }
+    }
+
+    impl AppConnector for FakeSnapshotConnector {
+        fn connector_id(&self) -> std::result::Result<ConnectorInfo, ConnectorError> {
+            Ok(ConnectorInfo {
+                connector_id: "fake-snapshot".to_string(),
+                version: "test".to_string(),
+                app_id: "aiim".to_string(),
+                transport: ConnectorTransport::InProcess,
+                supports_snapshot: true,
+                supports_live: false,
+                supports_action: false,
+                optional_features: Vec::new(),
+            })
+        }
+
+        fn health(
+            &mut self,
+            _ctx: &ConnectorContext,
+        ) -> std::result::Result<HealthStatus, ConnectorError> {
+            Ok(HealthStatus {
+                healthy: true,
+                auth_status: AuthStatus::Valid,
+                message: None,
+                checked_at: "2026-04-22T00:00:00Z".to_string(),
+            })
+        }
+
+        fn prewarm_snapshot_meta(
+            &mut self,
+            _resource_path: &str,
+            _timeout: Duration,
+            _ctx: &ConnectorContext,
+        ) -> std::result::Result<SnapshotMeta, ConnectorError> {
+            Ok(SnapshotMeta::default())
+        }
+
+        fn fetch_snapshot_chunk(
+            &mut self,
+            _request: FetchSnapshotChunkRequest,
+            _ctx: &ConnectorContext,
+        ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
+            self.fetch_count.fetch_add(1, Ordering::SeqCst);
+            let records = self
+                .snapshot_lines
+                .iter()
+                .enumerate()
+                .map(|(idx, line)| SnapshotRecord {
+                    record_key: format!("r-{idx}"),
+                    ordering_key: format!("o-{idx}"),
+                    line: line.clone(),
+                })
+                .collect::<Vec<_>>();
+            Ok(FetchSnapshotChunkResponse {
+                emitted_bytes: records.len() as u64,
+                records,
+                next_cursor: None,
+                has_more: false,
+                revision: Some("test-rev".to_string()),
+            })
+        }
+
+        fn fetch_live_page(
+            &mut self,
+            _request: FetchLivePageRequest,
+            _ctx: &ConnectorContext,
+        ) -> std::result::Result<FetchLivePageResponse, ConnectorError> {
+            Ok(FetchLivePageResponse {
+                items: Vec::new(),
+                page: LivePageInfo {
+                    handle_id: "test".to_string(),
+                    page_no: 1,
+                    has_more: false,
+                    mode: LiveMode::Live,
+                    expires_at: None,
+                    next_cursor: None,
+                    retry_after_ms: None,
+                },
+            })
+        }
+
+        fn submit_action(
+            &mut self,
+            _request: SubmitActionRequest,
+            _ctx: &ConnectorContext,
+        ) -> std::result::Result<SubmitActionResponse, ConnectorError> {
+            Err(ConnectorError {
+                code: "NOT_SUPPORTED".to_string(),
+                message: "submit_action not used in this test".to_string(),
+                retryable: false,
+                details: None,
+            })
+        }
+    }
+
+    fn test_bridge_args() -> AppfsBridgeCliArgs {
+        AppfsBridgeCliArgs {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1_000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        }
+    }
+
+    async fn install_snapshot_runtime(
+        wrapper: &MountSnapshotReadThroughFs,
+        app_id: &str,
+        resource_rel: &str,
+        connector: Box<dyn AppConnector>,
+    ) {
+        wrapper.ctx.runtime_configs.lock().await.insert(
+            app_id.to_string(),
+            AppfsRuntimeCliArgs {
+                app_id: app_id.to_string(),
+                session_id: Some("sess-test".to_string()),
+                bridge: test_bridge_args(),
+            },
+        );
+        wrapper.ctx.runtimes.lock().await.insert(
+            app_id.to_string(),
+            MountSnapshotRuntime {
+                app_id: app_id.to_string(),
+                session_id: "sess-test".to_string(),
+                snapshot_specs: vec![SnapshotSpec {
+                    template: resource_rel.to_string(),
+                    max_materialized_bytes: 1024 * 1024,
+                    prewarm: false,
+                    prewarm_timeout_ms: 5_000,
+                    read_through_timeout_ms: 10_000,
+                    on_timeout: SnapshotOnTimeoutPolicy::ReturnStale,
+                }],
+                snapshot_expand_journal: HashMap::new(),
+                connector,
+            },
+        );
+    }
+
+    #[test]
+    fn snapshot_open_and_fstat_do_not_expand_until_pread() {
+        let temp = TempDir::new().expect("tempdir");
+        let snapshot_path = temp.path().join("aiim/chats/chat-001/messages.res.jsonl");
+        fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("create snapshot parent");
+        fs::write(&snapshot_path, b"").expect("seed snapshot placeholder");
+
+        let wrapper = build_wrapper(&temp, None);
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+
+        crate::get_runtime().block_on(async move {
+            install_snapshot_runtime(
+                &wrapper,
+                "aiim",
+                "chats/chat-001/messages.res.jsonl",
+                Box::new(FakeSnapshotConnector::new(
+                    fetch_count.clone(),
+                    vec![json!({"id":"m-1","text":"hello"})],
+                )),
+            )
+            .await;
+
+            let app_dir = wrapper
+                .lookup(ROOT_INO, "aiim")
+                .await
+                .expect("lookup app")
+                .expect("app stats");
+            let chats_dir = wrapper
+                .lookup(app_dir.ino, "chats")
+                .await
+                .expect("lookup chats")
+                .expect("chats stats");
+            let chat_dir = wrapper
+                .lookup(chats_dir.ino, "chat-001")
+                .await
+                .expect("lookup chat")
+                .expect("chat stats");
+            let snapshot = wrapper
+                .lookup(chat_dir.ino, "messages.res.jsonl")
+                .await
+                .expect("lookup snapshot")
+                .expect("snapshot stats");
+
+            let file = wrapper
+                .open(snapshot.ino, OPEN_READ_ONLY)
+                .await
+                .expect("open snapshot");
+            let stats = file.fstat().await.expect("fstat snapshot");
+            assert_eq!(
+                stats.size, 0,
+                "metadata probes should keep placeholder cold"
+            );
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                0,
+                "open/fstat must not trigger connector expansion"
+            );
+
+            let bytes = file.pread(0, 4096).await.expect("read snapshot");
+            assert_eq!(
+                String::from_utf8(bytes).expect("utf8"),
+                "{\"id\":\"m-1\",\"text\":\"hello\"}\n"
+            );
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                1,
+                "first content read should perform exactly one expansion"
+            );
+
+            let materialized = fs::read(&snapshot_path).expect("read materialized snapshot");
+            assert_eq!(
+                String::from_utf8(materialized).expect("utf8"),
+                "{\"id\":\"m-1\",\"text\":\"hello\"}\n"
+            );
+        });
     }
 
     #[test]
