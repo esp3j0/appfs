@@ -514,7 +514,9 @@ class HuoyanBackend:
         raise ValueError("huoyan backend does not expose custom action files yet")
 
     def _reset_client_storage_host_cache(self) -> None:
-        self.client.reset_storage_host_cache()
+        reset = getattr(self.client, "reset_storage_host_cache", None)
+        if callable(reset):
+            reset()
 
     def _open_case(self, case_id: int) -> None:
         cases = self._list_cases()
