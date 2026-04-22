@@ -364,6 +364,9 @@ class HuoyanBackendTests(unittest.TestCase):
         self.assertEqual(self.client.exited_case_ids, [1])
         self.assertIn(str(self.case_dir_8 / "思语.gec"), self.client.opened_paths)
 
+    def test_storage_host_reset_helper_tolerates_legacy_client_without_method(self) -> None:
+        self.backend._reset_client_storage_host_cache()
+
     def test_json_request_normalizes_windows_network_error_to_ascii(self) -> None:
         reason = ConnectionRefusedError(10061, "由于目标计算机积极拒绝，无法连接。")
         with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError(reason)):
