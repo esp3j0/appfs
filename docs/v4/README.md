@@ -8,6 +8,7 @@
 2. [Connector structure interface](./APPFS-v0.4-Connector结构接口.zh-CN.md)
 3. [Runtime closure design plan](../plans/2026-03-26-appfs-runtime-closure-design.md)
 4. [AppConnector unversioned cleanup plan](../plans/2026-03-30-appconnector-unversioned-cleanup.md)
+5. [AppFS compose up design](../plans/2026-04-22-appfs-compose-up-design.md)
 
 ## What Lives Here
 

@@ -41,6 +41,8 @@ pub async fn mount_winfsp(
     volume_params.case_sensitive_search(true);
     volume_params.case_preserved_names(true);
     volume_params.unicode_on_disk(true);
+    volume_params.pass_query_directory_pattern(true);
+    volume_params.pass_query_directory_filename(true);
     volume_params.filesystem_name(&opts.fsname);
     volume_params.reparse_points(true);
     volume_params.reparse_points_access_check(true);
@@ -50,7 +52,9 @@ pub async fn mount_winfsp(
 
     // Create the filesystem host
     tracing::debug!("Creating FileSystemHost...");
-    let mut host = winfsp::host::FileSystemHost::new(volume_params, adapter)?;
+    let mut host_options = winfsp::host::FileSystemParams::default_params(volume_params);
+    host_options.use_dir_info_by_name = true;
+    let mut host = winfsp::host::FileSystemHost::new_with_options(host_options, adapter)?;
     tracing::debug!("FileSystemHost created successfully");
 
     // Mount the filesystem

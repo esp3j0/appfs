@@ -48,6 +48,11 @@ const OPEN_WRONLY: i32 = 0x0001;
 const OPEN_RDWR: i32 = 0x0002;
 const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
 
+// NT directory wildcard characters used by Win32 query-directory calls.
+const DOS_STAR: char = '<';
+const DOS_QM: char = '>';
+const DOS_DOT: char = '"';
+
 // Reparse tag/constants for symbolic links
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000000C;
 const SYMLINK_FLAG_RELATIVE: u32 = 0x00000001;
@@ -329,6 +334,174 @@ impl AgentFSWinFsp {
 
     fn sanitize_dir_entry_name(name: &str) -> &str {
         name.trim_end_matches('\0')
+    }
+
+    fn normalize_directory_pattern(pattern: &str) -> &str {
+        let pattern = pattern.trim_end_matches('\0');
+        pattern.rsplit(['\\', '/']).next().unwrap_or(pattern)
+    }
+
+    fn directory_pattern_matches(name: &str, pattern: &str) -> bool {
+        let pattern = Self::normalize_directory_pattern(pattern);
+        if pattern.is_empty() {
+            return true;
+        }
+
+        // Win32 treats "*.*" as "match everything", including names without dots.
+        if matches!(pattern, "*" | "*.*") {
+            return true;
+        }
+
+        let lowered_name: Vec<char> = name.to_lowercase().chars().collect();
+        let lowered_pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+        let mut cache = HashMap::new();
+
+        fn matches_impl(
+            name: &[char],
+            pattern: &[char],
+            name_idx: usize,
+            pattern_idx: usize,
+            cache: &mut HashMap<(usize, usize), bool>,
+        ) -> bool {
+            if let Some(result) = cache.get(&(name_idx, pattern_idx)) {
+                return *result;
+            }
+
+            let result = if pattern_idx == pattern.len() {
+                name_idx == name.len()
+            } else {
+                match pattern[pattern_idx] {
+                    '*' => (name_idx..=name.len()).any(|next_idx| {
+                        matches_impl(name, pattern, next_idx, pattern_idx + 1, cache)
+                    }),
+                    '?' => {
+                        name_idx < name.len()
+                            && matches_impl(name, pattern, name_idx + 1, pattern_idx + 1, cache)
+                    }
+                    DOS_DOT => {
+                        ((name_idx < name.len() && name[name_idx] == '.')
+                            && matches_impl(name, pattern, name_idx + 1, pattern_idx + 1, cache))
+                            || (name_idx == name.len()
+                                && matches_impl(name, pattern, name_idx, pattern_idx + 1, cache))
+                    }
+                    DOS_QM => {
+                        if name_idx < name.len() && name[name_idx] != '.' {
+                            matches_impl(name, pattern, name_idx + 1, pattern_idx + 1, cache)
+                        } else {
+                            let mut next_pattern_idx = pattern_idx;
+                            while next_pattern_idx < pattern.len()
+                                && pattern[next_pattern_idx] == DOS_QM
+                            {
+                                next_pattern_idx += 1;
+                            }
+                            matches_impl(name, pattern, name_idx, next_pattern_idx, cache)
+                        }
+                    }
+                    DOS_STAR => {
+                        let last_dot_idx = name
+                            .iter()
+                            .enumerate()
+                            .skip(name_idx)
+                            .rfind(|(_, ch)| **ch == '.')
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(name.len());
+                        (name_idx..=last_dot_idx).any(|next_idx| {
+                            matches_impl(name, pattern, next_idx, pattern_idx + 1, cache)
+                        })
+                    }
+                    literal => {
+                        name_idx < name.len()
+                            && literal == name[name_idx]
+                            && matches_impl(name, pattern, name_idx + 1, pattern_idx + 1, cache)
+                    }
+                }
+            };
+
+            cache.insert((name_idx, pattern_idx), result);
+            result
+        }
+
+        matches_impl(
+            lowered_name.as_slice(),
+            lowered_pattern.as_slice(),
+            0,
+            0,
+            &mut cache,
+        )
+    }
+
+    fn should_include_dir_entry(name: &str, pattern: Option<&str>) -> bool {
+        match pattern {
+            Some(pattern) => Self::directory_pattern_matches(name, pattern),
+            None => true,
+        }
+    }
+
+    fn set_dir_entry_name<const BUFFER_SIZE: usize>(
+        dir_info: &mut DirInfo<BUFFER_SIZE>,
+        name: &str,
+    ) -> winfsp::Result<()> {
+        let encoded: Vec<u16> = name.encode_utf16().collect();
+        dir_info
+            .set_name_raw(encoded.as_slice())
+            .map_err(|_| FspError::NTSTATUS(STATUS_OBJECT_NAME_INVALID))
+    }
+
+    fn fill_dir_info<const BUFFER_SIZE: usize>(
+        dir_info: &mut DirInfo<BUFFER_SIZE>,
+        name: &str,
+        stats: &Stats,
+    ) -> winfsp::Result<()> {
+        fill_file_info(stats, dir_info.file_info_mut());
+        Self::set_dir_entry_name(dir_info, Self::sanitize_dir_entry_name(name))
+    }
+
+    fn list_directory_entries(
+        &self,
+        dir_ino: i64,
+        dir_path: &str,
+    ) -> winfsp::Result<Vec<(String, Stats)>> {
+        let fs = self.fs.clone();
+        let entries = self.block_on(async move { fs.lock().readdir_plus(dir_ino).await });
+
+        match entries {
+            Ok(Some(entries)) => {
+                let fs = self.fs.clone();
+                let dir_stats = self.block_on(async move { fs.lock().getattr(dir_ino).await });
+                let dir_stats = match dir_stats {
+                    Ok(Some(stats)) => stats,
+                    Ok(None) => return Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+                    Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+                };
+
+                let parent_ino = if dir_path == "/" {
+                    1
+                } else {
+                    match self.parse_path(dir_path) {
+                        Ok((pino, _)) => pino,
+                        Err(e) => return Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e))),
+                    }
+                };
+                let fs = self.fs.clone();
+                let parent_stats =
+                    self.block_on(async move { fs.lock().getattr(parent_ino).await });
+                let parent_stats = match parent_stats {
+                    Ok(Some(stats)) => stats,
+                    Ok(None) => dir_stats.clone(),
+                    Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+                };
+
+                let mut all_entries: Vec<(String, Stats)> = Vec::with_capacity(entries.len() + 2);
+                all_entries.push((".".to_string(), dir_stats));
+                all_entries.push(("..".to_string(), parent_stats));
+                for entry in entries {
+                    all_entries.push((entry.name, entry.stats));
+                }
+                Ok(all_entries)
+            }
+            Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+            Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+        }
     }
 
     /// Delete a file or directory by path.
@@ -1144,17 +1317,19 @@ impl FileSystemContext for AgentFSWinFsp {
     fn read_directory(
         &self,
         context: &Self::FileContext,
-        _pattern: Option<&U16CStr>,
+        pattern: Option<&U16CStr>,
         marker: winfsp::filesystem::DirMarker<'_>,
         buffer: &mut [u8],
     ) -> winfsp::Result<u32> {
+        let pattern_str = pattern.map(|p| p.to_string_lossy());
         let marker_str = marker
             .inner_as_cstr()
             .map(|m| m.to_string_lossy())
             .unwrap_or_else(|| "<none>".to_string());
         tracing::trace!(
-            "WinFsp::read_directory: fh={} marker={} is_none={} is_current={} is_parent={}",
+            "WinFsp::read_directory: fh={} pattern={} marker={} is_none={} is_current={} is_parent={}",
             context.fh,
+            pattern_str.as_deref().unwrap_or("<none>"),
             marker_str,
             marker.is_none(),
             marker.is_current(),
@@ -1169,94 +1344,102 @@ impl FileSystemContext for AgentFSWinFsp {
             }
         };
 
-        let fs = self.fs.clone();
-        let entries = self.block_on(async move { fs.lock().readdir_plus(dir_ino).await });
+        let all_entries = self.list_directory_entries(dir_ino, &dir_path)?;
+        let original_entry_count = all_entries.len();
+        let filtered_entries: Vec<(String, Stats)> = all_entries
+            .into_iter()
+            .filter(|(name, _stats)| {
+                Self::should_include_dir_entry(
+                    Self::sanitize_dir_entry_name(name),
+                    pattern_str.as_deref(),
+                )
+            })
+            .collect();
+        tracing::trace!(
+            "WinFsp::read_directory: fh={} entry_count={} filtered_count={} entries={:?}",
+            context.fh,
+            original_entry_count,
+            filtered_entries.len(),
+            filtered_entries
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>()
+        );
 
-        match entries {
-            Ok(Some(entries)) => {
-                let fs = self.fs.clone();
-                let dir_stats = self.block_on(async move { fs.lock().getattr(dir_ino).await });
-                let dir_stats = match dir_stats {
-                    Ok(Some(stats)) => stats,
-                    Ok(None) => return Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
-                    Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
-                };
-
-                let parent_ino = if dir_path == "/" {
-                    1
-                } else {
-                    match self.parse_path(&dir_path) {
-                        Ok((pino, _)) => pino,
-                        Err(e) => return Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e))),
-                    }
-                };
-                let fs = self.fs.clone();
-                let parent_stats =
-                    self.block_on(async move { fs.lock().getattr(parent_ino).await });
-                let parent_stats = match parent_stats {
-                    Ok(Some(stats)) => stats,
-                    Ok(None) => dir_stats.clone(),
-                    Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
-                };
-
-                let mut all_entries: Vec<(String, Stats)> = Vec::with_capacity(entries.len() + 2);
-                all_entries.push((".".to_string(), dir_stats));
-                all_entries.push(("..".to_string(), parent_stats));
-                for entry in entries {
-                    all_entries.push((entry.name, entry.stats));
+        // Determine starting index based on marker.
+        // The marker is the filename (U16CStr) of the last entry returned
+        // in the previous call. We need to find it and skip past it.
+        let start_idx = if let Some(marker_name) = marker.inner_as_cstr() {
+            let marker_str = marker_name.to_string_lossy();
+            let marker_str = Self::sanitize_dir_entry_name(&marker_str);
+            let mut idx = 0usize;
+            for (i, (name, _stats)) in filtered_entries.iter().enumerate() {
+                if Self::sanitize_dir_entry_name(name) == marker_str {
+                    idx = i + 1;
+                    break;
                 }
-                tracing::trace!(
-                    "WinFsp::read_directory: fh={} entry_count={} entries={:?}",
-                    context.fh,
-                    all_entries.len(),
-                    all_entries
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect::<Vec<_>>()
-                );
-
-                // Determine starting index based on marker.
-                // The marker is the filename (U16CStr) of the last entry returned
-                // in the previous call. We need to find it and skip past it.
-                let start_idx = if let Some(marker_name) = marker.inner_as_cstr() {
-                    let marker_str = marker_name.to_string_lossy();
-                    let marker_str = Self::sanitize_dir_entry_name(&marker_str);
-                    let mut idx = 0usize;
-                    for (i, (name, _stats)) in all_entries.iter().enumerate() {
-                        if Self::sanitize_dir_entry_name(name) == marker_str {
-                            idx = i + 1;
-                            break;
-                        }
-                    }
-                    idx
-                } else {
-                    0
-                };
-                let mut cursor = 0u32;
-
-                for (name, stats) in all_entries.iter().skip(start_idx) {
-                    let mut dir_info: DirInfo<255> = DirInfo::default();
-                    fill_file_info(stats, dir_info.file_info_mut());
-                    let name = Self::sanitize_dir_entry_name(name);
-
-                    // Set the name using WideNameInfo trait
-                    if dir_info.set_name(name).is_ok() {
-                        // Use the proper WinFsp API to append to buffer
-                        // This handles variable-length entries correctly
-                        if !dir_info.append_to_buffer(buffer, &mut cursor) {
-                            // Buffer is full, stop adding more entries
-                            break;
-                        }
-                    }
-                }
-
-                // Finalize the buffer
-                DirInfo::<255>::finalize_buffer(buffer, &mut cursor);
-
-                Ok(cursor)
             }
-            Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
-            Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+            idx
+        } else {
+            0
+        };
+        let mut cursor = 0u32;
+
+        for (name, stats) in filtered_entries.iter().skip(start_idx) {
+            let mut dir_info: DirInfo<255> = DirInfo::default();
+
+            // Directory entries must not include a trailing NUL in their
+            // reported name, otherwise PowerShell/.NET treats the name as
+            // containing an embedded null character.
+            if Self::fill_dir_info(&mut dir_info, name, stats).is_ok() {
+                // Use the proper WinFsp API to append to buffer
+                // This handles variable-length entries correctly
+                if !dir_info.append_to_buffer(buffer, &mut cursor) {
+                    // Buffer is full, stop adding more entries
+                    break;
+                }
+            }
+        }
+
+        // Finalize the buffer
+        DirInfo::<255>::finalize_buffer(buffer, &mut cursor);
+
+        Ok(cursor)
+    }
+
+    fn get_dir_info_by_name(
+        &self,
+        context: &Self::FileContext,
+        file_name: &U16CStr,
+        out_dir_info: &mut DirInfo,
+    ) -> winfsp::Result<()> {
+        let query_name = file_name.to_string_lossy();
+        tracing::trace!(
+            "WinFsp::get_dir_info_by_name: fh={} query={}",
+            context.fh,
+            query_name
+        );
+
+        let (dir_ino, dir_path) = {
+            let open_files = self.open_files.lock();
+            match open_files.get(&context.fh) {
+                Some(open_file) => (open_file.ino, open_file.path.clone()),
+                None => return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER)),
+            }
+        };
+
+        let entries = self.list_directory_entries(dir_ino, &dir_path)?;
+        let normalized_query = Self::normalize_directory_pattern(&query_name);
+        let entry = entries.into_iter().find(|(name, _stats)| {
+            Self::should_include_dir_entry(
+                Self::sanitize_dir_entry_name(name),
+                Some(normalized_query),
+            )
+        });
+
+        match entry {
+            Some((name, stats)) => Self::fill_dir_info(out_dir_info, &name, &stats),
+            None => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
         }
     }
 
@@ -1715,6 +1898,8 @@ pub fn mount(fs: Arc<Mutex<dyn FileSystem + Send>>, opts: MountOpts) -> Result<(
     volume_params.case_sensitive_search(true);
     volume_params.case_preserved_names(true);
     volume_params.unicode_on_disk(true);
+    volume_params.pass_query_directory_pattern(true);
+    volume_params.pass_query_directory_filename(true);
     volume_params.filesystem_name(&opts.fsname);
     volume_params.reparse_points(true);
     volume_params.reparse_points_access_check(true);
@@ -1725,7 +1910,9 @@ pub fn mount(fs: Arc<Mutex<dyn FileSystem + Send>>, opts: MountOpts) -> Result<(
     // handled by set_delete/cleanup instead of kernel prechecks.
     volume_params.post_disposition_only_when_necessary(false);
 
-    let mut host = winfsp::host::FileSystemHost::new(volume_params, adapter)?;
+    let mut host_options = winfsp::host::FileSystemParams::default_params(volume_params);
+    host_options.use_dir_info_by_name = true;
+    let mut host = winfsp::host::FileSystemHost::new_with_options(host_options, adapter)?;
 
     let mountpoint_str = mountpoint.to_string_lossy().to_string();
     tracing::info!("Mounting WinFsp filesystem at {}", mountpoint_str);
@@ -1747,15 +1934,20 @@ pub fn unmount(_mountpoint: &std::path::Path, _lazy: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        anyhow_to_ntstatus, resolve_truncate_size, volume_capacity, AgentFSWinFsp,
-        STATUS_NOT_A_DIRECTORY, STATUS_OBJECT_NAME_NOT_FOUND,
+        anyhow_to_ntstatus, resolve_truncate_size, volume_capacity, AgentFSWinFsp, FileContext,
+        OpenFile, STATUS_NOT_A_DIRECTORY, STATUS_OBJECT_NAME_NOT_FOUND,
     };
     use agentfs_sdk::error::Result as SdkResult;
     use agentfs_sdk::filesystem::{DirEntry, FileSystem, FilesystemStats, TimeChange};
     use agentfs_sdk::{BoxedFile, Stats};
     use async_trait::async_trait;
     use parking_lot::Mutex;
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::HashMap,
+        sync::{atomic::AtomicBool, Arc},
+    };
+    use winfsp::filesystem::{DirInfo, FileSystemContext};
+    use winfsp::U16CString;
 
     struct MockFs {
         by_parent: HashMap<(i64, String), Stats>,
@@ -1800,7 +1992,17 @@ mod tests {
         }
 
         async fn readdir_plus(&self, _ino: i64) -> SdkResult<Option<Vec<DirEntry>>> {
-            Ok(Some(Vec::new()))
+            let mut entries: Vec<DirEntry> = self
+                .by_parent
+                .iter()
+                .filter(|((parent_ino, _), _)| *parent_ino == _ino)
+                .map(|((_parent_ino, name), stats)| DirEntry {
+                    name: name.clone(),
+                    stats: stats.clone(),
+                })
+                .collect();
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+            Ok(Some(entries))
         }
 
         async fn chmod(&self, _ino: i64, _mode: u32) -> SdkResult<()> {
@@ -1924,6 +2126,30 @@ mod tests {
         rt.block_on(async move { f(&adapter) })
     }
 
+    fn with_open_directory_context<T>(
+        fs: MockFs,
+        dir_ino: i64,
+        dir_path: &str,
+        f: impl FnOnce(&AgentFSWinFsp, FileContext) -> T,
+    ) -> T {
+        with_adapter(fs, |adapter| {
+            let fh = adapter.alloc_fh();
+            adapter.open_files.lock().insert(
+                fh,
+                OpenFile {
+                    file: None,
+                    ino: dir_ino,
+                    is_dir: true,
+                    is_symlink: false,
+                    delete_on_close: AtomicBool::new(false),
+                    deleted: AtomicBool::new(false),
+                    path: dir_path.to_string(),
+                },
+            );
+            f(adapter, FileContext { fh })
+        })
+    }
+
     #[test]
     fn allocation_growth_does_not_change_logical_size() {
         assert_eq!(resolve_truncate_size(2, 512, true), None);
@@ -1986,5 +2212,98 @@ mod tests {
             AgentFSWinFsp::sanitize_dir_entry_name("settings.json"),
             "settings.json"
         );
+    }
+
+    #[test]
+    fn directory_pattern_matches_exact_name_case_insensitively() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "info.res.jsonl",
+            "INFO.RES.JSONL"
+        ));
+        assert!(!AgentFSWinFsp::directory_pattern_matches(
+            "other.res.jsonl",
+            "info.res.jsonl"
+        ));
+    }
+
+    #[test]
+    fn directory_pattern_matches_common_wildcards() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "info.res.jsonl",
+            "*.jsonl"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "账户信息.res.jsonl",
+            "*.res.jsonl"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches("huoyan", "*.*"));
+        assert!(AgentFSWinFsp::directory_pattern_matches("a1", "a?"));
+        assert!(!AgentFSWinFsp::directory_pattern_matches("a12", "a?"));
+    }
+
+    #[test]
+    fn directory_pattern_matches_leaf_name_from_query_path() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "账户信息.res.jsonl",
+            r".\*.res.jsonl"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "账户信息.res.jsonl",
+            r"C:\mnt\appfs\*.res.jsonl"
+        ));
+    }
+
+    #[test]
+    fn directory_pattern_matches_nt_dos_wildcards() {
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "info.res.jsonl",
+            "<.res.jsonl"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches(
+            "ab.txt", "a>>.txt"
+        ));
+        assert!(AgentFSWinFsp::directory_pattern_matches("a", "a\""));
+    }
+
+    #[test]
+    fn get_dir_info_by_name_matches_filtered_unicode_snapshot_entry() {
+        let fs = MockFs::new()
+            .with_child(1, "notes.txt", test_stats(2, 0o100644, 7))
+            .with_child(1, "账户信息.res.jsonl", test_stats(3, 0o100644, 123));
+
+        with_open_directory_context(fs, 1, "/", |adapter, context| {
+            let query = U16CString::from_str(r".\*.res.jsonl").expect("query pattern");
+            let mut dir_info = DirInfo::<255>::default();
+
+            <AgentFSWinFsp as FileSystemContext>::get_dir_info_by_name(
+                adapter,
+                &context,
+                query.as_ucstr(),
+                &mut dir_info,
+            )
+            .expect("wildcard filter should resolve matching entry");
+
+            assert_eq!(dir_info.file_info_mut().file_size, 123);
+        });
+    }
+
+    #[test]
+    fn get_dir_info_by_name_returns_not_found_for_non_matching_filter() {
+        let fs = MockFs::new().with_child(1, "notes.txt", test_stats(2, 0o100644, 7));
+
+        with_open_directory_context(fs, 1, "/", |adapter, context| {
+            let query = U16CString::from_str("*.res.jsonl").expect("query pattern");
+            let mut dir_info = DirInfo::<255>::default();
+
+            let err = <AgentFSWinFsp as FileSystemContext>::get_dir_info_by_name(
+                adapter,
+                &context,
+                query.as_ucstr(),
+                &mut dir_info,
+            )
+            .expect_err("non-matching wildcard should not resolve");
+
+            assert_eq!(err.to_ntstatus(), STATUS_OBJECT_NAME_NOT_FOUND);
+        });
     }
 }
