@@ -842,12 +842,12 @@ fn wait_for_runtime_path_visibility(path: &Path, expect_dir: bool) -> Result<()>
     const MAX_ATTEMPTS: usize = 40;
     for attempt in 0..MAX_ATTEMPTS {
         refresh_runtime_parent_directory(path);
-        let visible = if expect_dir {
+        let ready = if expect_dir {
             path.is_dir()
         } else {
-            path.is_file()
+            path.is_file() && std::fs::read(path).is_ok()
         };
-        if visible {
+        if ready {
             return Ok(());
         }
         if attempt + 1 < MAX_ATTEMPTS {
