@@ -28,11 +28,12 @@ use super::shared::{
 };
 use super::tree_sync::{ensure_app_structure_initialized, refresh_app_structure};
 use super::{
-    ActionCursorDoc, ActionCursorState, ActionSpec, AppfsAdapter, AppfsBridgeConfig, CursorState,
-    ExecutionMode, InputMode, ManifestContract, ManifestDoc, ProcessOutcome, SnapshotSpec,
-    StreamingJob, ACTION_CURSORS_FILENAME, DEFAULT_RETENTION_HINT_SEC,
-    DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES, DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS,
-    DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
+    ActionCursorDoc, ActionCursorState, ActionSpec, AppRuntimeStartupBootstrap, AppfsAdapter,
+    AppfsBridgeConfig, CursorState, ExecutionMode, InputMode, ManifestContract, ManifestDoc,
+    ProcessOutcome, SnapshotSpec, StreamingJob, ACTION_CURSORS_FILENAME,
+    DEFAULT_RETENTION_HINT_SEC, DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES,
+    DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS, DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS,
+    SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -278,7 +279,19 @@ impl AppfsAdapter {
         session_id: String,
         bridge_config: AppfsBridgeConfig,
     ) -> Result<Self> {
-        ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
+        Self::new_with_bootstrap(root, app_id, session_id, bridge_config, None)
+    }
+
+    pub(super) fn new_with_bootstrap(
+        root: PathBuf,
+        app_id: String,
+        session_id: String,
+        bridge_config: AppfsBridgeConfig,
+        startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
+    ) -> Result<Self> {
+        if startup_bootstrap.is_none() {
+            ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
+        }
         let app_dir = root.join(&app_id);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
         let events_path = app_dir.join("_stream").join("events.evt.jsonl");
@@ -293,22 +306,29 @@ impl AppfsAdapter {
         if !app_dir.exists() {
             anyhow::bail!("App directory not found: {}", app_dir.display());
         }
-        if !manifest_path.exists() {
+        if startup_bootstrap.is_none() && !manifest_path.exists() {
             anyhow::bail!("Missing manifest file: {}", manifest_path.display());
         }
-        if !events_path.exists() {
+        if startup_bootstrap.is_none() && !events_path.exists() {
             anyhow::bail!("Missing events stream file: {}", events_path.display());
         }
-        if !cursor_path.exists() {
+        if startup_bootstrap.is_none() && !cursor_path.exists() {
             anyhow::bail!("Missing cursor file: {}", cursor_path.display());
         }
         if !replay_dir.exists() {
             anyhow::bail!("Missing replay directory: {}", replay_dir.display());
         }
 
-        let cursor = Self::load_cursor(&cursor_path)?;
+        let cursor = match startup_bootstrap.as_ref() {
+            Some(bootstrap) => bootstrap.cursor.clone(),
+            None => Self::load_cursor(&cursor_path)?,
+        };
         let next_seq = cursor.max_seq + 1;
-        let manifest_contract = Self::load_manifest_contract(&manifest_path)?;
+        let manifest_contract = if let Some(bootstrap) = startup_bootstrap.as_ref() {
+            parse_manifest_contract_json(&bootstrap.manifest_json, "<managed-runtime-bootstrap>")?
+        } else {
+            Self::load_manifest_contract(&manifest_path)?
+        };
         if manifest_contract.requires_paging_controls {
             let has_fetch = manifest_contract
                 .action_specs
@@ -360,15 +380,22 @@ impl AppfsAdapter {
             snapshot_expand_journal_path: snapshot_expand_journal_path.clone(),
             cursor,
             next_seq,
-            action_cursors: Self::load_action_cursors(&action_cursors_path)?,
+            action_cursors: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.action_cursors.clone(),
+                None => Self::load_action_cursors(&action_cursors_path)?,
+            },
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             snapshot_states: HashMap::new(),
             snapshot_recent_expands: HashMap::new(),
-            snapshot_expand_journal: Self::load_snapshot_expand_journal(
-                &snapshot_expand_journal_path,
-            )?,
-            streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
+            snapshot_expand_journal: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.snapshot_expand_journal.clone(),
+                None => Self::load_snapshot_expand_journal(&snapshot_expand_journal_path)?,
+            },
+            streaming_jobs: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.streaming_jobs.clone(),
+                None => Self::load_streaming_jobs(&jobs_path)?,
+            },
             actionline_strict: env_flag_enabled("APPFS_ACTIONLINE_STRICT"),
             connector,
         };
