@@ -1,4 +1,4 @@
-use agentfs_sdk::{AgentFSOptions, AppConnector};
+use agentfs_sdk::{AgentFS as SdkAgentFS, AgentFSOptions, AppConnector};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -73,6 +73,17 @@ const MAX_SEGMENT_BYTES: usize = 255;
 
 const ALLOWED_SEGMENT_CHARS: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-~";
+
+#[derive(Clone, Debug)]
+enum ManagedRuntimeBootstrapEntry {
+    Dir { rel_path: String },
+    File { rel_path: String, bytes: Vec<u8> },
+}
+
+#[derive(Clone, Debug, Default)]
+struct ManagedRuntimeBootstrapPlan {
+    entries: Vec<ManagedRuntimeBootstrapEntry>,
+}
 
 #[derive(Clone)]
 pub struct ActionWakeHandle {
@@ -837,6 +848,110 @@ fn wait_for_managed_runtime_paths_ready(
     }
 }
 
+async fn build_managed_runtime_bootstrap_plan(
+    agent: &SdkAgentFS,
+    app_ids: &[String],
+) -> Result<ManagedRuntimeBootstrapPlan> {
+    let mut plan = ManagedRuntimeBootstrapPlan::default();
+    plan.entries.push(ManagedRuntimeBootstrapEntry::Dir {
+        rel_path: "_appfs".to_string(),
+    });
+    if let Some(bytes) = agent.fs.read_file("/_appfs/apps.registry.json").await? {
+        plan.entries.push(ManagedRuntimeBootstrapEntry::File {
+            rel_path: "_appfs/apps.registry.json".to_string(),
+            bytes,
+        });
+    }
+
+    for app_id in app_ids {
+        let app_root = app_id.clone();
+        for rel_path in [
+            app_root.clone(),
+            format!("{app_root}/_meta"),
+            format!("{app_root}/_stream"),
+            format!("{app_root}/_stream/from-seq"),
+        ] {
+            plan.entries
+                .push(ManagedRuntimeBootstrapEntry::Dir { rel_path });
+        }
+
+        for rel_path in [
+            format!("{app_root}/_meta/manifest.res.json"),
+            format!("{app_root}/_stream/events.evt.jsonl"),
+            format!("{app_root}/_stream/cursor.res.json"),
+            format!("{app_root}/_stream/inflight.jobs.res.json"),
+            format!("{app_root}/_stream/{ACTION_CURSORS_FILENAME}"),
+            format!("{app_root}/_stream/{SNAPSHOT_EXPAND_JOURNAL_FILENAME}"),
+        ] {
+            let abs = format!("/{rel_path}");
+            let Some(bytes) = agent.fs.read_file(&abs).await? else {
+                anyhow::bail!("managed runtime bootstrap source missing from db: {abs}");
+            };
+            plan.entries
+                .push(ManagedRuntimeBootstrapEntry::File { rel_path, bytes });
+        }
+    }
+
+    Ok(plan)
+}
+
+fn apply_managed_runtime_bootstrap_plan(
+    mount_root: &Path,
+    plan: &ManagedRuntimeBootstrapPlan,
+) -> Result<()> {
+    for entry in &plan.entries {
+        match entry {
+            ManagedRuntimeBootstrapEntry::Dir { rel_path } => {
+                let path = mount_root.join(rel_path);
+                std::fs::create_dir_all(&path).with_context(|| {
+                    format!(
+                        "failed to precreate managed runtime dir on mount {}",
+                        path.display()
+                    )
+                })?;
+                #[cfg(target_os = "windows")]
+                wait_for_runtime_path_visibility(&path, true).with_context(|| {
+                    format!(
+                        "managed runtime startup path is not visible yet after directory bootstrap: {}",
+                        path.display()
+                    )
+                })?;
+            }
+            ManagedRuntimeBootstrapEntry::File { rel_path, bytes } => {
+                let path = mount_root.join(rel_path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to precreate managed runtime parent dir {}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                let needs_write = match std::fs::read(&path) {
+                    Ok(existing) => existing != *bytes,
+                    Err(_) => true,
+                };
+                if needs_write {
+                    std::fs::write(&path, bytes).with_context(|| {
+                        format!(
+                            "failed to precreate managed runtime file on mount {}",
+                            path.display()
+                        )
+                    })?;
+                }
+                #[cfg(target_os = "windows")]
+                wait_for_runtime_path_visibility(&path, false).with_context(|| {
+                    format!(
+                        "managed runtime startup path is not readable yet after file bootstrap: {}",
+                        path.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn wait_for_runtime_path_visibility(path: &Path, expect_dir: bool) -> Result<()> {
     const MAX_ATTEMPTS: usize = 40;
@@ -897,6 +1012,11 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
         )
         .await?;
     }
+    let startup_app_ids = resolved_apps
+        .values()
+        .map(|app| app.app_id.clone())
+        .collect::<Vec<_>>();
+    let startup_plan = build_managed_runtime_bootstrap_plan(&agent, &startup_app_ids).await?;
     drop(agent);
 
     let result = run_managed_appfs_with_bootstrap(
@@ -911,7 +1031,7 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
             gid: compose_doc.runtime.gid,
             poll_ms: compose_doc.runtime.poll_ms,
         },
-        |_| Ok(()),
+        move |mount_root| apply_managed_runtime_bootstrap_plan(mount_root, &startup_plan),
     )
     .await;
 
