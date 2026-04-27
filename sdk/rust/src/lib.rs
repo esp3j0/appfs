@@ -2,6 +2,7 @@ pub mod appfs_adapter;
 pub mod appfs_adapter_testkit;
 pub mod appfs_connector;
 pub mod appfs_demo_adapter;
+pub mod bulk_materialize;
 pub mod connection_pool;
 pub mod error;
 pub mod filesystem;
@@ -41,6 +42,7 @@ pub use appfs_connector::{
     APPFS_CONNECTOR_SDK_VERSION,
 };
 pub use appfs_demo_adapter::{DemoAppAdapterV1, DemoAppConnector};
+pub use bulk_materialize::{BulkMaterializeEntry, BulkMaterializePlan};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
@@ -438,6 +440,14 @@ impl AgentFS {
     /// Get the connection pool
     pub fn get_pool(&self) -> connection_pool::ConnectionPool {
         self.pool.clone()
+    }
+
+    /// Bulk materialize a tree of directories and files directly into the AgentFS DB.
+    ///
+    /// This bypasses mount-backend round-trips and is intended for large startup
+    /// bootstraps such as AppFS structure synchronization.
+    pub async fn bulk_materialize_tree(&self, plan: &BulkMaterializePlan) -> Result<()> {
+        self.fs.bulk_materialize_tree(plan).await
     }
 
     /// Check if sync is enabled for this database

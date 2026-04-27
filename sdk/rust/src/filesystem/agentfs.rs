@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
+use crate::{BulkMaterializeEntry, BulkMaterializePlan};
 use async_trait::async_trait;
 use lru::LruCache;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -10,7 +12,7 @@ use turso::{Builder, Connection, Value};
 
 use super::{
     BoxedFile, DirEntry, File, FileSystem, FilesystemStats, FsError, Stats, TimeChange,
-    DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, MAX_NAME_LEN, S_IFLNK, S_IFMT, S_IFREG,
+    DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, MAX_NAME_LEN, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG,
 };
 use crate::connection_pool::ConnectionPool;
 use crate::schema::AGENTFS_SCHEMA_VERSION;
@@ -81,6 +83,12 @@ pub struct AgentFSFile {
     pool: ConnectionPool,
     ino: i64,
     chunk_size: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BulkPathState {
+    ino: i64,
+    mode: u32,
 }
 
 #[async_trait]
@@ -1304,6 +1312,316 @@ impl AgentFS {
         });
 
         Ok((stats, file))
+    }
+
+    /// Bulk materialize directories and files directly into the AgentFS database.
+    ///
+    /// This bypasses mount-layer round-trips and is intended for large startup
+    /// tree bootstraps.
+    pub async fn bulk_materialize_tree(&self, plan: &BulkMaterializePlan) -> Result<()> {
+        if plan.entries.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self.pool.get_connection().await?;
+        let txn = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate).await?;
+        let mut path_cache = HashMap::from([(
+            "/".to_string(),
+            BulkPathState {
+                ino: ROOT_INO,
+                mode: DEFAULT_DIR_MODE,
+            },
+        )]);
+        let mut parent_updates = BTreeMap::<i64, i64>::new();
+        let mut dentry_cache_inserts = Vec::<(i64, String, i64)>::new();
+
+        let mut sorted_entries = plan.entries.clone();
+        sorted_entries.sort_by(|left, right| {
+            left.depth()
+                .cmp(&right.depth())
+                .then(left.sort_rank().cmp(&right.sort_rank()))
+                .then(left.path().cmp(right.path()))
+        });
+
+        let result: Result<()> = async {
+            for entry in &sorted_entries {
+                let normalized_path = self.normalize_path(entry.path());
+                if normalized_path == "/" {
+                    return Err(FsError::RootOperation.into());
+                }
+
+                let components = self.split_path(&normalized_path);
+                if components.is_empty() {
+                    return Err(FsError::RootOperation.into());
+                }
+                for component in &components {
+                    if component.len() > MAX_NAME_LEN {
+                        return Err(FsError::NameTooLong.into());
+                    }
+                }
+
+                let (parent_path, name) = split_parent_path(&components);
+                let parent = self
+                    .resolve_cached_bulk_path(&conn, &parent_path, &mut path_cache)
+                    .await?
+                    .ok_or(FsError::NotFound)?;
+                if (parent.mode & S_IFMT) != S_IFDIR {
+                    return Err(FsError::NotADirectory.into());
+                }
+
+                if let Some(existing) = self
+                    .resolve_cached_bulk_path(&conn, &normalized_path, &mut path_cache)
+                    .await?
+                {
+                    self.validate_existing_bulk_entry(entry, existing.mode)?;
+                    if let BulkMaterializeEntry::WriteFile { bytes, .. } = entry {
+                        self.write_bulk_file_contents(&conn, existing.ino, bytes)
+                            .await?;
+                    }
+                    continue;
+                }
+
+                let created = self
+                    .create_bulk_entry(
+                        &conn,
+                        entry,
+                        &normalized_path,
+                        &name,
+                        parent.ino,
+                        &mut parent_updates,
+                    )
+                    .await?;
+                path_cache.insert(normalized_path, created);
+                dentry_cache_inserts.push((parent.ino, name, created.ino));
+            }
+
+            self.apply_bulk_parent_updates(&conn, &parent_updates)
+                .await?;
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                txn.commit().await?;
+                for (parent_ino, name, ino) in dentry_cache_inserts {
+                    self.dentry_cache.insert(parent_ino, &name, ino);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let _ = txn.rollback().await;
+                Err(err)
+            }
+        }
+    }
+
+    async fn resolve_cached_bulk_path(
+        &self,
+        conn: &Connection,
+        path: &str,
+        cache: &mut HashMap<String, BulkPathState>,
+    ) -> Result<Option<BulkPathState>> {
+        let normalized = self.normalize_path(path);
+        if let Some(state) = cache.get(&normalized).copied() {
+            return Ok(Some(state));
+        }
+        let Some(ino) = self.resolve_path_with_conn(conn, &normalized).await? else {
+            return Ok(None);
+        };
+        let stats = self.getattr_with_conn(conn, ino).await?.ok_or_else(|| {
+            Error::Internal(format!(
+                "inode {ino} resolved from {normalized} disappeared"
+            ))
+        })?;
+        let state = BulkPathState {
+            ino,
+            mode: stats.mode,
+        };
+        cache.insert(normalized, state);
+        Ok(Some(state))
+    }
+
+    fn validate_existing_bulk_entry(
+        &self,
+        entry: &BulkMaterializeEntry,
+        existing_mode: u32,
+    ) -> Result<()> {
+        let existing_kind = existing_mode & S_IFMT;
+        match entry {
+            BulkMaterializeEntry::EnsureDir { .. } if existing_kind != S_IFDIR => {
+                Err(FsError::NotADirectory.into())
+            }
+            BulkMaterializeEntry::EnsureEmptyFile { .. }
+            | BulkMaterializeEntry::WriteFile { .. }
+                if existing_kind != S_IFREG =>
+            {
+                Err(FsError::IsADirectory.into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    async fn create_bulk_entry(
+        &self,
+        conn: &Connection,
+        entry: &BulkMaterializeEntry,
+        normalized_path: &str,
+        name: &str,
+        parent_ino: i64,
+        parent_updates: &mut BTreeMap<i64, i64>,
+    ) -> Result<BulkPathState> {
+        let (mode, uid, gid, size, nlink) = match entry {
+            BulkMaterializeEntry::EnsureDir { uid, gid, mode, .. } => {
+                ((S_IFDIR | (mode & 0o7777)) as i64, *uid, *gid, 0i64, 2i64)
+            }
+            BulkMaterializeEntry::EnsureEmptyFile { uid, gid, mode, .. } => {
+                ((S_IFREG | (mode & 0o7777)) as i64, *uid, *gid, 0i64, 1i64)
+            }
+            BulkMaterializeEntry::WriteFile {
+                uid,
+                gid,
+                mode,
+                bytes,
+                ..
+            } => (
+                (S_IFREG | (mode & 0o7777)) as i64,
+                *uid,
+                *gid,
+                bytes.len() as i64,
+                1i64,
+            ),
+        };
+
+        let dur = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        let now_secs = dur.as_secs() as i64;
+        let now_nsec = dur.subsec_nanos() as i64;
+
+        let mut inode_stmt = conn
+            .prepare_cached(
+                "INSERT INTO fs_inode (mode, nlink, uid, gid, size, atime, mtime, ctime, atime_nsec, mtime_nsec, ctime_nsec)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ino",
+            )
+            .await?;
+        let row = inode_stmt
+            .query_row((
+                mode, nlink, uid, gid, size, now_secs, now_secs, now_secs, now_nsec, now_nsec,
+                now_nsec,
+            ))
+            .await?;
+        let ino = row
+            .get_value(0)
+            .ok()
+            .and_then(|v| v.as_integer().copied())
+            .ok_or_else(|| {
+                Error::Internal(format!(
+                    "failed to get inode for bulk materialized path {normalized_path}"
+                ))
+            })?;
+
+        let mut dentry_stmt = conn
+            .prepare_cached("INSERT INTO fs_dentry (name, parent_ino, ino) VALUES (?, ?, ?)")
+            .await?;
+        dentry_stmt.execute((name, parent_ino, ino)).await?;
+
+        if let BulkMaterializeEntry::WriteFile { bytes, .. } = entry {
+            self.insert_bulk_file_chunks(conn, ino, bytes).await?;
+        }
+
+        let nlink_increment = match entry {
+            BulkMaterializeEntry::EnsureDir { .. } => 1,
+            _ => 0,
+        };
+        parent_updates
+            .entry(parent_ino)
+            .and_modify(|count| *count += nlink_increment)
+            .or_insert(nlink_increment);
+
+        Ok(BulkPathState {
+            ino,
+            mode: mode as u32,
+        })
+    }
+
+    async fn write_bulk_file_contents(
+        &self,
+        conn: &Connection,
+        ino: i64,
+        bytes: &[u8],
+    ) -> Result<()> {
+        conn.execute("DELETE FROM fs_data WHERE ino = ?", (ino,))
+            .await?;
+        self.insert_bulk_file_chunks(conn, ino, bytes).await?;
+
+        let dur = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        let now_secs = dur.as_secs() as i64;
+        let now_nsec = dur.subsec_nanos() as i64;
+        let mut stmt = conn
+            .prepare_cached(
+                "UPDATE fs_inode SET size = ?, mtime = ?, ctime = ?, mtime_nsec = ?, ctime_nsec = ? WHERE ino = ?",
+            )
+            .await?;
+        stmt.execute((
+            bytes.len() as i64,
+            now_secs,
+            now_secs,
+            now_nsec,
+            now_nsec,
+            ino,
+        ))
+        .await?;
+        Ok(())
+    }
+
+    async fn insert_bulk_file_chunks(
+        &self,
+        conn: &Connection,
+        ino: i64,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = conn
+            .prepare_cached("INSERT INTO fs_data (ino, chunk_index, data) VALUES (?, ?, ?)")
+            .await?;
+        for (chunk_index, chunk) in bytes.chunks(self.chunk_size).enumerate() {
+            stmt.execute((ino, chunk_index as i64, chunk)).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_bulk_parent_updates(
+        &self,
+        conn: &Connection,
+        parent_updates: &BTreeMap<i64, i64>,
+    ) -> Result<()> {
+        if parent_updates.is_empty() {
+            return Ok(());
+        }
+
+        let dur = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        let now_secs = dur.as_secs() as i64;
+        let now_nsec = dur.subsec_nanos() as i64;
+        let mut stmt = conn
+            .prepare_cached(
+                "UPDATE fs_inode
+                 SET nlink = nlink + ?, mtime = ?, ctime = ?, mtime_nsec = ?, ctime_nsec = ?
+                 WHERE ino = ?",
+            )
+            .await?;
+        for (parent_ino, nlink_increment) in parent_updates {
+            stmt.execute((
+                *nlink_increment,
+                now_secs,
+                now_secs,
+                now_nsec,
+                now_nsec,
+                *parent_ino,
+            ))
+            .await?;
+        }
+        Ok(())
     }
 
     /// Read data from a file
@@ -3757,9 +4075,23 @@ impl FileSystem for AgentFS {
     }
 }
 
+fn split_parent_path(components: &[String]) -> (String, String) {
+    let name = components
+        .last()
+        .cloned()
+        .expect("split_parent_path requires at least one component");
+    let parent_path = if components.len() == 1 {
+        "/".to_string()
+    } else {
+        format!("/{}", components[..components.len() - 1].join("/"))
+    };
+    (parent_path, name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BulkMaterializeEntry, BulkMaterializePlan};
     use tempfile::tempdir;
 
     async fn create_test_fs() -> Result<(AgentFS, tempfile::TempDir)> {
@@ -4912,6 +5244,79 @@ mod tests {
 
         let stats = fs.lstat("/link.txt").await?.unwrap();
         assert!(stats.is_symlink(), "Should still be a symlink");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bulk_materialize_tree_creates_directories_and_files() -> Result<()> {
+        let (fs, _dir) = create_test_fs().await?;
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_dir("/aiim"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/aiim/_meta"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/aiim/chats"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/aiim/chats/chat-001"));
+        plan.push(BulkMaterializeEntry::ensure_empty_file(
+            "/aiim/chats/chat-001/messages.res.jsonl",
+        ));
+        plan.push(BulkMaterializeEntry::write_file(
+            "/aiim/_meta/manifest.res.json",
+            br#"{"app_id":"aiim"}"#.to_vec(),
+        ));
+
+        fs.bulk_materialize_tree(&plan).await?;
+
+        assert!(fs.stat("/aiim").await?.unwrap().is_directory());
+        assert!(fs
+            .stat("/aiim/chats/chat-001/messages.res.jsonl")
+            .await?
+            .unwrap()
+            .is_file());
+        assert_eq!(
+            fs.read_file("/aiim/_meta/manifest.res.json")
+                .await?
+                .unwrap(),
+            br#"{"app_id":"aiim"}"#.to_vec()
+        );
+        assert_eq!(
+            fs.read_file("/aiim/chats/chat-001/messages.res.jsonl")
+                .await?
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bulk_materialize_tree_preserves_existing_placeholder_content() -> Result<()> {
+        let (fs, _dir) = create_test_fs().await?;
+        fs.mkdir("/aiim", 0, 0).await?;
+        fs.mkdir("/aiim/chats", 0, 0).await?;
+        fs.mkdir("/aiim/chats/chat-001", 0, 0).await?;
+        let (_, file) = fs
+            .create_file(
+                "/aiim/chats/chat-001/messages.res.jsonl",
+                DEFAULT_FILE_MODE,
+                0,
+                0,
+            )
+            .await?;
+        file.pwrite(0, br#"{"id":"m-1"}"#).await?;
+
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_empty_file(
+            "/aiim/chats/chat-001/messages.res.jsonl",
+        ));
+
+        fs.bulk_materialize_tree(&plan).await?;
+
+        assert_eq!(
+            fs.read_file("/aiim/chats/chat-001/messages.res.jsonl")
+                .await?
+                .unwrap(),
+            br#"{"id":"m-1"}"#.to_vec()
+        );
 
         Ok(())
     }

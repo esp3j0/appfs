@@ -4,9 +4,9 @@ use super::{
     DEFAULT_RETENTION_HINT_SEC, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 use agentfs_sdk::{
-    AppConnector, AppStructureNode, AppStructureNodeKind, AppStructureSnapshot,
-    AppStructureSyncReason, AppStructureSyncResult, ConnectorContext, GetAppStructureRequest,
-    RefreshAppStructureRequest,
+    AgentFS as SdkAgentFS, AppConnector, AppStructureNode, AppStructureNodeKind,
+    AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult, BulkMaterializeEntry,
+    BulkMaterializePlan, ConnectorContext, GetAppStructureRequest, RefreshAppStructureRequest,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,82 @@ pub(super) fn ensure_app_structure_initialized(
     );
     service.sync_initial(&mut *connector)?;
     Ok(())
+}
+
+pub(super) async fn ensure_app_structure_initialized_in_db(
+    agent: &SdkAgentFS,
+    app_id: &str,
+    session_id: &str,
+    bridge_config: &AppfsBridgeConfig,
+) -> Result<()> {
+    let state = load_state_from_agentfs(agent, app_id).await?;
+    let ctx = ConnectorContext {
+        app_id: app_id.to_string(),
+        session_id: session_id.to_string(),
+        request_id: "structure-init".to_string(),
+        client_token: None,
+        trace_id: None,
+    };
+    let mut connector = build_app_connector(app_id, bridge_config)?;
+    eprintln!(
+        "[structure.sync] op=get_app_structure app={} known_revision={}",
+        app_id,
+        state.revision.as_deref().unwrap_or("<none>")
+    );
+    let response = connector.get_app_structure(
+        GetAppStructureRequest {
+            app_id: app_id.to_string(),
+            known_revision: state.revision.clone(),
+        },
+        &ctx,
+    )?;
+
+    match response.result {
+        AppStructureSyncResult::Unchanged {
+            revision,
+            active_scope,
+            ..
+        } => {
+            eprintln!(
+                "[structure.sync] result app={} changed=false revision={} active_scope={}",
+                app_id,
+                revision,
+                active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(())
+        }
+        AppStructureSyncResult::Snapshot { snapshot } => {
+            if snapshot.app_id != app_id {
+                anyhow::bail!(
+                    "structure snapshot app_id mismatch: snapshot={} runtime={}",
+                    snapshot.app_id,
+                    app_id
+                );
+            }
+            let desired_owned_paths = desired_owned_paths_for_snapshot(&snapshot);
+            prune_removed_owned_paths_in_agentfs(
+                agent,
+                app_id,
+                &state.owned_paths,
+                &desired_owned_paths,
+            )
+            .await?;
+            let next_state = AppStructureSyncStateDoc {
+                revision: Some(snapshot.revision.clone()),
+                active_scope: snapshot.active_scope.clone(),
+                owned_paths: desired_owned_paths.into_iter().collect(),
+            };
+            let plan = build_bulk_materialize_plan(app_id, &snapshot, &next_state)?;
+            agent.bulk_materialize_tree(&plan).await?;
+            eprintln!(
+                "[structure.sync] result app={} changed=true revision={} active_scope={}",
+                app_id,
+                snapshot.revision,
+                snapshot.active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(())
+        }
+    }
 }
 
 pub(super) fn refresh_app_structure(
@@ -341,25 +417,7 @@ impl AppTreeSyncService {
     }
 
     fn desired_owned_paths(&self, snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
-        let mut owned = BTreeSet::new();
-        owned.insert("_meta".to_string());
-        owned.insert("_meta/manifest.res.json".to_string());
-        for node in &snapshot.nodes {
-            owned.insert(node.path.clone());
-            let mut current = Path::new(&node.path).parent();
-            while let Some(parent) = current {
-                let rel = parent.to_string_lossy().replace('\\', "/");
-                if rel.is_empty() {
-                    break;
-                }
-                if is_runtime_protected_path(&rel) {
-                    break;
-                }
-                owned.insert(rel.clone());
-                current = parent.parent();
-            }
-        }
-        owned
+        desired_owned_paths_for_snapshot(snapshot)
     }
 
     fn ensure_snapshot_paths_visible(
@@ -403,27 +461,7 @@ impl AppTreeSyncService {
     }
 
     fn validate_node(&self, node: &AppStructureNode) -> Result<()> {
-        if node.path.trim().is_empty() {
-            anyhow::bail!("structure node path cannot be empty");
-        }
-        let rel = Path::new(&node.path);
-        if rel.is_absolute() {
-            anyhow::bail!("structure node path must be relative: {}", node.path);
-        }
-        for component in rel.components() {
-            use std::path::Component;
-            match component {
-                Component::Normal(_) => {}
-                _ => anyhow::bail!("structure node path is invalid: {}", node.path),
-            }
-        }
-        if is_runtime_protected_path(&node.path) {
-            anyhow::bail!(
-                "connector-owned node may not target runtime-protected path: {}",
-                node.path
-            );
-        }
-        Ok(())
+        validate_structure_node(node)
     }
 
     fn context(&self, request_id: &str) -> ConnectorContext {
@@ -462,6 +500,167 @@ impl AppTreeSyncService {
     fn app_dir(&self) -> PathBuf {
         self.root.join(&self.app_id)
     }
+}
+
+async fn load_state_from_agentfs(
+    agent: &SdkAgentFS,
+    app_id: &str,
+) -> Result<AppStructureSyncStateDoc> {
+    let path = format!("/{app_id}/_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}");
+    let Some(bytes) = agent.fs.read_file(&path).await? else {
+        return Ok(AppStructureSyncStateDoc::default());
+    };
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn prune_removed_owned_paths_in_agentfs(
+    agent: &SdkAgentFS,
+    app_id: &str,
+    previous_owned_paths: &[String],
+    desired_owned_paths: &BTreeSet<String>,
+) -> Result<()> {
+    let mut to_remove: Vec<String> = previous_owned_paths
+        .iter()
+        .filter(|path| !desired_owned_paths.contains(path.as_str()))
+        .cloned()
+        .collect();
+    to_remove.sort_by_key(|path| std::cmp::Reverse(path.len()));
+
+    for rel in to_remove {
+        if is_runtime_protected_path(&rel) {
+            continue;
+        }
+        let abs = format!("/{app_id}/{rel}");
+        match agent.fs.remove(&abs).await {
+            Ok(()) => {}
+            Err(agentfs_sdk::error::Error::Fs(agentfs_sdk::FsError::NotFound)) => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to prune stale structure path {abs}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn desired_owned_paths_for_snapshot(snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
+    let mut owned = BTreeSet::new();
+    owned.insert("_meta".to_string());
+    owned.insert("_meta/manifest.res.json".to_string());
+    for node in &snapshot.nodes {
+        owned.insert(node.path.clone());
+        let mut current = Path::new(&node.path).parent();
+        while let Some(parent) = current {
+            let rel = parent.to_string_lossy().replace('\\', "/");
+            if rel.is_empty() {
+                break;
+            }
+            if is_runtime_protected_path(&rel) {
+                break;
+            }
+            owned.insert(rel.clone());
+            current = parent.parent();
+        }
+    }
+    owned
+}
+
+fn validate_structure_node(node: &AppStructureNode) -> Result<()> {
+    if node.path.trim().is_empty() {
+        anyhow::bail!("structure node path cannot be empty");
+    }
+    let rel = Path::new(&node.path);
+    if rel.is_absolute() {
+        anyhow::bail!("structure node path must be relative: {}", node.path);
+    }
+    for component in rel.components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => {}
+            _ => anyhow::bail!("structure node path is invalid: {}", node.path),
+        }
+    }
+    if is_runtime_protected_path(&node.path) {
+        anyhow::bail!(
+            "connector-owned node may not target runtime-protected path: {}",
+            node.path
+        );
+    }
+    Ok(())
+}
+
+fn build_bulk_materialize_plan(
+    app_id: &str,
+    snapshot: &AppStructureSnapshot,
+    state: &AppStructureSyncStateDoc,
+) -> Result<BulkMaterializePlan> {
+    let mut plan = BulkMaterializePlan::new();
+    let mut manifest_nodes = BTreeMap::new();
+    let mut dir_paths = BTreeSet::new();
+    dir_paths.insert(format!("/{app_id}"));
+    dir_paths.insert(format!("/{app_id}/_meta"));
+
+    for node in &snapshot.nodes {
+        validate_structure_node(node)?;
+        if let Some(parent) = Path::new(&node.path).parent() {
+            let rel = parent.to_string_lossy().replace('\\', "/");
+            if !rel.is_empty() {
+                dir_paths.insert(format!("/{app_id}/{rel}"));
+            }
+        }
+        if matches!(node.kind, AppStructureNodeKind::Directory) {
+            dir_paths.insert(format!("/{app_id}/{}", node.path));
+        }
+        if let Some(entry) = &node.manifest_entry {
+            let template = entry
+                .get("template")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("manifest_entry missing template for {}", node.path)
+                })?;
+            let mut normalized = entry.clone();
+            if let Some(obj) = normalized.as_object_mut() {
+                obj.remove("template");
+            }
+            manifest_nodes.insert(template.to_string(), normalized);
+        }
+    }
+
+    for dir in dir_paths {
+        plan.push(BulkMaterializeEntry::ensure_dir(dir));
+    }
+
+    for node in &snapshot.nodes {
+        let full = format!("/{app_id}/{}", node.path);
+        match node.kind {
+            AppStructureNodeKind::Directory => {}
+            AppStructureNodeKind::ActionFile | AppStructureNodeKind::SnapshotResource => {
+                plan.push(BulkMaterializeEntry::ensure_empty_file(full));
+            }
+            AppStructureNodeKind::LiveResource | AppStructureNodeKind::StaticJsonResource => {
+                let content = node.seed_content.clone().unwrap_or_else(|| json!({}));
+                plan.push(BulkMaterializeEntry::write_file(
+                    full,
+                    serde_json::to_vec_pretty(&content)?,
+                ));
+            }
+        }
+    }
+
+    let manifest_json = json!({
+        "app_id": app_id,
+        "nodes": manifest_nodes,
+    });
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("/{app_id}/_meta/manifest.res.json"),
+        serde_json::to_vec_pretty(&manifest_json)?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("/{app_id}/_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}"),
+        serde_json::to_vec_pretty(state)?,
+    ));
+
+    Ok(plan)
 }
 
 fn bootstrap_runtime_scaffolding(root: &Path, app_id: &str) -> Result<()> {

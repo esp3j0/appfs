@@ -768,6 +768,23 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
     let (mut connector_supervisor, resolved_apps) =
         compose::connector_supervisor::ComposeConnectorSupervisor::resolve_apps(&compose_doc)?;
 
+    let agent = agentfs_sdk::AgentFS::open(AgentFSOptions::with_path(db_path.clone())).await?;
+    compose::reconcile::bootstrap_registry_from_resolved_apps_in_agentfs(&agent, &resolved_apps)
+        .await?;
+    for resolved_app in resolved_apps.values() {
+        let session_id = normalize_appfs_session_id(resolved_app.session_id.clone());
+        let bridge_config =
+            build_appfs_bridge_config(bridge_args_from_resolved_compose_app(resolved_app));
+        tree_sync::ensure_app_structure_initialized_in_db(
+            &agent,
+            &resolved_app.app_id,
+            &session_id,
+            &bridge_config,
+        )
+        .await?;
+    }
+    drop(agent);
+
     let result = run_managed_appfs_with_bootstrap(
         AppfsUpArgs {
             id_or_path: db_path,
@@ -780,15 +797,36 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
             gid: compose_doc.runtime.gid,
             poll_ms: compose_doc.runtime.poll_ms,
         },
-        |root| {
-            compose::reconcile::bootstrap_registry_from_resolved_apps(root, &resolved_apps)?;
-            Ok(())
-        },
+        |_| Ok(()),
     )
     .await;
 
     connector_supervisor.shutdown();
     result
+}
+
+fn bridge_args_from_resolved_compose_app(
+    app: &compose::connector_supervisor::ResolvedComposeApp,
+) -> AppfsBridgeCliArgs {
+    AppfsBridgeCliArgs {
+        adapter_http_endpoint: match app.transport_kind {
+            compose::schema::AppfsComposeTransportKind::Http => Some(app.endpoint.clone()),
+            compose::schema::AppfsComposeTransportKind::Grpc => None,
+        },
+        adapter_http_timeout_ms: app.transport.http_timeout_ms,
+        adapter_grpc_endpoint: match app.transport_kind {
+            compose::schema::AppfsComposeTransportKind::Http => None,
+            compose::schema::AppfsComposeTransportKind::Grpc => Some(app.endpoint.clone()),
+        },
+        adapter_grpc_timeout_ms: app.transport.grpc_timeout_ms,
+        adapter_bridge_max_retries: app.transport.bridge_max_retries,
+        adapter_bridge_initial_backoff_ms: app.transport.bridge_initial_backoff_ms,
+        adapter_bridge_max_backoff_ms: app.transport.bridge_max_backoff_ms,
+        adapter_bridge_circuit_breaker_failures: app.transport.bridge_circuit_breaker_failures,
+        adapter_bridge_circuit_breaker_cooldown_ms: app
+            .transport
+            .bridge_circuit_breaker_cooldown_ms,
+    }
 }
 
 pub async fn handle_appfs_launch_command(args: AppfsLaunchArgs) -> Result<()> {
