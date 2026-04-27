@@ -16,6 +16,8 @@ from typing import Any, Protocol
 ROOT_NODE_ID = 1
 DEFAULT_CASES_LIMIT = 100
 DEFAULT_HOME_SCOPE = "home"
+SAFE_PATH_SEGMENT_MAX_BYTES = 96
+SNAPSHOT_SUFFIX = ".res.jsonl"
 
 
 def _now_iso() -> str:
@@ -53,7 +55,35 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _safe_segment(name: str, fallback: str) -> str:
+def _truncate_utf8_prefix(text: str, max_bytes: int) -> str:
+    used = 0
+    out: list[str] = []
+    for ch in text:
+        size = len(ch.encode("utf-8"))
+        if used + size > max_bytes:
+            break
+        out.append(ch)
+        used += size
+    return "".join(out).strip().rstrip(".")
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _shorten_segment(name: str, *, suffix: str = "") -> str:
+    full = f"{name}{suffix}"
+    if len(full.encode("utf-8")) <= SAFE_PATH_SEGMENT_MAX_BYTES:
+        return full
+
+    digest = _short_hash(full)
+    tail = f"__{digest}{suffix}"
+    prefix_budget = max(1, SAFE_PATH_SEGMENT_MAX_BYTES - len(tail.encode("utf-8")))
+    prefix = _truncate_utf8_prefix(name, prefix_budget) or "item"
+    return f"{prefix}{tail}"
+
+
+def _sanitize_segment(name: str, fallback: str) -> str:
     raw = (name or "").strip()
     if raw == "":
         raw = fallback
@@ -63,15 +93,21 @@ def _safe_segment(name: str, fallback: str) -> str:
             out_chars.append("_")
         elif ord(ch) < 32:
             out_chars.append("_")
+        elif ord(ch) > 0xFFFF:
+            out_chars.append(f"U{ord(ch):08X}")
         else:
             out_chars.append(ch)
     out = "".join(out_chars).strip().rstrip(".")
     return out or fallback
 
 
+def _safe_segment(name: str, fallback: str) -> str:
+    return _shorten_segment(_sanitize_segment(name, fallback))
+
+
 def _safe_leaf_name(name: str, fallback: str) -> str:
-    base = _safe_segment(name.replace("/", "_"), fallback)
-    return f"{base}.res.jsonl"
+    base = _sanitize_segment(name.replace("/", "_"), fallback)
+    return _shorten_segment(base, suffix=SNAPSHOT_SUFFIX)
 
 
 def _dedupe_name(name: str, seen: dict[str, int], suffix_seed: str) -> str:
