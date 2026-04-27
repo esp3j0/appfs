@@ -669,6 +669,7 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
         )
     };
     let resolved_runtime_args = resolve_runtime_cli_args(runtime_args);
+    wait_for_managed_runtime_paths_ready(&root, &resolved_runtime_args)?;
     let mut supervisor = AppfsRuntimeSupervisor::new(root, resolved_runtime_args, managed)?;
     supervisor.prepare_action_sinks()?;
     supervisor.sync_registry_to_disk(existing_registry.as_ref())?;
@@ -753,6 +754,119 @@ pub async fn handle_appfs_adapter_command(args: AppfsServeArgs) -> Result<()> {
                 return Ok(());
             }
         }
+    }
+}
+
+fn wait_for_managed_runtime_paths_ready(
+    root: &Path,
+    runtime_args: &[ResolvedAppfsRuntimeCliArgs],
+) -> Result<()> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = root;
+        let _ = runtime_args;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if runtime_args.is_empty() {
+            return Ok(());
+        }
+
+        wait_for_runtime_path_visibility(root, true).with_context(|| {
+            format!(
+                "AppFS mount root is not visible yet for managed runtime startup: {}",
+                root.display()
+            )
+        })?;
+
+        for runtime in runtime_args {
+            let app_dir = root.join(&runtime.app_id);
+            let critical_paths = [
+                (app_dir.clone(), true, "app root"),
+                (app_dir.join("_meta"), true, "manifest parent"),
+                (
+                    app_dir.join("_meta").join("manifest.res.json"),
+                    false,
+                    "manifest",
+                ),
+                (app_dir.join("_stream"), true, "stream dir"),
+                (app_dir.join("_stream").join("from-seq"), true, "replay dir"),
+                (
+                    app_dir.join("_stream").join("events.evt.jsonl"),
+                    false,
+                    "events stream",
+                ),
+                (
+                    app_dir.join("_stream").join("cursor.res.json"),
+                    false,
+                    "cursor file",
+                ),
+                (
+                    app_dir.join("_stream").join("inflight.jobs.res.json"),
+                    false,
+                    "jobs file",
+                ),
+                (
+                    app_dir.join("_stream").join(ACTION_CURSORS_FILENAME),
+                    false,
+                    "action cursors file",
+                ),
+                (
+                    app_dir
+                        .join("_stream")
+                        .join(SNAPSHOT_EXPAND_JOURNAL_FILENAME),
+                    false,
+                    "snapshot journal",
+                ),
+            ];
+
+            for (path, expect_dir, label) in critical_paths {
+                wait_for_runtime_path_visibility(&path, expect_dir).with_context(|| {
+                    format!(
+                        "managed runtime startup path is not visible yet for app {} ({label}): {}",
+                        runtime.app_id,
+                        path.display()
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_runtime_path_visibility(path: &Path, expect_dir: bool) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 40;
+    for attempt in 0..MAX_ATTEMPTS {
+        refresh_runtime_parent_directory(path);
+        let visible = if expect_dir {
+            path.is_dir()
+        } else {
+            path.is_file()
+        };
+        if visible {
+            return Ok(());
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(20 * (attempt + 1) as u64));
+        }
+    }
+    anyhow::bail!(
+        "path did not become visible in time: {} (expect_dir={expect_dir})",
+        path.display()
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_runtime_parent_directory(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for _ in entries.take(1) {}
     }
 }
 
