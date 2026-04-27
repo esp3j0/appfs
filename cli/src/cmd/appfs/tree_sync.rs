@@ -659,8 +659,41 @@ fn build_bulk_materialize_plan(
         format!("/{app_id}/_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}"),
         serde_json::to_vec_pretty(state)?,
     ));
+    append_runtime_scaffolding_plan(&mut plan, app_id)?;
 
     Ok(plan)
+}
+
+fn append_runtime_scaffolding_plan(plan: &mut BulkMaterializePlan, app_id: &str) -> Result<()> {
+    let stream_dir = format!("/{app_id}/_stream");
+    plan.push(BulkMaterializeEntry::ensure_dir(stream_dir.clone()));
+    plan.push(BulkMaterializeEntry::ensure_dir(format!(
+        "{stream_dir}/from-seq"
+    )));
+    plan.push(BulkMaterializeEntry::ensure_empty_file(format!(
+        "{stream_dir}/events.evt.jsonl"
+    )));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/cursor.res.json"),
+        serde_json::to_vec_pretty(&json!(CursorState {
+            min_seq: 0,
+            max_seq: 0,
+            retention_hint_sec: DEFAULT_RETENTION_HINT_SEC,
+        }))?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/inflight.jobs.res.json"),
+        serde_json::to_vec_pretty(&json!([]))?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/{}", super::ACTION_CURSORS_FILENAME),
+        serde_json::to_vec_pretty(&serde_json::to_value(ActionCursorDoc::default())?)?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/{SNAPSHOT_EXPAND_JOURNAL_FILENAME}"),
+        serde_json::to_vec_pretty(&json!({"resources": {}}))?,
+    ));
+    Ok(())
 }
 
 fn bootstrap_runtime_scaffolding(root: &Path, app_id: &str) -> Result<()> {
@@ -886,7 +919,8 @@ fn structure_reason_label(reason: AppStructureSyncReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_runtime_scaffolding, AppTreeSyncService};
-    use agentfs_sdk::DemoAppConnector;
+    use crate::cmd::appfs::{build_appfs_bridge_config, AppfsBridgeCliArgs};
+    use agentfs_sdk::{AgentFS, AgentFSOptions, DemoAppConnector};
     use std::fs;
     use tempfile::TempDir;
 
@@ -999,5 +1033,79 @@ mod tests {
             .path()
             .join("aiim/_stream/action-cursors.res.json")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn db_structure_init_materializes_runtime_scaffolding() {
+        let temp = TempDir::new().expect("tempdir");
+        let db_path = temp.path().join("test.db");
+        let agent = AgentFS::open(AgentFSOptions::with_path(
+            db_path.to_string_lossy().to_string(),
+        ))
+        .await
+        .expect("open agentfs");
+        let bridge = build_appfs_bridge_config(AppfsBridgeCliArgs {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1_000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        });
+
+        super::ensure_app_structure_initialized_in_db(&agent, "aiim", "sess-test", &bridge)
+            .await
+            .expect("db structure init");
+
+        assert!(agent
+            .fs
+            .stat("/aiim/_stream")
+            .await
+            .expect("stat")
+            .unwrap()
+            .is_directory());
+        assert!(agent
+            .fs
+            .stat("/aiim/_stream/from-seq")
+            .await
+            .expect("stat")
+            .unwrap()
+            .is_directory());
+        assert_eq!(
+            agent
+                .fs
+                .read_file("/aiim/_stream/events.evt.jsonl")
+                .await
+                .expect("events")
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/cursor.res.json")
+            .await
+            .expect("cursor")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/inflight.jobs.res.json")
+            .await
+            .expect("jobs")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/action-cursors.res.json")
+            .await
+            .expect("action cursors")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/snapshot-expand.state.res.json")
+            .await
+            .expect("snapshot journal")
+            .is_some());
     }
 }
