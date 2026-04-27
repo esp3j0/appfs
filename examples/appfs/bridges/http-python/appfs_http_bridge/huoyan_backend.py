@@ -115,7 +115,11 @@ def _dedupe_name(name: str, seen: dict[str, int], suffix_seed: str) -> str:
     seen[name] = count + 1
     if count == 0:
         return name
-    return f"{name}__{suffix_seed}"
+    disambiguator = f"__{suffix_seed}"
+    if name.endswith(SNAPSHOT_SUFFIX):
+        stem = name[: -len(SNAPSHOT_SUFFIX)]
+        return _shorten_segment(stem, suffix=f"{disambiguator}{SNAPSHOT_SUFFIX}")
+    return _shorten_segment(name, suffix=disambiguator)
 
 
 def _network_error_message(url: str, err: BaseException) -> str:

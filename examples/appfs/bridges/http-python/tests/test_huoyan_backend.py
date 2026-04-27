@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from appfs_http_bridge.huoyan_backend import (
     HuoyanBackend,
+    _dedupe_name,
     _json_request,
     _safe_leaf_name,
     _safe_segment,
@@ -197,6 +198,16 @@ class HuoyanBackendTests(unittest.TestCase):
         first = _safe_leaf_name(prefix + "1", "节点-1")
         second = _safe_leaf_name(prefix + "2", "节点-2")
         self.assertNotEqual(first, second)
+
+    def test_dedupe_leaf_keeps_res_jsonl_suffix(self) -> None:
+        seen: dict[str, int] = {}
+        base = _safe_leaf_name("石浩（taobaoaisi）", "节点-1")
+        first = _dedupe_name(base, seen, "nid_1")
+        second = _dedupe_name(base, seen, "nid_658000891")
+        self.assertEqual(first, base)
+        self.assertTrue(second.endswith(".res.jsonl"))
+        self.assertIn("__nid_658000891.res.jsonl", second)
+        self.assertLessEqual(len(second.encode("utf-8")), 96)
 
     def test_home_structure_contains_case_directory_and_info_snapshot(self) -> None:
         body = self.backend.get_app_structure({"app_id": "huoyan"}, self.context)
