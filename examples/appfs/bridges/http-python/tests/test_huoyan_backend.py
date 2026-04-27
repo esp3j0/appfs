@@ -10,7 +10,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from appfs_http_bridge.huoyan_backend import HuoyanBackend, _json_request
+from appfs_http_bridge.huoyan_backend import (
+    HuoyanBackend,
+    _json_request,
+    _safe_leaf_name,
+    _safe_segment,
+)
 
 
 class _FakeHuoyanClient:
@@ -161,6 +166,37 @@ class HuoyanBackendTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_safe_names_preserve_short_values(self) -> None:
+        self.assertEqual(_safe_segment("微信", "节点-1"), "微信")
+        self.assertEqual(_safe_leaf_name("好友消息/张三", "节点-1"), "好友消息_张三.res.jsonl")
+
+    def test_safe_names_encode_non_bmp_emoji_as_unicode_codepoint(self) -> None:
+        self.assertEqual(
+            _safe_leaf_name("🏦银行转移（19414801983@chatroom）", "节点-1"),
+            "U0001F3E6银行转移（19414801983@chatroom）.res.jsonl",
+        )
+
+    def test_safe_names_shorten_long_utf8_components_with_hash(self) -> None:
+        raw = (
+            "AAAAA租房管家六安市区单间独卫"
+            "(v3_020b3826fd030100000000007bfd31c6b4938d000000501ea9a3dba12f95f6b60a0536a1adb6e5be76923a804307b075b0d836f0346a37779b7e6e699959002aded90e980a238b5cf26bdb2c3905da256adc7ef8415510fa0b9fc26380003ebce051@stranger)"
+        )
+        leaf = _safe_leaf_name(raw, "节点-1")
+        segment = _safe_segment(raw, "节点-1")
+
+        self.assertLessEqual(len(leaf.encode("utf-8")), 96)
+        self.assertLessEqual(len(segment.encode("utf-8")), 96)
+        self.assertTrue(leaf.endswith(".res.jsonl"))
+        self.assertRegex(leaf, r"__[0-9a-f]{12}\.res\.jsonl$")
+        self.assertRegex(segment, r"__[0-9a-f]{12}$")
+        self.assertNotEqual(leaf, raw + ".res.jsonl")
+
+    def test_safe_names_hash_avoids_long_name_collisions(self) -> None:
+        prefix = "AAAAA租房管家六安市区单间独卫" + "x" * 200
+        first = _safe_leaf_name(prefix + "1", "节点-1")
+        second = _safe_leaf_name(prefix + "2", "节点-2")
+        self.assertNotEqual(first, second)
 
     def test_home_structure_contains_case_directory_and_info_snapshot(self) -> None:
         body = self.backend.get_app_structure({"app_id": "huoyan"}, self.context)
