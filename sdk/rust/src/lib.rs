@@ -391,7 +391,7 @@ impl AgentFS {
             OverlayFS::init_schema(&conn, &base_path_str).await?;
         }
 
-        Self::open_with_pool(pool, sync_db).await
+        Self::open_with_pool_and_cache_key(pool, sync_db, Some(db_path)).await
     }
 
     /// Open an AgentFS instance from a connection pool
@@ -399,8 +399,16 @@ impl AgentFS {
         pool: connection_pool::ConnectionPool,
         sync_db: Option<turso::sync::Database>,
     ) -> Result<Self> {
+        Self::open_with_pool_and_cache_key(pool, sync_db, None).await
+    }
+
+    async fn open_with_pool_and_cache_key(
+        pool: connection_pool::ConnectionPool,
+        sync_db: Option<turso::sync::Database>,
+        cache_key: Option<String>,
+    ) -> Result<Self> {
         let kv = KvStore::from_pool(pool.clone()).await?;
-        let fs = filesystem::AgentFS::from_pool(pool.clone()).await?;
+        let fs = filesystem::AgentFS::from_pool_with_cache_key(pool.clone(), cache_key).await?;
         let tools = ToolCalls::from_pool(pool.clone()).await?;
 
         Ok(Self {

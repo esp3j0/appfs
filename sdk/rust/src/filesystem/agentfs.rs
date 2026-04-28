@@ -5,7 +5,10 @@ use lru::LruCache;
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, LazyLock, Mutex, Weak,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 use turso::transaction::{Transaction, TransactionBehavior};
 use turso::{Builder, Connection, Value};
@@ -64,6 +67,28 @@ impl DentryCache {
             .unwrap()
             .pop(&(parent_ino, name.to_string()));
     }
+
+    fn clear(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+}
+
+#[derive(Default)]
+struct SharedDentryEpoch {
+    value: AtomicU64,
+}
+
+static SHARED_DENTRY_EPOCHS: LazyLock<Mutex<HashMap<String, Weak<SharedDentryEpoch>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn shared_dentry_epoch(cache_key: &str) -> Arc<SharedDentryEpoch> {
+    let mut guard = SHARED_DENTRY_EPOCHS.lock().unwrap();
+    if let Some(epoch) = guard.get(cache_key).and_then(Weak::upgrade) {
+        return epoch;
+    }
+    let epoch = Arc::new(SharedDentryEpoch::default());
+    guard.insert(cache_key.to_string(), Arc::downgrade(&epoch));
+    epoch
 }
 
 /// A filesystem backed by SQLite
@@ -73,6 +98,8 @@ pub struct AgentFS {
     chunk_size: usize,
     /// Cache for directory entry lookups (shared across clones)
     dentry_cache: Arc<DentryCache>,
+    shared_dentry_epoch: Option<Arc<SharedDentryEpoch>>,
+    seen_dentry_epoch: Arc<AtomicU64>,
 }
 
 /// An open file handle for AgentFS.
@@ -431,11 +458,19 @@ impl AgentFS {
     /// Create a new filesystem
     pub async fn new(db_path: &str) -> Result<Self> {
         let db = Builder::new_local(db_path).build().await?;
-        Self::from_pool(ConnectionPool::new(db)).await
+        Self::from_pool_with_cache_key(ConnectionPool::new(db), Some(db_path.to_string())).await
     }
 
     /// Create a filesystem from a connection pool
     pub async fn from_pool(pool: ConnectionPool) -> Result<Self> {
+        Self::from_pool_with_cache_key(pool, None).await
+    }
+
+    /// Create a filesystem from a connection pool with an optional shared cache key.
+    pub async fn from_pool_with_cache_key(
+        pool: ConnectionPool,
+        cache_key: Option<String>,
+    ) -> Result<Self> {
         let conn = pool.get_connection().await?;
 
         // Initialize schema first
@@ -451,12 +486,40 @@ impl AgentFS {
         // Get chunk_size from config (or use default)
         let chunk_size = Self::read_chunk_size(&conn).await?;
 
+        let shared_dentry_epoch = cache_key.as_deref().map(shared_dentry_epoch);
+        let initial_epoch = shared_dentry_epoch
+            .as_ref()
+            .map(|epoch| epoch.value.load(Ordering::SeqCst))
+            .unwrap_or(0);
+
         let fs = Self {
             pool,
             chunk_size,
             dentry_cache: Arc::new(DentryCache::new(DENTRY_CACHE_MAX_SIZE)),
+            shared_dentry_epoch,
+            seen_dentry_epoch: Arc::new(AtomicU64::new(initial_epoch)),
         };
         Ok(fs)
+    }
+
+    fn refresh_dentry_cache_if_stale(&self) {
+        let Some(shared) = &self.shared_dentry_epoch else {
+            return;
+        };
+        let current = shared.value.load(Ordering::SeqCst);
+        let seen = self.seen_dentry_epoch.load(Ordering::SeqCst);
+        if current != seen {
+            self.dentry_cache.clear();
+            self.seen_dentry_epoch.store(current, Ordering::SeqCst);
+        }
+    }
+
+    fn invalidate_shared_dentry_caches(&self) {
+        self.dentry_cache.clear();
+        if let Some(shared) = &self.shared_dentry_epoch {
+            let next = shared.value.fetch_add(1, Ordering::SeqCst) + 1;
+            self.seen_dentry_epoch.store(next, Ordering::SeqCst);
+        }
     }
 
     /// Get the configured chunk size
@@ -841,6 +904,7 @@ impl AgentFS {
 
     /// Resolve a path to an inode number using a provided connection
     async fn resolve_path_with_conn(&self, conn: &Connection, path: &str) -> Result<Option<i64>> {
+        self.refresh_dentry_cache_if_stale();
         let components = self.split_path(path);
         if components.is_empty() {
             return Ok(Some(ROOT_INO));
@@ -1407,6 +1471,7 @@ impl AgentFS {
                 for (parent_ino, name, ino) in dentry_cache_inserts {
                     self.dentry_cache.insert(parent_ino, &name, ino);
                 }
+                self.invalidate_shared_dentry_caches();
                 Ok(())
             }
             Err(err) => {
@@ -2477,6 +2542,7 @@ impl AgentFS {
 
         // Invalidate cache for this entry
         self.dentry_cache.remove(parent_ino, name);
+        self.invalidate_shared_dentry_caches();
 
         // Decrement link count
         let mut stmt = conn
@@ -5317,6 +5383,28 @@ mod tests {
                 .unwrap(),
             br#"{"id":"m-1"}"#.to_vec()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_shared_dentry_cache_invalidation_after_bulk_materialize() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db_path = dir.path().join("shared-cache.db");
+        let writer = AgentFS::new(db_path.to_str().unwrap()).await?;
+        let reader = AgentFS::new(db_path.to_str().unwrap()).await?;
+
+        writer.mkdir("/root", 0, 0).await?;
+        writer.mkdir("/root/old", 0, 0).await?;
+        assert!(reader.stat("/root/old").await?.is_some());
+
+        writer.remove("/root/old").await?;
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_dir("/root/new"));
+        writer.bulk_materialize_tree(&plan).await?;
+
+        assert!(reader.stat("/root/old").await?.is_none());
+        assert!(reader.stat("/root/new").await?.is_some());
 
         Ok(())
     }

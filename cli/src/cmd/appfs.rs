@@ -86,6 +86,7 @@ struct ManagedRuntimeBootstrapPlan {
 
 #[derive(Clone, Debug)]
 struct AppRuntimeStartupBootstrap {
+    db_path: String,
     manifest_json: String,
     cursor: CursorState,
     action_cursors: HashMap<String, ActionCursorState>,
@@ -934,6 +935,7 @@ async fn build_managed_runtime_startup_context(
     agent: &SdkAgentFS,
     registry_doc: registry::AppfsAppsRegistryDoc,
     runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
+    db_path: &str,
 ) -> Result<ManagedRuntimeStartupContext> {
     let mut app_bootstrap = HashMap::new();
     for runtime in &runtime_args {
@@ -1001,6 +1003,7 @@ async fn build_managed_runtime_startup_context(
         app_bootstrap.insert(
             app_id.clone(),
             AppRuntimeStartupBootstrap {
+                db_path: db_path.to_string(),
                 manifest_json,
                 cursor,
                 action_cursors: action_cursors.actions,
@@ -1114,8 +1117,13 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
     let startup_plan = build_managed_runtime_bootstrap_plan(&agent, &startup_app_ids).await?;
     let resolved_runtime_args =
         resolve_runtime_cli_args(registry::runtime_args_from_registry(&registry_doc)?);
-    let startup_context =
-        build_managed_runtime_startup_context(&agent, registry_doc, resolved_runtime_args).await?;
+    let startup_context = build_managed_runtime_startup_context(
+        &agent,
+        registry_doc,
+        resolved_runtime_args,
+        &db_path,
+    )
+    .await?;
     drop(agent);
 
     let result = run_managed_appfs_with_bootstrap(
@@ -1394,6 +1402,7 @@ struct AppfsAdapter {
     app_id: String,
     session_id: String,
     app_dir: PathBuf,
+    direct_db_path: Option<String>,
     action_specs: Vec<ActionSpec>,
     snapshot_specs: Vec<SnapshotSpec>,
     events_path: PathBuf,

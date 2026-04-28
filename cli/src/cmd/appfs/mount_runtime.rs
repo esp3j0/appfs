@@ -311,6 +311,9 @@ impl SnapshotReadThroughContext {
             .collect::<HashMap<_, _>>();
         *self.runtime_configs.lock().await = runtime_configs;
         *self.registry_fingerprint.lock().await = Some(bytes);
+        let mut path_cache = self.path_cache.lock().await;
+        path_cache.clear();
+        path_cache.insert(ROOT_INO, String::new());
         self.runtimes.lock().await.clear();
         Ok(())
     }
