@@ -19,6 +19,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
 };
 use tokio::runtime::Handle;
 use tracing;
@@ -47,6 +48,9 @@ const OPEN_RDONLY: i32 = 0x0000;
 const OPEN_WRONLY: i32 = 0x0001;
 const OPEN_RDWR: i32 = 0x0002;
 const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
+const WINFSP_PERF_LOG_ENV: &str = "APPFS_WINFSP_PERF_LOG";
+const WINFSP_PERF_INTERVAL_MS_ENV: &str = "APPFS_WINFSP_PERF_INTERVAL_MS";
+const DEFAULT_WINFSP_PERF_INTERVAL_MS: u64 = 1000;
 
 // NT directory wildcard characters used by Win32 query-directory calls.
 const DOS_STAR: char = '<';
@@ -215,6 +219,154 @@ fn granted_access_to_open_flags(granted_access: u32) -> i32 {
     flags
 }
 
+#[derive(Default)]
+struct PerfOpStats {
+    calls: u64,
+    total_us: u128,
+    max_us: u128,
+}
+
+struct WinFspPerfState {
+    started_at: Instant,
+    last_emit: Instant,
+    sequence: u64,
+    ops: HashMap<&'static str, PerfOpStats>,
+    counters: HashMap<&'static str, u64>,
+}
+
+struct WinFspPerf {
+    state: Mutex<WinFspPerfState>,
+    emit_every: Duration,
+}
+
+struct PerfSpan {
+    perf: Option<Arc<WinFspPerf>>,
+    op: &'static str,
+    started_at: Instant,
+}
+
+impl WinFspPerf {
+    fn maybe_from_env() -> Option<Arc<Self>> {
+        if !env_flag_enabled(WINFSP_PERF_LOG_ENV) {
+            return None;
+        }
+        let interval_ms = std::env::var(WINFSP_PERF_INTERVAL_MS_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_WINFSP_PERF_INTERVAL_MS);
+        let now = Instant::now();
+        eprintln!("[winfsp.perf] enabled interval_ms={interval_ms}");
+        Some(Arc::new(Self {
+            state: Mutex::new(WinFspPerfState {
+                started_at: now,
+                last_emit: now,
+                sequence: 0,
+                ops: HashMap::new(),
+                counters: HashMap::new(),
+            }),
+            emit_every: Duration::from_millis(interval_ms),
+        }))
+    }
+
+    fn record(&self, op: &'static str, elapsed: Duration) {
+        let mut state = self.state.lock();
+        let elapsed_us = elapsed.as_micros();
+        let entry = state.ops.entry(op).or_default();
+        entry.calls += 1;
+        entry.total_us += elapsed_us;
+        entry.max_us = entry.max_us.max(elapsed_us);
+        if state.last_emit.elapsed() >= self.emit_every {
+            self.emit_locked(&mut state);
+        }
+    }
+
+    fn count(&self, name: &'static str, amount: u64) {
+        let mut state = self.state.lock();
+        *state.counters.entry(name).or_default() += amount;
+        if state.last_emit.elapsed() >= self.emit_every {
+            self.emit_locked(&mut state);
+        }
+    }
+
+    fn emit_locked(&self, state: &mut WinFspPerfState) {
+        if state.ops.is_empty() && state.counters.is_empty() {
+            state.last_emit = Instant::now();
+            return;
+        }
+
+        state.sequence += 1;
+        let elapsed_ms = state.started_at.elapsed().as_millis();
+        let window_ms = state.last_emit.elapsed().as_millis();
+        let mut ops: Vec<_> = state.ops.iter().collect();
+        ops.sort_by_key(|(name, _stats)| **name);
+        let ops = ops
+            .into_iter()
+            .map(|(name, stats)| {
+                let avg_us = if stats.calls == 0 {
+                    0
+                } else {
+                    (stats.total_us / u128::from(stats.calls)) as u64
+                };
+                format!(
+                    "{}:calls={} total_ms={} avg_us={} max_ms={}",
+                    name,
+                    stats.calls,
+                    stats.total_us / 1000,
+                    avg_us,
+                    stats.max_us / 1000
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut counters: Vec<_> = state.counters.iter().collect();
+        counters.sort_by_key(|(name, _value)| **name);
+        let counters = counters
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        eprintln!(
+            "[winfsp.perf] seq={} elapsed_ms={} window_ms={} ops=\"{}\" counters=\"{}\"",
+            state.sequence, elapsed_ms, window_ms, ops, counters
+        );
+        state.ops.clear();
+        state.counters.clear();
+        state.last_emit = Instant::now();
+    }
+}
+
+impl PerfSpan {
+    fn new(perf: Option<Arc<WinFspPerf>>, op: &'static str) -> Self {
+        Self {
+            perf,
+            op,
+            started_at: Instant::now(),
+        }
+    }
+}
+
+impl Drop for PerfSpan {
+    fn drop(&mut self) {
+        if let Some(perf) = self.perf.as_ref() {
+            perf.record(self.op, self.started_at.elapsed());
+        }
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 struct CachedDirectoryEntries {
     entries: Vec<(String, Stats)>,
     name_index: HashMap<String, usize>,
@@ -280,6 +432,7 @@ pub struct AgentFSWinFsp {
     open_files: Mutex<HashMap<u64, OpenFile>>,
     path_stats_cache: Mutex<HashMap<String, Stats>>,
     dir_entries_cache: Mutex<HashMap<i64, Arc<CachedDirectoryEntries>>>,
+    perf: Option<Arc<WinFspPerf>>,
     next_fh: AtomicU64,
 }
 
@@ -292,6 +445,7 @@ impl AgentFSWinFsp {
             open_files: Mutex::new(HashMap::new()),
             path_stats_cache: Mutex::new(HashMap::new()),
             dir_entries_cache: Mutex::new(HashMap::new()),
+            perf: WinFspPerf::maybe_from_env(),
             next_fh: AtomicU64::new(1),
         }
     }
@@ -305,6 +459,16 @@ impl AgentFSWinFsp {
 
     fn alloc_fh(&self) -> u64 {
         self.next_fh.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn perf_span(&self, op: &'static str) -> PerfSpan {
+        PerfSpan::new(self.perf.clone(), op)
+    }
+
+    fn perf_count(&self, name: &'static str, amount: u64) {
+        if let Some(perf) = self.perf.as_ref() {
+            perf.count(name, amount);
+        }
     }
 
     fn win_path_to_unix(path: &U16CStr) -> String {
@@ -353,6 +517,7 @@ impl AgentFSWinFsp {
     /// Parse a path into (parent_ino, name) for operations that need a parent directory.
     /// For multi-level paths, this will walk the path to find the parent directory.
     fn parse_path(&self, path: &str) -> Result<(i64, String)> {
+        let _perf = self.perf_span("parse_path");
         let path = path.trim_start_matches('/');
         if path.is_empty() {
             return Ok((1, String::new()));
@@ -360,6 +525,7 @@ impl AgentFSWinFsp {
 
         // Split path into components
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        self.perf_count("parse_path_components", components.len() as u64);
         if components.is_empty() {
             return Ok((1, String::new()));
         }
@@ -397,9 +563,12 @@ impl AgentFSWinFsp {
 
     /// Look up a path and return its stats. Walks the entire path.
     fn path_lookup(&self, path: &str) -> Result<Option<Stats>> {
+        let _perf = self.perf_span("path_lookup");
         if let Some(stats) = self.lookup_cached_path_stats(path) {
+            self.perf_count("path_stats_cache_hit", 1);
             return Ok(Some(stats));
         }
+        self.perf_count("path_stats_cache_miss", 1);
 
         let path = path.trim_start_matches('/');
         if path.is_empty() {
@@ -552,11 +721,13 @@ impl AgentFSWinFsp {
         dir_ino: i64,
         dir_path: &str,
     ) -> winfsp::Result<Vec<(String, Stats)>> {
+        let _perf = self.perf_span("list_directory_entries");
         let fs = self.fs.clone();
         let entries = self.block_on(async move { fs.lock().readdir_plus(dir_ino).await });
 
         match entries {
             Ok(Some(entries)) => {
+                self.perf_count("readdir_plus_entries", entries.len() as u64);
                 let fs = self.fs.clone();
                 let dir_stats = self.block_on(async move { fs.lock().getattr(dir_ino).await });
                 let dir_stats = match dir_stats {
@@ -612,10 +783,12 @@ impl AgentFSWinFsp {
                 .get(&fh)
                 .and_then(|open_file| open_file.dir_entries.lock().clone())
         } {
+            self.perf_count("dir_handle_cache_hit", 1);
             return Ok(cached);
         }
 
         if let Some(cached) = self.dir_entries_cache.lock().get(&dir_ino).cloned() {
+            self.perf_count("dir_global_cache_hit", 1);
             let open_files = self.open_files.lock();
             if let Some(open_file) = open_files.get(&fh) {
                 *open_file.dir_entries.lock() = Some(cached.clone());
@@ -623,6 +796,7 @@ impl AgentFSWinFsp {
             return Ok(cached);
         }
 
+        self.perf_count("dir_cache_miss", 1);
         let entries = Arc::new(CachedDirectoryEntries::new(
             self.list_directory_entries(dir_ino, dir_path)?,
         ));
@@ -651,6 +825,8 @@ impl AgentFSWinFsp {
         dir_path: &str,
         query_name: &str,
     ) -> winfsp::Result<Option<(String, Stats)>> {
+        let _perf = self.perf_span("lookup_directory_entry");
+        self.perf_count("lookup_directory_entry_calls", 1);
         let name = Self::sanitize_dir_entry_name(Self::normalize_directory_pattern(query_name));
         if name.is_empty() {
             return Ok(None);
@@ -904,6 +1080,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _security_descriptor: Option<&mut [c_void]>,
         reparse_point_resolver: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
     ) -> winfsp::Result<FileSecurity> {
+        let _perf = self.perf_span("get_security_by_name");
         let path = Self::win_path_to_unix(file_name);
 
         tracing::trace!("WinFsp::get_security_by_name: {}", path);
@@ -940,6 +1117,7 @@ impl FileSystemContext for AgentFSWinFsp {
         granted_access: u32,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
+        let _perf = self.perf_span("open");
         let path = Self::win_path_to_unix(file_name);
         let delete_on_close = (create_options & FILE_DELETE_ON_CLOSE) != 0;
 
@@ -1046,6 +1224,7 @@ impl FileSystemContext for AgentFSWinFsp {
         extra_buffer_is_reparse_point: bool,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
+        let _perf = self.perf_span("create");
         let path = Self::win_path_to_unix(file_name);
         let is_dir = (create_options & FILE_DIRECTORY_FILE) != 0;
         let delete_on_close = (create_options & FILE_DELETE_ON_CLOSE) != 0;
@@ -1275,11 +1454,13 @@ impl FileSystemContext for AgentFSWinFsp {
     }
 
     fn close(&self, context: Self::FileContext) {
+        let _perf = self.perf_span("close");
         // WinFsp performs deletions during cleanup(FspCleanupDelete), not close().
         self.open_files.lock().remove(&context.fh);
     }
 
     fn cleanup(&self, context: &Self::FileContext, file_name: Option<&U16CStr>, flags: u32) {
+        let _perf = self.perf_span("cleanup");
         let (should_delete, is_dir, fallback_path) = {
             let open_files = self.open_files.lock();
             let Some(open_file) = open_files.get(&context.fh) else {
@@ -1330,6 +1511,7 @@ impl FileSystemContext for AgentFSWinFsp {
         context: &Self::FileContext,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("get_file_info");
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             let ino = open_file.ino;
@@ -1356,6 +1538,7 @@ impl FileSystemContext for AgentFSWinFsp {
         context: &Self::FileContext,
         _security_descriptor: Option<&mut [c_void]>,
     ) -> winfsp::Result<u64> {
+        let _perf = self.perf_span("get_security");
         tracing::debug!("WinFsp::get_security: fh={}", context.fh);
         Ok(0)
     }
@@ -1366,6 +1549,7 @@ impl FileSystemContext for AgentFSWinFsp {
         security_information: u32,
         _modification_descriptor: winfsp::filesystem::ModificationDescriptor,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("set_security");
         tracing::debug!(
             "WinFsp::set_security: fh={} security_information=0x{:x}",
             context.fh,
@@ -1385,6 +1569,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _last_change_time: u64,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("set_basic_info");
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             let ino = open_file.ino;
@@ -1437,6 +1622,7 @@ impl FileSystemContext for AgentFSWinFsp {
         file_name: &U16CStr,
         delete_file: bool,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("set_delete");
         let path = Self::win_path_to_unix(file_name);
         let (ino, is_dir) = {
             let open_files = self.open_files.lock();
@@ -1496,6 +1682,7 @@ impl FileSystemContext for AgentFSWinFsp {
         new_file_name: &U16CStr,
         _replace_if_exists: bool,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("rename");
         let old_path = Self::win_path_to_unix(file_name);
         let new_path = Self::win_path_to_unix(new_file_name);
         tracing::debug!("WinFsp::rename: {} -> {}", old_path, new_path);
@@ -1529,6 +1716,8 @@ impl FileSystemContext for AgentFSWinFsp {
         marker: winfsp::filesystem::DirMarker<'_>,
         buffer: &mut [u8],
     ) -> winfsp::Result<u32> {
+        let _perf = self.perf_span("read_directory");
+        self.perf_count("read_directory_buffer_bytes", buffer.len() as u64);
         let pattern_str = pattern.map(|p| p.to_string_lossy());
         let marker_str = marker
             .inner_as_cstr()
@@ -1572,6 +1761,7 @@ impl FileSystemContext for AgentFSWinFsp {
             .map(|index| index + 1)
             .unwrap_or(0);
         let mut cursor = 0u32;
+        let mut emitted = 0u64;
 
         for (name, stats) in all_entries.entries.iter().skip(start_idx) {
             let name = Self::sanitize_dir_entry_name(name);
@@ -1590,8 +1780,10 @@ impl FileSystemContext for AgentFSWinFsp {
                     // Buffer is full, stop adding more entries
                     break;
                 }
+                emitted += 1;
             }
         }
+        self.perf_count("read_directory_entries_emitted", emitted);
 
         // Finalize the buffer
         DirInfo::<255>::finalize_buffer(buffer, &mut cursor);
@@ -1605,6 +1797,7 @@ impl FileSystemContext for AgentFSWinFsp {
         file_name: &U16CStr,
         out_dir_info: &mut DirInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("get_dir_info_by_name");
         let query_name = file_name.to_string_lossy();
         tracing::trace!(
             "WinFsp::get_dir_info_by_name: fh={} query={}",
@@ -1622,6 +1815,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
         let normalized_query = Self::normalize_directory_pattern(&query_name);
         let entry = if normalized_query.contains(['*', '?', DOS_STAR, DOS_QM, DOS_DOT]) {
+            self.perf_count("get_dir_info_wildcard", 1);
             let entries = self.cached_directory_entries(context.fh, dir_ino, &dir_path)?;
             let found = entries
                 .iter()
@@ -1634,10 +1828,12 @@ impl FileSystemContext for AgentFSWinFsp {
                 .map(|(name, stats)| (name.clone(), stats.clone()));
             Ok(found)
         } else if let Some(entries) = self.cached_directory_entries_if_loaded(context.fh) {
+            self.perf_count("get_dir_info_cache_hit", 1);
             Ok(entries
                 .get(Self::sanitize_dir_entry_name(normalized_query))
                 .map(|(name, stats)| (name.clone(), stats.clone())))
         } else {
+            self.perf_count("get_dir_info_cache_miss", 1);
             self.lookup_directory_entry(dir_ino, &dir_path, normalized_query)
         }?;
 
@@ -1653,11 +1849,14 @@ impl FileSystemContext for AgentFSWinFsp {
         buffer: &mut [u8],
         offset: u64,
     ) -> winfsp::Result<u32> {
+        let _perf = self.perf_span("read");
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             if buffer.is_empty() {
+                self.perf_count("read_zero_len", 1);
                 return Ok(0);
             }
+            self.perf_count("read_requested_bytes", buffer.len() as u64);
             let file = open_file.file.clone();
             let buf_len = buffer.len();
             let is_dir = open_file.is_dir;
@@ -1684,6 +1883,7 @@ impl FileSystemContext for AgentFSWinFsp {
                 Ok(data) => {
                     let len = data.len().min(buffer.len());
                     buffer[..len].copy_from_slice(&data[..len]);
+                    self.perf_count("read_returned_bytes", len as u64);
                     if len > 0 {
                         self.clear_metadata_caches();
                     }
@@ -1705,6 +1905,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _constrained_io: bool,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<u32> {
+        let _perf = self.perf_span("write");
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             let file = open_file.file.clone();
@@ -1772,6 +1973,7 @@ impl FileSystemContext for AgentFSWinFsp {
         set_allocation_size: bool,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("set_file_size");
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             tracing::debug!(
@@ -1846,6 +2048,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _extra_buffer: Option<&[u8]>,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("overwrite");
         // Handle overwrite: called when creating file with FILE_SUPERSEDE or FILE_OVERWRITE
         // Truncate the file to zero length
         let open_files = self.open_files.lock();
@@ -1896,6 +2099,7 @@ impl FileSystemContext for AgentFSWinFsp {
         context: Option<&Self::FileContext>,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("flush");
         if let Some(context) = context {
             let open_files = self.open_files.lock();
             if let Some(open_file) = open_files.get(&context.fh) {
@@ -1930,6 +2134,7 @@ impl FileSystemContext for AgentFSWinFsp {
     }
 
     fn get_volume_info(&self, out_volume_info: &mut VolumeInfo) -> winfsp::Result<()> {
+        let _perf = self.perf_span("get_volume_info");
         let fs = self.fs.clone();
         let stats = self.block_on(async move { fs.lock().statfs().await });
 
@@ -1950,6 +2155,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _is_directory: bool,
         buffer: &mut [u8],
     ) -> winfsp::Result<u64> {
+        let _perf = self.perf_span("get_reparse_point_by_name");
         let path = Self::win_path_to_unix(file_name);
         tracing::trace!("WinFsp::get_reparse_point_by_name path={}", path);
         let stats = self
@@ -1971,6 +2177,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _file_name: &U16CStr,
         buffer: &mut [u8],
     ) -> winfsp::Result<u64> {
+        let _perf = self.perf_span("get_reparse_point");
         let ino = {
             let open_files = self.open_files.lock();
             let Some(open_file) = open_files.get(&context.fh) else {
@@ -1997,6 +2204,7 @@ impl FileSystemContext for AgentFSWinFsp {
         file_name: &U16CStr,
         buffer: &[u8],
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("set_reparse_point");
         let path = Self::win_path_to_unix(file_name);
         tracing::debug!(
             "WinFsp::set_reparse_point fh={} path={} buffer_len={}",
@@ -2070,6 +2278,7 @@ impl FileSystemContext for AgentFSWinFsp {
         _file_name: &U16CStr,
         _buffer: &[u8],
     ) -> winfsp::Result<()> {
+        let _perf = self.perf_span("delete_reparse_point");
         let open_files = self.open_files.lock();
         let Some(open_file) = open_files.get(&context.fh) else {
             return Err(FspError::NTSTATUS(STATUS_INVALID_PARAMETER));
