@@ -13,7 +13,10 @@ use std::sync::Arc;
 use thiserror::Error;
 
 // Re-export implementations
-pub use agentfs::AgentFS;
+pub use agentfs::{
+    AgentFS, AgentFsGlobQuery, AgentFsGlobQueryResult, AgentFsQueryEntry, AgentFsQueryEntryKind,
+    AgentFsTreeQuery, AgentFsTreeQueryResult,
+};
 #[cfg(target_os = "macos")]
 pub use hostfs_darwin::HostFS;
 #[cfg(target_os = "linux")]

@@ -34,6 +34,11 @@ const OPEN_READ_WRITE: i32 = 2;
 const OPEN_ACCESS_MODE_MASK: i32 = 0x0003;
 const OPEN_WRITE_ONLY: i32 = 1;
 const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
+const SNAPSHOT_PROBE_READ_SUPPRESS_BYTES_ENV: &str = "APPFS_SNAPSHOT_PROBE_READ_SUPPRESS_BYTES";
+#[cfg(target_os = "windows")]
+const DEFAULT_SNAPSHOT_PROBE_READ_SUPPRESS_BYTES: u64 = 4;
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_SNAPSHOT_PROBE_READ_SUPPRESS_BYTES: u64 = 0;
 
 #[cfg(target_os = "windows")]
 const RAW_IO_ERROR: i32 = 1117;
@@ -160,6 +165,17 @@ fn open_requests_read(flags: i32) -> bool {
     }
     let access_mode = flags & OPEN_ACCESS_MODE_MASK;
     access_mode != OPEN_WRITE_ONLY
+}
+
+fn snapshot_probe_read_suppress_bytes() -> u64 {
+    std::env::var(SNAPSHOT_PROBE_READ_SUPPRESS_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SNAPSHOT_PROBE_READ_SUPPRESS_BYTES)
+}
+
+fn should_suppress_snapshot_probe_read(offset: u64, size: u64, suppress_bytes: u64) -> bool {
+    suppress_bytes > 0 && offset == 0 && size > 0 && size <= suppress_bytes
 }
 
 fn action_wake_is_relevant_path(rel_path: &str) -> bool {
@@ -311,6 +327,9 @@ impl SnapshotReadThroughContext {
             .collect::<HashMap<_, _>>();
         *self.runtime_configs.lock().await = runtime_configs;
         *self.registry_fingerprint.lock().await = Some(bytes);
+        let mut path_cache = self.path_cache.lock().await;
+        path_cache.clear();
+        path_cache.insert(ROOT_INO, String::new());
         self.runtimes.lock().await.clear();
         Ok(())
     }
@@ -427,7 +446,8 @@ impl SnapshotReadThroughContext {
         };
         let resource_fs_rel = format!("{}/{}", app_id, resource_rel);
         let has_journal = self.journal_contains(app_id, resource_rel).await?;
-        let force_expand_existing = trigger == "open" && snapshot_force_expand_on_refresh();
+        let force_expand_existing =
+            matches!(trigger, "open" | "read") && snapshot_force_expand_on_refresh();
         let current_stats = self.lookup_path(&resource_fs_rel).await?;
         if should_skip_existing_expand(current_stats.as_ref(), has_journal, force_expand_existing) {
             if trigger == "lookup_miss" {
@@ -882,6 +902,19 @@ impl SnapshotReadThroughContext {
 }
 
 impl SnapshotReadThroughFile {
+    async fn is_read_prepared(&self) -> bool {
+        self.state.lock().await.read_prepared
+    }
+
+    async fn is_cold_empty_placeholder(&self) -> Result<bool, agentfs_sdk::error::Error> {
+        let stats = self
+            .ctx
+            .lookup_path(&self.rel_path)
+            .await
+            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+        Ok(stats.is_some_and(|stats| stats.size == 0))
+    }
+
     async fn open_backing_file(&self) -> Result<BoxedFile, agentfs_sdk::error::Error> {
         {
             let state = self.state.lock().await;
@@ -926,10 +959,8 @@ impl SnapshotReadThroughFile {
             state.file = None;
         }
 
-        // Preserve the existing ordinary-read contract label even though the
-        // actual expansion is deferred until the first pread().
         self.ctx
-            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "open")
+            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "read")
             .await
             .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
         let file = self.open_backing_file().await?;
@@ -944,6 +975,24 @@ impl SnapshotReadThroughFile {
 #[async_trait]
 impl agentfs_sdk::File for SnapshotReadThroughFile {
     async fn pread(&self, offset: u64, size: u64) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let suppress_bytes = snapshot_probe_read_suppress_bytes();
+        if should_suppress_snapshot_probe_read(offset, size, suppress_bytes)
+            && !self.is_read_prepared().await
+            && self.is_cold_empty_placeholder().await?
+        {
+            tracing::debug!(
+                app_id = self.app_id,
+                resource = format!("/{}", self.resource_rel),
+                offset,
+                size,
+                suppress_bytes,
+                "mount snapshot probe read suppressed"
+            );
+            return Ok(Vec::new());
+        }
         self.ensure_read_prepared().await?;
         let file = self.open_backing_file().await?;
         file.pread(offset, size).await
@@ -1385,9 +1434,10 @@ fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sd
 mod tests {
     use super::{
         action_wake_is_relevant_path, open_requests_read, should_skip_existing_expand,
-        ActionWakeHandle, AppfsRuntimeCliArgs, MountSnapshotReadThroughConfig,
-        MountSnapshotReadThroughFs, MountSnapshotRuntime, SnapshotOnTimeoutPolicy, SnapshotSpec,
-        OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE, OPEN_WRITE_ONLY, ROOT_INO,
+        should_suppress_snapshot_probe_read, ActionWakeHandle, AppfsRuntimeCliArgs,
+        MountSnapshotReadThroughConfig, MountSnapshotReadThroughFs, MountSnapshotRuntime,
+        SnapshotOnTimeoutPolicy, SnapshotSpec, OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE,
+        OPEN_WRITE_ONLY, ROOT_INO,
     };
     use crate::cmd::appfs::AppfsBridgeCliArgs;
     use agentfs_sdk::{
@@ -1457,6 +1507,15 @@ mod tests {
         assert!(open_requests_read(OPEN_READ_WRITE));
         assert!(!open_requests_read(OPEN_WRITE_ONLY));
         assert!(!open_requests_read(OPEN_READ_ONLY | OPEN_NO_READ_HINT));
+    }
+
+    #[test]
+    fn small_prefix_reads_can_be_classified_as_snapshot_probes() {
+        assert!(!should_suppress_snapshot_probe_read(0, 1, 0));
+        assert!(should_suppress_snapshot_probe_read(0, 1, 4));
+        assert!(should_suppress_snapshot_probe_read(0, 4, 4));
+        assert!(!should_suppress_snapshot_probe_read(0, 5, 4));
+        assert!(!should_suppress_snapshot_probe_read(1, 1, 4));
     }
 
     fn build_wrapper(root: &TempDir, wake: Option<ActionWakeHandle>) -> MountSnapshotReadThroughFs {
@@ -1683,6 +1742,14 @@ mod tests {
                 fetch_count.load(Ordering::SeqCst),
                 0,
                 "open/fstat must not trigger connector expansion"
+            );
+
+            let empty_probe = file.pread(0, 0).await.expect("zero-byte read");
+            assert!(empty_probe.is_empty());
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                0,
+                "zero-byte read probes must not trigger connector expansion"
             );
 
             let bytes = file.pread(0, 4096).await.expect("read snapshot");

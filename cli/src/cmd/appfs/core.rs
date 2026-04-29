@@ -1,9 +1,9 @@
 use agentfs_sdk::{
-    connector_error_codes, ActionExecutionMode, AppAdapterV1, AppConnector, AppStructureSyncReason,
-    AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo, ConnectorTransport,
-    DemoAppConnector, FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
-    FetchSnapshotChunkResponse, HealthStatus, SnapshotMeta, SubmitActionOutcome,
-    SubmitActionRequest, SubmitActionResponse,
+    connector_error_codes, ActionExecutionMode, AgentFS as SdkAgentFS, AgentFSOptions,
+    AppAdapterV1, AppConnector, AppStructureSyncReason, AuthStatus, ConnectorContext,
+    ConnectorError, ConnectorInfo, ConnectorTransport, DemoAppConnector, FetchLivePageRequest,
+    FetchLivePageResponse, FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, HealthStatus,
+    SnapshotMeta, SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -26,13 +26,16 @@ use super::shared::{
     is_transient_action_sink_busy, parse_snapshot_on_timeout_policy, template_specificity,
     MultilineRecoveryOutcome,
 };
-use super::tree_sync::{ensure_app_structure_initialized, refresh_app_structure};
+use super::tree_sync::{
+    ensure_app_structure_initialized, refresh_app_structure, refresh_app_structure_in_db,
+};
 use super::{
-    ActionCursorDoc, ActionCursorState, ActionSpec, AppfsAdapter, AppfsBridgeConfig, CursorState,
-    ExecutionMode, InputMode, ManifestContract, ManifestDoc, ProcessOutcome, SnapshotSpec,
-    StreamingJob, ACTION_CURSORS_FILENAME, DEFAULT_RETENTION_HINT_SEC,
-    DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES, DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS,
-    DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
+    ActionCursorDoc, ActionCursorState, ActionSpec, AppRuntimeStartupBootstrap, AppfsAdapter,
+    AppfsBridgeConfig, CursorState, ExecutionMode, InputMode, ManifestContract, ManifestDoc,
+    ProcessOutcome, SnapshotSpec, StreamingJob, ACTION_CURSORS_FILENAME,
+    DEFAULT_RETENTION_HINT_SEC, DEFAULT_SNAPSHOT_MAX_MATERIALIZED_BYTES,
+    DEFAULT_SNAPSHOT_PREWARM_TIMEOUT_MS, DEFAULT_SNAPSHOT_READ_THROUGH_TIMEOUT_MS,
+    SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -278,7 +281,19 @@ impl AppfsAdapter {
         session_id: String,
         bridge_config: AppfsBridgeConfig,
     ) -> Result<Self> {
-        ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
+        Self::new_with_bootstrap(root, app_id, session_id, bridge_config, None)
+    }
+
+    pub(super) fn new_with_bootstrap(
+        root: PathBuf,
+        app_id: String,
+        session_id: String,
+        bridge_config: AppfsBridgeConfig,
+        startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
+    ) -> Result<Self> {
+        if startup_bootstrap.is_none() {
+            ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
+        }
         let app_dir = root.join(&app_id);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
         let events_path = app_dir.join("_stream").join("events.evt.jsonl");
@@ -293,22 +308,29 @@ impl AppfsAdapter {
         if !app_dir.exists() {
             anyhow::bail!("App directory not found: {}", app_dir.display());
         }
-        if !manifest_path.exists() {
+        if startup_bootstrap.is_none() && !manifest_path.exists() {
             anyhow::bail!("Missing manifest file: {}", manifest_path.display());
         }
-        if !events_path.exists() {
+        if startup_bootstrap.is_none() && !events_path.exists() {
             anyhow::bail!("Missing events stream file: {}", events_path.display());
         }
-        if !cursor_path.exists() {
+        if startup_bootstrap.is_none() && !cursor_path.exists() {
             anyhow::bail!("Missing cursor file: {}", cursor_path.display());
         }
         if !replay_dir.exists() {
             anyhow::bail!("Missing replay directory: {}", replay_dir.display());
         }
 
-        let cursor = Self::load_cursor(&cursor_path)?;
+        let cursor = match startup_bootstrap.as_ref() {
+            Some(bootstrap) => bootstrap.cursor.clone(),
+            None => Self::load_cursor(&cursor_path)?,
+        };
         let next_seq = cursor.max_seq + 1;
-        let manifest_contract = Self::load_manifest_contract(&manifest_path)?;
+        let manifest_contract = if let Some(bootstrap) = startup_bootstrap.as_ref() {
+            parse_manifest_contract_json(&bootstrap.manifest_json, "<managed-runtime-bootstrap>")?
+        } else {
+            Self::load_manifest_contract(&manifest_path)?
+        };
         if manifest_contract.requires_paging_controls {
             let has_fetch = manifest_contract
                 .action_specs
@@ -350,6 +372,9 @@ impl AppfsAdapter {
             app_id,
             session_id,
             app_dir,
+            direct_db_path: startup_bootstrap
+                .as_ref()
+                .map(|bootstrap| bootstrap.db_path.clone()),
             action_specs: manifest_contract.action_specs,
             snapshot_specs: manifest_contract.snapshot_specs,
             events_path,
@@ -360,15 +385,22 @@ impl AppfsAdapter {
             snapshot_expand_journal_path: snapshot_expand_journal_path.clone(),
             cursor,
             next_seq,
-            action_cursors: Self::load_action_cursors(&action_cursors_path)?,
+            action_cursors: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.action_cursors.clone(),
+                None => Self::load_action_cursors(&action_cursors_path)?,
+            },
             handles: HashMap::new(),
             handle_aliases: HashMap::new(),
             snapshot_states: HashMap::new(),
             snapshot_recent_expands: HashMap::new(),
-            snapshot_expand_journal: Self::load_snapshot_expand_journal(
-                &snapshot_expand_journal_path,
-            )?,
-            streaming_jobs: Self::load_streaming_jobs(&jobs_path)?,
+            snapshot_expand_journal: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.snapshot_expand_journal.clone(),
+                None => Self::load_snapshot_expand_journal(&snapshot_expand_journal_path)?,
+            },
+            streaming_jobs: match startup_bootstrap.as_ref() {
+                Some(bootstrap) => bootstrap.streaming_jobs.clone(),
+                None => Self::load_streaming_jobs(&jobs_path)?,
+            },
             actionline_strict: env_flag_enabled("APPFS_ACTIONLINE_STRICT"),
             connector,
         };
@@ -377,6 +409,31 @@ impl AppfsAdapter {
         adapter.load_known_handles()?;
         adapter.startup_prewarm_snapshots();
         Ok(adapter)
+    }
+
+    fn apply_manifest_contract(
+        &mut self,
+        manifest_contract: ManifestContract,
+        validate_paging_controls_on_mount: bool,
+    ) -> Result<()> {
+        if validate_paging_controls_on_mount && manifest_contract.requires_paging_controls {
+            let fetch_path = self.app_dir.join("_paging").join("fetch_next.act");
+            let close_path = self.app_dir.join("_paging").join("close.act");
+            if !fetch_path.exists() || !close_path.exists() {
+                anyhow::bail!(
+                    "live pageable resources require paging control files to exist: {} and {}",
+                    fetch_path.display(),
+                    close_path.display()
+                );
+            }
+        }
+
+        self.action_specs = manifest_contract.action_specs;
+        self.snapshot_specs = manifest_contract.snapshot_specs;
+        self.snapshot_states.clear();
+        self.initialize_snapshot_states();
+        self.prepare_action_sinks()?;
+        Ok(())
     }
 
     pub(super) fn prepare_action_sinks(&mut self) -> Result<()> {
@@ -1199,24 +1256,13 @@ impl AppfsAdapter {
     pub(super) fn reload_manifest_contract(&mut self) -> Result<()> {
         let manifest_path = self.app_dir.join("_meta").join("manifest.res.json");
         let manifest_contract = Self::load_manifest_contract(&manifest_path)?;
-        if manifest_contract.requires_paging_controls {
-            let fetch_path = self.app_dir.join("_paging").join("fetch_next.act");
-            let close_path = self.app_dir.join("_paging").join("close.act");
-            if !fetch_path.exists() || !close_path.exists() {
-                anyhow::bail!(
-                    "live pageable resources require paging control files to exist: {} and {}",
-                    fetch_path.display(),
-                    close_path.display()
-                );
-            }
-        }
+        self.apply_manifest_contract(manifest_contract, true)
+    }
 
-        self.action_specs = manifest_contract.action_specs;
-        self.snapshot_specs = manifest_contract.snapshot_specs;
-        self.snapshot_states.clear();
-        self.initialize_snapshot_states();
-        self.prepare_action_sinks()?;
-        Ok(())
+    pub(super) fn reload_manifest_contract_from_json(&mut self, manifest_json: &str) -> Result<()> {
+        let manifest_contract =
+            parse_manifest_contract_json(manifest_json, "<db-structure-refresh>")?;
+        self.apply_manifest_contract(manifest_contract, false)
     }
 
     pub(super) fn handle_enter_scope(
@@ -1226,21 +1272,17 @@ impl AppfsAdapter {
         target_scope: &str,
         client_token: Option<String>,
     ) -> Result<ProcessOutcome> {
-        let root = self
-            .app_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("app directory has no parent root"))?;
-        match refresh_app_structure(
-            root,
-            &self.app_id,
-            &self.session_id,
-            &mut *self.connector,
+        match self.refresh_structure(
             AppStructureSyncReason::EnterScope,
             Some(target_scope.to_string()),
             Some(action_path.to_string()),
         ) {
             Ok(outcome) => {
-                self.reload_manifest_contract()?;
+                if let Some(manifest_json) = outcome.manifest_json.as_deref() {
+                    self.reload_manifest_contract_from_json(manifest_json)?;
+                } else {
+                    self.reload_manifest_contract()?;
+                }
                 self.emit_event(
                     action_path,
                     request_id,
@@ -1284,21 +1326,17 @@ impl AppfsAdapter {
         target_scope: Option<&str>,
         client_token: Option<String>,
     ) -> Result<ProcessOutcome> {
-        let root = self
-            .app_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("app directory has no parent root"))?;
-        match refresh_app_structure(
-            root,
-            &self.app_id,
-            &self.session_id,
-            &mut *self.connector,
+        match self.refresh_structure(
             AppStructureSyncReason::Refresh,
             target_scope.map(ToOwned::to_owned),
             Some(action_path.to_string()),
         ) {
             Ok(outcome) => {
-                self.reload_manifest_contract()?;
+                if let Some(manifest_json) = outcome.manifest_json.as_deref() {
+                    self.reload_manifest_contract_from_json(manifest_json)?;
+                } else {
+                    self.reload_manifest_contract()?;
+                }
                 self.emit_event(
                     action_path,
                     request_id,
@@ -1333,6 +1371,46 @@ impl AppfsAdapter {
                 Ok(ProcessOutcome::Consumed)
             }
         }
+    }
+
+    fn refresh_structure(
+        &mut self,
+        reason: AppStructureSyncReason,
+        target_scope: Option<String>,
+        trigger_action_path: Option<String>,
+    ) -> Result<super::tree_sync::StructureSyncOutcome> {
+        if let Some(db_path) = self.direct_db_path.clone() {
+            let app_id = self.app_id.clone();
+            let session_id = self.session_id.clone();
+            let connector = &mut self.connector;
+            return crate::get_runtime().block_on(async move {
+                let agent = SdkAgentFS::open(AgentFSOptions::with_path(db_path)).await?;
+                refresh_app_structure_in_db(
+                    &agent,
+                    &app_id,
+                    &session_id,
+                    &mut **connector,
+                    reason,
+                    target_scope,
+                    trigger_action_path,
+                )
+                .await
+            });
+        }
+
+        let root = self
+            .app_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("app directory has no parent root"))?;
+        refresh_app_structure(
+            root,
+            &self.app_id,
+            &self.session_id,
+            &mut *self.connector,
+            reason,
+            target_scope,
+            trigger_action_path,
+        )
     }
 
     fn new_request_id() -> String {

@@ -1,6 +1,7 @@
 use super::connector_supervisor::ResolvedComposeApp;
 use crate::cmd::appfs::normalize_appfs_session_id;
 use crate::cmd::appfs::registry;
+use agentfs_sdk::{AgentFS as SdkAgentFS, BulkMaterializeEntry, BulkMaterializePlan};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -48,6 +49,27 @@ pub(crate) fn bootstrap_registry_from_resolved_apps(
     let doc = build_registry_doc_from_resolved_apps(resolved_apps, existing.as_ref());
     if existing.as_ref() != Some(&doc) {
         registry::write_app_registry(root, &doc)?;
+    }
+    Ok(doc)
+}
+
+pub(crate) async fn bootstrap_registry_from_resolved_apps_in_agentfs(
+    agent: &SdkAgentFS,
+    resolved_apps: &BTreeMap<String, ResolvedComposeApp>,
+) -> Result<registry::AppfsAppsRegistryDoc> {
+    let existing = match agent.fs.read_file("/_appfs/apps.registry.json").await? {
+        Some(bytes) => Some(registry::parse_app_registry_bytes(&bytes)?),
+        None => None,
+    };
+    let doc = build_registry_doc_from_resolved_apps(resolved_apps, existing.as_ref());
+    if existing.as_ref() != Some(&doc) {
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_dir("/_appfs"));
+        plan.push(BulkMaterializeEntry::write_file(
+            "/_appfs/apps.registry.json",
+            serde_json::to_vec_pretty(&doc)?,
+        ));
+        agent.bulk_materialize_tree(&plan).await?;
     }
     Ok(doc)
 }

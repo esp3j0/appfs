@@ -687,6 +687,11 @@ pub enum AppfsCommand {
         #[command(subcommand)]
         command: AppfsComposeCommand,
     },
+    /// Query an AppFS database without walking the mounted filesystem
+    Query {
+        #[command(subcommand)]
+        command: AppfsQueryCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -702,6 +707,97 @@ pub enum AppfsComposeCommand {
             add = ArgValueCompleter::new(PathCompleter::file())
         )]
         file: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AppfsQueryFormat {
+    Json,
+    Text,
+}
+
+impl std::fmt::Display for AppfsQueryFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppfsQueryFormat::Json => write!(f, "json"),
+            AppfsQueryFormat::Text => write!(f, "text"),
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AppfsQueryCommand {
+    /// Return a bounded directory tree from the AppFS database
+    Tree {
+        /// AgentFS database path
+        #[arg(long, value_name = "DB", add = ArgValueCompleter::new(PathCompleter::file()))]
+        db: PathBuf,
+
+        /// Root path inside AppFS
+        #[arg(long, default_value = "huoyan")]
+        root: String,
+
+        /// Maximum depth below root
+        #[arg(long, default_value_t = 2)]
+        max_depth: usize,
+
+        /// Maximum entries returned per directory, 0 means unlimited
+        #[arg(long, default_value_t = 100)]
+        max_entries_per_dir: usize,
+
+        /// Include files in addition to directories
+        #[arg(long)]
+        include_files: bool,
+
+        /// Include internal AppFS paths such as _meta and _stream
+        #[arg(long)]
+        include_internal: bool,
+
+        /// Output format
+        #[arg(long, value_enum, default_value_t = AppfsQueryFormat::Json)]
+        format: AppfsQueryFormat,
+    },
+    /// Return paths matching a glob from the AppFS database
+    Glob {
+        /// AgentFS database path
+        #[arg(long, value_name = "DB", add = ArgValueCompleter::new(PathCompleter::file()))]
+        db: PathBuf,
+
+        /// Root path inside AppFS. The pattern is evaluated relative to this root.
+        #[arg(long, default_value = "huoyan")]
+        root: String,
+
+        /// Glob pattern, for example "**/*.res.jsonl"
+        #[arg(long)]
+        pattern: String,
+
+        /// Maximum depth below root
+        #[arg(long, default_value_t = 64)]
+        max_depth: usize,
+
+        /// Maximum returned results
+        #[arg(long, default_value_t = 100)]
+        max_results: usize,
+
+        /// Maximum entries scanned before truncating
+        #[arg(long, default_value_t = 500000)]
+        max_scanned_entries: usize,
+
+        /// Include directories in results
+        #[arg(long)]
+        include_dirs: bool,
+
+        /// Match case-insensitively
+        #[arg(long)]
+        ignore_case: bool,
+
+        /// Include internal AppFS paths such as _meta and _stream
+        #[arg(long)]
+        include_internal: bool,
+
+        /// Output format
+        #[arg(long, value_enum, default_value_t = AppfsQueryFormat::Json)]
+        format: AppfsQueryFormat,
     },
 }
 

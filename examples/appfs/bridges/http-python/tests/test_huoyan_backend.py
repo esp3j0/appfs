@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from appfs_http_bridge.huoyan_backend import (
     HuoyanBackend,
+    _dedupe_name,
     _json_request,
     _safe_leaf_name,
     _safe_segment,
@@ -23,6 +24,42 @@ class _FakeHuoyanClient:
         self.case_locations = case_locations
         self.opened_paths: list[str] = []
         self.exited_case_ids: list[int] = []
+        self.list_nodes_calls: list[int] = []
+        self.root_nodes: list[dict[str, Any]] = [
+            {
+                "Nid": 4000000001,
+                "Pid": 1,
+                "Eid": 1,
+                "Name": "微信",
+                "NodeType": "weixin",
+                "SubNodeType": "treenode",
+                "HasChildNode": 1,
+            }
+        ]
+        self.child_nodes: dict[int, list[dict[str, Any]]] = {
+            4000000001: [
+                {
+                    "Nid": 4000000002,
+                    "Pid": 4000000001,
+                    "Eid": 1,
+                    "Name": "mzs(wxid_ykx86h8vvs7v12)",
+                    "NodeType": "user",
+                    "SubNodeType": "treenode",
+                    "HasChildNode": 1,
+                }
+            ],
+            4000000002: [
+                {
+                    "Nid": 4000000302,
+                    "Pid": 4000000002,
+                    "Eid": 1,
+                    "Name": "好友消息/张三",
+                    "NodeType": "buddymsgobject",
+                    "SubNodeType": "immsginfo",
+                    "HasChildNode": 0,
+                }
+            ],
+        }
 
     def list_cases(
         self, *, limit: int, offset: int, desc: bool, column: str, keyword: str
@@ -74,49 +111,10 @@ class _FakeHuoyanClient:
 
     def list_nodes(self, *, analysis_cid: int, pid: int) -> dict[str, Any]:
         _ = analysis_cid
+        self.list_nodes_calls.append(pid)
         if pid == 1:
-            return {
-                "nodes": [
-                    {
-                        "Nid": 4000000001,
-                        "Pid": 1,
-                        "Eid": 1,
-                        "Name": "微信",
-                        "NodeType": "weixin",
-                        "SubNodeType": "treenode",
-                        "HasChildNode": 1,
-                    }
-                ]
-            }
-        if pid == 4000000001:
-            return {
-                "nodes": [
-                    {
-                        "Nid": 4000000002,
-                        "Pid": 4000000001,
-                        "Eid": 1,
-                        "Name": "mzs(wxid_ykx86h8vvs7v12)",
-                        "NodeType": "user",
-                        "SubNodeType": "treenode",
-                        "HasChildNode": 1,
-                    }
-                ]
-            }
-        if pid == 4000000002:
-            return {
-                "nodes": [
-                    {
-                        "Nid": 4000000302,
-                        "Pid": 4000000002,
-                        "Eid": 1,
-                        "Name": "好友消息/张三",
-                        "NodeType": "buddymsgobject",
-                        "SubNodeType": "immsginfo",
-                        "HasChildNode": 0,
-                    }
-                ]
-            }
-        return {"nodes": []}
+            return {"nodes": self.root_nodes}
+        return {"nodes": self.child_nodes.get(pid, [])}
 
     def fetch_leaf_rows(self, *, params: dict[str, Any]) -> dict[str, Any]:
         self.last_fetch_params = params
@@ -198,6 +196,16 @@ class HuoyanBackendTests(unittest.TestCase):
         second = _safe_leaf_name(prefix + "2", "节点-2")
         self.assertNotEqual(first, second)
 
+    def test_dedupe_leaf_keeps_res_jsonl_suffix(self) -> None:
+        seen: dict[str, int] = {}
+        base = _safe_leaf_name("石浩（taobaoaisi）", "节点-1")
+        first = _dedupe_name(base, seen, "nid_1")
+        second = _dedupe_name(base, seen, "nid_658000891")
+        self.assertEqual(first, base)
+        self.assertTrue(second.endswith(".res.jsonl"))
+        self.assertIn("__nid_658000891.res.jsonl", second)
+        self.assertLessEqual(len(second.encode("utf-8")), 96)
+
     def test_home_structure_contains_case_directory_and_info_snapshot(self) -> None:
         body = self.backend.get_app_structure({"app_id": "huoyan"}, self.context)
         snapshot = body["result"]["snapshot"]
@@ -251,6 +259,64 @@ class HuoyanBackendTests(unittest.TestCase):
         self.assertEqual(self.client.last_fetch_params["cid"], 1)
         self.assertEqual(self.client.last_fetch_params["pid"], 4000000302)
         self.assertEqual(self.client.last_fetch_params["datatype"], "immsginfo")
+
+    def test_attached_case_second_boot_uses_shallow_probe_fast_path(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        initial = backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        revision = initial["result"]["snapshot"]["revision"]
+        self.assertRegex(revision, r"^huoyan-case:7-sv:1-p:[0-9a-f]{12}-f:[0-9a-f]{12}$")
+
+        self.client.list_nodes_calls.clear()
+        unchanged = backend.get_app_structure(
+            {"app_id": "huoyan", "known_revision": revision},
+            self.context,
+        )
+        self.assertEqual(unchanged["result"]["kind"], "unchanged")
+        self.assertEqual(unchanged["result"]["revision"], revision)
+        self.assertEqual(self.client.list_nodes_calls, [1])
+
+    def test_attached_case_shallow_probe_change_forces_full_rebuild(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        initial = backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        revision = initial["result"]["snapshot"]["revision"]
+
+        self.client.root_nodes[0]["Name"] = "企业微信"
+        self.client.list_nodes_calls.clear()
+        refreshed = backend.get_app_structure(
+            {"app_id": "huoyan", "known_revision": revision},
+            self.context,
+        )
+        self.assertEqual(refreshed["result"]["kind"], "snapshot")
+        self.assertIn(4000000001, self.client.list_nodes_calls)
+        self.assertIn(4000000002, self.client.list_nodes_calls)
+
+    def test_attached_case_old_revision_format_falls_back_to_full_build(self) -> None:
+        backend = HuoyanBackend(
+            client=self.client,
+            open_wait_sec=0,
+            bootstrap_mode="attached_case",
+            default_case_id=7,
+        )
+        backend.get_app_structure({"app_id": "huoyan"}, self.context)
+        self.client.list_nodes_calls.clear()
+        refreshed = backend.get_app_structure(
+            {"app_id": "huoyan", "known_revision": "huoyan-case:7-deadbeefcafe"},
+            self.context,
+        )
+        self.assertEqual(refreshed["result"]["kind"], "snapshot")
+        self.assertIn(1, self.client.list_nodes_calls)
+        self.assertIn(4000000001, self.client.list_nodes_calls)
+        self.assertIn(4000000002, self.client.list_nodes_calls)
 
     def test_attached_case_bootstrap_starts_inside_case_without_open(self) -> None:
         backend = HuoyanBackend(

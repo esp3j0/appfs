@@ -6,9 +6,9 @@ use super::runtime_entry::{
 };
 use super::runtime_manifest;
 use super::supervisor_control;
-use super::ResolvedAppfsRuntimeCliArgs;
+use super::{AppRuntimeStartupBootstrap, ResolvedAppfsRuntimeCliArgs};
 use anyhow::Result;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 pub(super) struct AppfsRuntimeSupervisor {
@@ -24,10 +24,13 @@ impl AppfsRuntimeSupervisor {
         root: PathBuf,
         runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
         managed: bool,
+        startup_bootstrap: Option<HashMap<String, AppRuntimeStartupBootstrap>>,
     ) -> Result<Self> {
         let mut runtimes = BTreeMap::new();
+        let mut startup_bootstrap = startup_bootstrap.unwrap_or_default();
         for runtime in runtime_args {
-            let entry = build_runtime_entry(&root, runtime)?;
+            let app_id = runtime.app_id.clone();
+            let entry = build_runtime_entry(&root, runtime, startup_bootstrap.remove(&app_id))?;
             if runtimes
                 .insert(entry.runtime.app_id.clone(), entry)
                 .is_some()
@@ -163,7 +166,7 @@ impl AppfsRuntimeSupervisor {
             }
         };
 
-        match build_runtime_entry(&self.root, runtime.clone()) {
+        match build_runtime_entry(&self.root, runtime.clone(), None) {
             Ok(mut entry) => {
                 entry.adapter.prepare_action_sinks()?;
                 let app_id = entry.runtime.app_id.clone();

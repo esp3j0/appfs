@@ -2,8 +2,8 @@ use agentfs::{
     cmd::{self, completions::handle_completions},
     get_runtime,
     opts::{
-        AppfsCommand, AppfsComposeCommand, Args, Command, FsCommand, PruneCommand, ServeCommand,
-        SyncCommand,
+        AppfsCommand, AppfsComposeCommand, AppfsQueryCommand, Args, Command, FsCommand,
+        PruneCommand, ServeCommand, SyncCommand,
     },
 };
 use clap::{CommandFactory, Parser};
@@ -507,6 +507,64 @@ fn main() {
                 AppfsComposeCommand::Up { file } => {
                     let rt = get_runtime();
                     if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_compose_up_command(file)) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            },
+            AppfsCommand::Query { command } => match command {
+                AppfsQueryCommand::Tree {
+                    db,
+                    root,
+                    max_depth,
+                    max_entries_per_dir,
+                    include_files,
+                    include_internal,
+                    format,
+                } => {
+                    let rt = get_runtime();
+                    if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_query_tree_command(
+                        cmd::appfs::AppfsQueryTreeArgs {
+                            db,
+                            root,
+                            max_depth,
+                            max_entries_per_dir,
+                            include_files,
+                            include_internal,
+                            format,
+                        },
+                    )) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                AppfsQueryCommand::Glob {
+                    db,
+                    root,
+                    pattern,
+                    max_depth,
+                    max_results,
+                    max_scanned_entries,
+                    include_dirs,
+                    ignore_case,
+                    include_internal,
+                    format,
+                } => {
+                    let rt = get_runtime();
+                    if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_query_glob_command(
+                        cmd::appfs::AppfsQueryGlobArgs {
+                            db,
+                            root,
+                            pattern,
+                            max_depth,
+                            max_results,
+                            max_scanned_entries,
+                            include_dirs,
+                            ignore_case,
+                            include_internal,
+                            format,
+                        },
+                    )) {
                         eprintln!("Error: {}", e);
                         std::process::exit(1);
                     }

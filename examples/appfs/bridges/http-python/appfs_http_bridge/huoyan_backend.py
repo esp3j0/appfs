@@ -18,6 +18,7 @@ DEFAULT_CASES_LIMIT = 100
 DEFAULT_HOME_SCOPE = "home"
 SAFE_PATH_SEGMENT_MAX_BYTES = 96
 SNAPSHOT_SUFFIX = ".res.jsonl"
+HUOYAN_STRUCTURE_SCHEMA_VERSION = 1
 
 
 def _now_iso() -> str:
@@ -115,7 +116,11 @@ def _dedupe_name(name: str, seen: dict[str, int], suffix_seed: str) -> str:
     seen[name] = count + 1
     if count == 0:
         return name
-    return f"{name}__{suffix_seed}"
+    disambiguator = f"__{suffix_seed}"
+    if name.endswith(SNAPSHOT_SUFFIX):
+        stem = name[: -len(SNAPSHOT_SUFFIX)]
+        return _shorten_segment(stem, suffix=f"{disambiguator}{SNAPSHOT_SUFFIX}")
+    return _shorten_segment(name, suffix=disambiguator)
 
 
 def _network_error_message(url: str, err: BaseException) -> str:
@@ -302,6 +307,14 @@ class _BuiltScope:
 
 
 @dataclass
+class _CaseProbe:
+    analysis_cid: int
+    evidences: dict[int, dict[str, Any]]
+    root_nodes: list[dict[str, Any]]
+    probe_digest: str
+
+
+@dataclass
 class HuoyanBackend:
     client: HuoyanApiClientProtocol | None = None
     app_id: str = field(default_factory=lambda: os.getenv("APPFS_HUOYAN_APP_ID", "huoyan"))
@@ -428,6 +441,12 @@ class HuoyanBackend:
         session_id = str(context.get("session_id", ""))
         scope = self.session_scopes.get(session_id, self._initial_scope())
         self._assert_attached_scope(scope)
+        known_revision = request.get("known_revision")
+        if scope != DEFAULT_HOME_SCOPE:
+            fast = self._maybe_case_structure_unchanged(scope, known_revision)
+            if fast is not None:
+                self.session_scopes[session_id] = scope
+                return fast
         built = self._build_scope(scope, force_refresh=True)
         self.session_scopes[session_id] = scope
         return self._structure_response(request, built.snapshot)
@@ -454,6 +473,12 @@ class HuoyanBackend:
                 )
 
         self._transition_scope(previous_scope, scope, reason)
+        known_revision = request.get("known_revision")
+        if scope != DEFAULT_HOME_SCOPE:
+            fast = self._maybe_case_structure_unchanged(scope, known_revision)
+            if fast is not None:
+                self.session_scopes[session_id] = scope
+                return fast
         built = self._build_scope(scope, force_refresh=True)
         self.session_scopes[session_id] = scope
         return self._structure_response(request, built.snapshot)
@@ -725,18 +750,14 @@ class HuoyanBackend:
         }
         return _BuiltScope(snapshot=snapshot, info_specs=info_specs)
 
-    def _build_case_scope(self, case_id: int) -> _BuiltScope:
-        analysis_cid = self._analysis_cid(case_id)
-        raw_evidences = self.client.list_evidences(case_id=case_id).get("evidences", [])
-        evidences: dict[int, dict[str, Any]] = {}
-        if isinstance(raw_evidences, list):
-            for evidence in raw_evidences:
-                if isinstance(evidence, dict):
-                    evidences[int(evidence.get("Id", 0))] = evidence
+    def _build_case_scope(self, case_id: int, probe: _CaseProbe | None = None) -> _BuiltScope:
+        probe = probe or self._build_case_probe(case_id)
+        analysis_cid = probe.analysis_cid
+        evidences = dict(probe.evidences)
 
-        nodes_by_pid: dict[int, list[dict[str, Any]]] = {}
-        queue = [ROOT_NODE_ID]
-        visited: set[int] = set()
+        nodes_by_pid: dict[int, list[dict[str, Any]]] = {ROOT_NODE_ID: list(probe.root_nodes)}
+        queue = [int(child.get("Nid", 0)) for child in probe.root_nodes if self._has_children(child)]
+        visited: set[int] = {ROOT_NODE_ID}
         while queue:
             pid = queue.pop(0)
             if pid in visited:
@@ -752,7 +773,7 @@ class HuoyanBackend:
                 if self._has_children(child):
                     queue.append(int(child.get("Nid", 0)))
 
-        for child in nodes_by_pid.get(ROOT_NODE_ID, []):
+        for child in probe.root_nodes:
             eid = int(child.get("Eid", 0))
             if eid > 0 and eid not in evidences:
                 evidences[eid] = {
@@ -768,7 +789,9 @@ class HuoyanBackend:
             evidence_groups.setdefault(int(child.get("Eid", 0)), []).append(child)
 
         ownership_prefixes = ["_app"]
-        revision_payload: list[dict[str, Any]] = []
+        revision_payload: list[dict[str, Any]] = [
+            {"schema_version": HUOYAN_STRUCTURE_SCHEMA_VERSION}
+        ]
 
         for eid, top_nodes in sorted(evidence_groups.items(), key=lambda item: item[0]):
             evidence_name = str(evidences.get(eid, {}).get("Name") or f"检材-{eid}")
@@ -803,7 +826,7 @@ class HuoyanBackend:
                     revision_payload=revision_payload,
                 )
 
-        revision = self._revision_from_payload(self._case_scope(case_id), revision_payload)
+        revision = self._case_revision(self._case_scope(case_id), probe.probe_digest, revision_payload)
         snapshot = {
             "app_id": self.app_id,
             "revision": revision,
@@ -812,6 +835,98 @@ class HuoyanBackend:
             "nodes": structure_nodes,
         }
         return _BuiltScope(snapshot=snapshot, leaf_specs=leaf_specs)
+
+    def _build_case_probe(self, case_id: int) -> _CaseProbe:
+        analysis_cid = self._analysis_cid(case_id)
+        raw_evidences = self.client.list_evidences(case_id=case_id).get("evidences", [])
+        evidences: dict[int, dict[str, Any]] = {}
+        if isinstance(raw_evidences, list):
+            for evidence in raw_evidences:
+                if isinstance(evidence, dict):
+                    evidences[int(evidence.get("Id", 0))] = evidence
+
+        root_response = self.client.list_nodes(analysis_cid=analysis_cid, pid=ROOT_NODE_ID)
+        root_children = root_response.get("nodes", [])
+        if not isinstance(root_children, list):
+            root_children = []
+        root_nodes = [child for child in root_children if isinstance(child, dict)]
+
+        for child in root_nodes:
+            eid = int(child.get("Eid", 0))
+            if eid > 0 and eid not in evidences:
+                evidences[eid] = {
+                    "Id": eid,
+                    "Name": f"检材-{eid}",
+                }
+
+        payload = self._build_case_probe_payload(evidences, root_nodes)
+        return _CaseProbe(
+            analysis_cid=analysis_cid,
+            evidences=evidences,
+            root_nodes=root_nodes,
+            probe_digest=self._revision_digest(payload),
+        )
+
+    def _build_case_probe_payload(
+        self, evidences: dict[int, dict[str, Any]], root_nodes: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        top_level_seen: dict[str, int] = {}
+        evidence_groups: dict[int, list[dict[str, Any]]] = {}
+        for child in root_nodes:
+            evidence_groups.setdefault(int(child.get("Eid", 0)), []).append(child)
+
+        payload: list[dict[str, Any]] = [
+            {"schema_version": HUOYAN_STRUCTURE_SCHEMA_VERSION}
+        ]
+        for eid, top_nodes in sorted(evidence_groups.items(), key=lambda item: item[0]):
+            evidence_name = str(evidences.get(eid, {}).get("Name") or f"检材-{eid}")
+            evidence_dir = _dedupe_name(
+                _safe_segment(evidence_name, f"检材-{eid}"),
+                top_level_seen,
+                f"eid_{eid}",
+            )
+            payload.append({"eid": eid, "name": evidence_name, "path": evidence_dir})
+            seen: dict[str, int] = {}
+            for child in top_nodes:
+                raw_name = str(child.get("Name", ""))
+                if raw_name in self.blocked_names:
+                    continue
+                nid = int(child.get("Nid", 0))
+                segment = _dedupe_name(_safe_segment(raw_name, f"节点-{nid}"), seen, f"nid_{nid}")
+                payload.append(
+                    {
+                        "eid": eid,
+                        "path": f"{evidence_dir}/{segment}",
+                        "nid": nid,
+                        "name": raw_name,
+                        "node_type": str(child.get("NodeType", "")),
+                        "sub_node_type": str(child.get("SubNodeType", "")),
+                        "has_child": self._has_children(child),
+                        "record_count": child.get("RecordCount", child.get("Count")),
+                    }
+                )
+        return payload
+
+    def _maybe_case_structure_unchanged(
+        self, scope: str, known_revision: Any
+    ) -> dict[str, Any] | None:
+        if not isinstance(known_revision, str) or known_revision.strip() == "":
+            return None
+        known_probe = self._known_case_probe_digest(scope, known_revision)
+        if known_probe is None:
+            return None
+        case_id = self._parse_case_scope(scope)
+        probe = self._build_case_probe(case_id)
+        if probe.probe_digest != known_probe:
+            return None
+        return {
+            "result": {
+                "kind": "unchanged",
+                "app_id": self.app_id,
+                "revision": known_revision,
+                "active_scope": scope,
+            }
+        }
 
     def _append_case_node(
         self,
@@ -928,8 +1043,30 @@ class HuoyanBackend:
         ]
 
     def _revision_from_payload(self, scope: str, payload: Any) -> str:
-        digest = hashlib.sha1(_compact_json(payload).encode("utf-8")).hexdigest()[:12]
+        digest = self._revision_digest(payload)
         return f"huoyan-{scope}-{digest}"
+
+    def _revision_digest(self, payload: Any) -> str:
+        return hashlib.sha1(_compact_json(payload).encode("utf-8")).hexdigest()[:12]
+
+    def _case_revision(self, scope: str, probe_digest: str, full_payload: Any) -> str:
+        full_digest = self._revision_digest(full_payload)
+        return (
+            f"huoyan-{scope}-sv:{HUOYAN_STRUCTURE_SCHEMA_VERSION}"
+            f"-p:{probe_digest}-f:{full_digest}"
+        )
+
+    def _known_case_probe_digest(self, scope: str, revision: str) -> str | None:
+        prefix = f"huoyan-{scope}-sv:{HUOYAN_STRUCTURE_SCHEMA_VERSION}-p:"
+        if not revision.startswith(prefix):
+            return None
+        suffix = revision[len(prefix) :]
+        probe_digest, sep, _ = suffix.partition("-f:")
+        if sep == "" or len(probe_digest) != 12:
+            return None
+        if any(ch not in "0123456789abcdef" for ch in probe_digest):
+            return None
+        return probe_digest
 
     def _resolve_snapshot_spec(self, resource_path: str, context: dict[str, Any]) -> _LeafSpec | dict[str, Any]:
         if resource_path.startswith("/"):

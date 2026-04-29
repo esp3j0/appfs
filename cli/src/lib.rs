@@ -1,6 +1,7 @@
 pub mod cmd;
 pub mod opts;
 pub mod sandbox;
+pub mod shutdown_signal;
 
 #[cfg(target_os = "linux")]
 pub mod daemon;

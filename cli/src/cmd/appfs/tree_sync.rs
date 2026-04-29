@@ -4,9 +4,9 @@ use super::{
     DEFAULT_RETENTION_HINT_SEC, SNAPSHOT_EXPAND_JOURNAL_FILENAME,
 };
 use agentfs_sdk::{
-    AppConnector, AppStructureNode, AppStructureNodeKind, AppStructureSnapshot,
-    AppStructureSyncReason, AppStructureSyncResult, ConnectorContext, GetAppStructureRequest,
-    RefreshAppStructureRequest,
+    AgentFS as SdkAgentFS, AppConnector, AppStructureNode, AppStructureNodeKind,
+    AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult, BulkMaterializeEntry,
+    BulkMaterializePlan, ConnectorContext, GetAppStructureRequest, RefreshAppStructureRequest,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub(super) struct StructureSyncOutcome {
     pub(super) changed: bool,
     pub(super) revision: Option<String>,
     pub(super) active_scope: Option<String>,
+    pub(super) manifest_json: Option<String>,
 }
 
 pub(super) fn ensure_app_structure_initialized(
@@ -56,6 +57,178 @@ pub(super) fn ensure_app_structure_initialized(
     );
     service.sync_initial(&mut *connector)?;
     Ok(())
+}
+
+pub(super) async fn ensure_app_structure_initialized_in_db(
+    agent: &SdkAgentFS,
+    app_id: &str,
+    session_id: &str,
+    bridge_config: &AppfsBridgeConfig,
+) -> Result<()> {
+    let state = load_state_from_agentfs(agent, app_id).await?;
+    let ctx = ConnectorContext {
+        app_id: app_id.to_string(),
+        session_id: session_id.to_string(),
+        request_id: "structure-init".to_string(),
+        client_token: None,
+        trace_id: None,
+    };
+    let mut connector = build_app_connector(app_id, bridge_config)?;
+    eprintln!(
+        "[structure.sync] op=get_app_structure app={} known_revision={}",
+        app_id,
+        state.revision.as_deref().unwrap_or("<none>")
+    );
+    let response = connector.get_app_structure(
+        GetAppStructureRequest {
+            app_id: app_id.to_string(),
+            known_revision: state.revision.clone(),
+        },
+        &ctx,
+    )?;
+
+    match response.result {
+        AppStructureSyncResult::Unchanged {
+            revision,
+            active_scope,
+            ..
+        } => {
+            eprintln!(
+                "[structure.sync] result app={} changed=false revision={} active_scope={}",
+                app_id,
+                revision,
+                active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(())
+        }
+        AppStructureSyncResult::Snapshot { snapshot } => {
+            if snapshot.app_id != app_id {
+                anyhow::bail!(
+                    "structure snapshot app_id mismatch: snapshot={} runtime={}",
+                    snapshot.app_id,
+                    app_id
+                );
+            }
+            let desired_owned_paths = desired_owned_paths_for_snapshot(&snapshot);
+            prune_removed_owned_paths_in_agentfs(
+                agent,
+                app_id,
+                &state.owned_paths,
+                &desired_owned_paths,
+            )
+            .await?;
+            let next_state = AppStructureSyncStateDoc {
+                revision: Some(snapshot.revision.clone()),
+                active_scope: snapshot.active_scope.clone(),
+                owned_paths: desired_owned_paths.into_iter().collect(),
+            };
+            let plan = build_bulk_materialize_plan(app_id, &snapshot, &next_state, true)?;
+            agent.bulk_materialize_tree(&plan).await?;
+            eprintln!(
+                "[structure.sync] result app={} changed=true revision={} active_scope={}",
+                app_id,
+                snapshot.revision,
+                snapshot.active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(())
+        }
+    }
+}
+
+pub(super) async fn refresh_app_structure_in_db(
+    agent: &SdkAgentFS,
+    app_id: &str,
+    session_id: &str,
+    connector: &mut dyn AppConnector,
+    reason: AppStructureSyncReason,
+    target_scope: Option<String>,
+    trigger_action_path: Option<String>,
+) -> Result<StructureSyncOutcome> {
+    let state = load_state_from_agentfs(agent, app_id).await?;
+    let ctx = ConnectorContext {
+        app_id: app_id.to_string(),
+        session_id: session_id.to_string(),
+        request_id: "structure-refresh".to_string(),
+        client_token: None,
+        trace_id: None,
+    };
+    eprintln!(
+        "[structure.sync] op=refresh_app_structure app={} reason={} target_scope={} trigger_action_path={} known_revision={}",
+        app_id,
+        structure_reason_label(reason),
+        target_scope.as_deref().unwrap_or("<none>"),
+        trigger_action_path.as_deref().unwrap_or("<none>"),
+        state.revision.as_deref().unwrap_or("<none>")
+    );
+    let response = connector.refresh_app_structure(
+        RefreshAppStructureRequest {
+            app_id: app_id.to_string(),
+            known_revision: state.revision.clone(),
+            reason,
+            target_scope,
+            trigger_action_path,
+        },
+        &ctx,
+    )?;
+
+    match response.result {
+        AppStructureSyncResult::Unchanged {
+            revision,
+            active_scope,
+            ..
+        } => {
+            eprintln!(
+                "[structure.sync] result app={} changed=false revision={} active_scope={}",
+                app_id,
+                revision,
+                active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(StructureSyncOutcome {
+                changed: false,
+                revision: Some(revision),
+                active_scope,
+                manifest_json: None,
+            })
+        }
+        AppStructureSyncResult::Snapshot { snapshot } => {
+            if snapshot.app_id != app_id {
+                anyhow::bail!(
+                    "structure snapshot app_id mismatch: snapshot={} runtime={}",
+                    snapshot.app_id,
+                    app_id
+                );
+            }
+            let desired_owned_paths = desired_owned_paths_for_snapshot(&snapshot);
+            prune_removed_owned_paths_in_agentfs(
+                agent,
+                app_id,
+                &state.owned_paths,
+                &desired_owned_paths,
+            )
+            .await?;
+            let next_state = AppStructureSyncStateDoc {
+                revision: Some(snapshot.revision.clone()),
+                active_scope: snapshot.active_scope.clone(),
+                owned_paths: desired_owned_paths.into_iter().collect(),
+            };
+            let manifest_json =
+                serde_json::to_string_pretty(&build_manifest_doc(app_id, &snapshot)?)?;
+            let plan = build_bulk_materialize_plan(app_id, &snapshot, &next_state, false)?;
+            agent.bulk_materialize_tree(&plan).await?;
+            eprintln!(
+                "[structure.sync] result app={} changed=true revision={} active_scope={}",
+                app_id,
+                snapshot.revision,
+                snapshot.active_scope.as_deref().unwrap_or("<none>")
+            );
+            Ok(StructureSyncOutcome {
+                changed: true,
+                revision: Some(snapshot.revision),
+                active_scope: snapshot.active_scope,
+                manifest_json: Some(manifest_json),
+            })
+        }
+    }
 }
 
 pub(super) fn refresh_app_structure(
@@ -176,6 +349,7 @@ impl AppTreeSyncService {
                     changed: false,
                     revision: Some(revision),
                     active_scope,
+                    manifest_json: None,
                 })
             }
             AppStructureSyncResult::Snapshot { snapshot } => {
@@ -192,6 +366,7 @@ impl AppTreeSyncService {
                     changed: true,
                     revision: Some(revision),
                     active_scope,
+                    manifest_json: None,
                 })
             }
         }
@@ -341,25 +516,7 @@ impl AppTreeSyncService {
     }
 
     fn desired_owned_paths(&self, snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
-        let mut owned = BTreeSet::new();
-        owned.insert("_meta".to_string());
-        owned.insert("_meta/manifest.res.json".to_string());
-        for node in &snapshot.nodes {
-            owned.insert(node.path.clone());
-            let mut current = Path::new(&node.path).parent();
-            while let Some(parent) = current {
-                let rel = parent.to_string_lossy().replace('\\', "/");
-                if rel.is_empty() {
-                    break;
-                }
-                if is_runtime_protected_path(&rel) {
-                    break;
-                }
-                owned.insert(rel.clone());
-                current = parent.parent();
-            }
-        }
-        owned
+        desired_owned_paths_for_snapshot(snapshot)
     }
 
     fn ensure_snapshot_paths_visible(
@@ -403,27 +560,7 @@ impl AppTreeSyncService {
     }
 
     fn validate_node(&self, node: &AppStructureNode) -> Result<()> {
-        if node.path.trim().is_empty() {
-            anyhow::bail!("structure node path cannot be empty");
-        }
-        let rel = Path::new(&node.path);
-        if rel.is_absolute() {
-            anyhow::bail!("structure node path must be relative: {}", node.path);
-        }
-        for component in rel.components() {
-            use std::path::Component;
-            match component {
-                Component::Normal(_) => {}
-                _ => anyhow::bail!("structure node path is invalid: {}", node.path),
-            }
-        }
-        if is_runtime_protected_path(&node.path) {
-            anyhow::bail!(
-                "connector-owned node may not target runtime-protected path: {}",
-                node.path
-            );
-        }
-        Ok(())
+        validate_structure_node(node)
     }
 
     fn context(&self, request_id: &str) -> ConnectorContext {
@@ -462,6 +599,209 @@ impl AppTreeSyncService {
     fn app_dir(&self) -> PathBuf {
         self.root.join(&self.app_id)
     }
+}
+
+async fn load_state_from_agentfs(
+    agent: &SdkAgentFS,
+    app_id: &str,
+) -> Result<AppStructureSyncStateDoc> {
+    let path = format!("/{app_id}/_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}");
+    let Some(bytes) = agent.fs.read_file(&path).await? else {
+        return Ok(AppStructureSyncStateDoc::default());
+    };
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn prune_removed_owned_paths_in_agentfs(
+    agent: &SdkAgentFS,
+    app_id: &str,
+    previous_owned_paths: &[String],
+    desired_owned_paths: &BTreeSet<String>,
+) -> Result<()> {
+    let mut to_remove: Vec<String> = previous_owned_paths
+        .iter()
+        .filter(|path| !desired_owned_paths.contains(path.as_str()))
+        .cloned()
+        .collect();
+    to_remove.sort_by_key(|path| std::cmp::Reverse(path.len()));
+
+    for rel in to_remove {
+        if is_runtime_protected_path(&rel) {
+            continue;
+        }
+        let abs = format!("/{app_id}/{rel}");
+        match agent.fs.remove(&abs).await {
+            Ok(()) => {}
+            Err(agentfs_sdk::error::Error::Fs(agentfs_sdk::FsError::NotFound)) => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to prune stale structure path {abs}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn desired_owned_paths_for_snapshot(snapshot: &AppStructureSnapshot) -> BTreeSet<String> {
+    let mut owned = BTreeSet::new();
+    owned.insert("_meta".to_string());
+    owned.insert("_meta/manifest.res.json".to_string());
+    for node in &snapshot.nodes {
+        owned.insert(node.path.clone());
+        let mut current = Path::new(&node.path).parent();
+        while let Some(parent) = current {
+            let rel = parent.to_string_lossy().replace('\\', "/");
+            if rel.is_empty() {
+                break;
+            }
+            if is_runtime_protected_path(&rel) {
+                break;
+            }
+            owned.insert(rel.clone());
+            current = parent.parent();
+        }
+    }
+    owned
+}
+
+fn validate_structure_node(node: &AppStructureNode) -> Result<()> {
+    if node.path.trim().is_empty() {
+        anyhow::bail!("structure node path cannot be empty");
+    }
+    let rel = Path::new(&node.path);
+    if rel.is_absolute() {
+        anyhow::bail!("structure node path must be relative: {}", node.path);
+    }
+    for component in rel.components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) => {}
+            _ => anyhow::bail!("structure node path is invalid: {}", node.path),
+        }
+    }
+    if is_runtime_protected_path(&node.path) {
+        anyhow::bail!(
+            "connector-owned node may not target runtime-protected path: {}",
+            node.path
+        );
+    }
+    Ok(())
+}
+
+fn build_bulk_materialize_plan(
+    app_id: &str,
+    snapshot: &AppStructureSnapshot,
+    state: &AppStructureSyncStateDoc,
+    include_runtime_scaffolding: bool,
+) -> Result<BulkMaterializePlan> {
+    let mut plan = BulkMaterializePlan::new();
+    let mut dir_paths = BTreeSet::new();
+    dir_paths.insert(format!("/{app_id}"));
+    dir_paths.insert(format!("/{app_id}/_meta"));
+
+    for node in &snapshot.nodes {
+        validate_structure_node(node)?;
+        if let Some(parent) = Path::new(&node.path).parent() {
+            let rel = parent.to_string_lossy().replace('\\', "/");
+            if !rel.is_empty() {
+                dir_paths.insert(format!("/{app_id}/{rel}"));
+            }
+        }
+        if matches!(node.kind, AppStructureNodeKind::Directory) {
+            dir_paths.insert(format!("/{app_id}/{}", node.path));
+        }
+    }
+
+    for dir in dir_paths {
+        plan.push(BulkMaterializeEntry::ensure_dir(dir));
+    }
+
+    for node in &snapshot.nodes {
+        let full = format!("/{app_id}/{}", node.path);
+        match node.kind {
+            AppStructureNodeKind::Directory => {}
+            AppStructureNodeKind::ActionFile | AppStructureNodeKind::SnapshotResource => {
+                plan.push(BulkMaterializeEntry::ensure_empty_file(full));
+            }
+            AppStructureNodeKind::LiveResource | AppStructureNodeKind::StaticJsonResource => {
+                let content = node.seed_content.clone().unwrap_or_else(|| json!({}));
+                plan.push(BulkMaterializeEntry::write_file(
+                    full,
+                    serde_json::to_vec_pretty(&content)?,
+                ));
+            }
+        }
+    }
+
+    let manifest_json = build_manifest_doc(app_id, snapshot)?;
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("/{app_id}/_meta/manifest.res.json"),
+        serde_json::to_vec_pretty(&manifest_json)?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("/{app_id}/_meta/{APP_STRUCTURE_SYNC_STATE_FILENAME}"),
+        serde_json::to_vec_pretty(state)?,
+    ));
+    if include_runtime_scaffolding {
+        append_runtime_scaffolding_plan(&mut plan, app_id)?;
+    }
+
+    Ok(plan)
+}
+
+fn build_manifest_doc(app_id: &str, snapshot: &AppStructureSnapshot) -> Result<JsonValue> {
+    let mut manifest_nodes = BTreeMap::new();
+    for node in &snapshot.nodes {
+        if let Some(entry) = &node.manifest_entry {
+            let template = entry
+                .get("template")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("manifest_entry missing template for {}", node.path)
+                })?;
+            let mut normalized = entry.clone();
+            if let Some(obj) = normalized.as_object_mut() {
+                obj.remove("template");
+            }
+            manifest_nodes.insert(template.to_string(), normalized);
+        }
+    }
+    Ok(json!({
+        "app_id": app_id,
+        "nodes": manifest_nodes,
+    }))
+}
+
+fn append_runtime_scaffolding_plan(plan: &mut BulkMaterializePlan, app_id: &str) -> Result<()> {
+    let stream_dir = format!("/{app_id}/_stream");
+    plan.push(BulkMaterializeEntry::ensure_dir(stream_dir.clone()));
+    plan.push(BulkMaterializeEntry::ensure_dir(format!(
+        "{stream_dir}/from-seq"
+    )));
+    plan.push(BulkMaterializeEntry::ensure_empty_file(format!(
+        "{stream_dir}/events.evt.jsonl"
+    )));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/cursor.res.json"),
+        serde_json::to_vec_pretty(&json!(CursorState {
+            min_seq: 0,
+            max_seq: 0,
+            retention_hint_sec: DEFAULT_RETENTION_HINT_SEC,
+        }))?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/inflight.jobs.res.json"),
+        serde_json::to_vec_pretty(&json!([]))?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/{}", super::ACTION_CURSORS_FILENAME),
+        serde_json::to_vec_pretty(&serde_json::to_value(ActionCursorDoc::default())?)?,
+    ));
+    plan.push(BulkMaterializeEntry::write_file(
+        format!("{stream_dir}/{SNAPSHOT_EXPAND_JOURNAL_FILENAME}"),
+        serde_json::to_vec_pretty(&json!({"resources": {}}))?,
+    ));
+    Ok(())
 }
 
 fn bootstrap_runtime_scaffolding(root: &Path, app_id: &str) -> Result<()> {
@@ -687,7 +1027,8 @@ fn structure_reason_label(reason: AppStructureSyncReason) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_runtime_scaffolding, AppTreeSyncService};
-    use agentfs_sdk::DemoAppConnector;
+    use crate::cmd::appfs::{build_appfs_bridge_config, AppfsBridgeCliArgs};
+    use agentfs_sdk::{AgentFS, AgentFSOptions, DemoAppConnector};
     use std::fs;
     use tempfile::TempDir;
 
@@ -800,5 +1141,152 @@ mod tests {
             .path()
             .join("aiim/_stream/action-cursors.res.json")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn db_structure_init_materializes_runtime_scaffolding() {
+        let temp = TempDir::new().expect("tempdir");
+        let db_path = temp.path().join("test.db");
+        let agent = AgentFS::open(AgentFSOptions::with_path(
+            db_path.to_string_lossy().to_string(),
+        ))
+        .await
+        .expect("open agentfs");
+        let bridge = build_appfs_bridge_config(AppfsBridgeCliArgs {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1_000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        });
+
+        super::ensure_app_structure_initialized_in_db(&agent, "aiim", "sess-test", &bridge)
+            .await
+            .expect("db structure init");
+
+        assert!(agent
+            .fs
+            .stat("/aiim/_stream")
+            .await
+            .expect("stat")
+            .unwrap()
+            .is_directory());
+        assert!(agent
+            .fs
+            .stat("/aiim/_stream/from-seq")
+            .await
+            .expect("stat")
+            .unwrap()
+            .is_directory());
+        assert_eq!(
+            agent
+                .fs
+                .read_file("/aiim/_stream/events.evt.jsonl")
+                .await
+                .expect("events")
+                .unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/cursor.res.json")
+            .await
+            .expect("cursor")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/inflight.jobs.res.json")
+            .await
+            .expect("jobs")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/action-cursors.res.json")
+            .await
+            .expect("action cursors")
+            .is_some());
+        assert!(agent
+            .fs
+            .read_file("/aiim/_stream/snapshot-expand.state.res.json")
+            .await
+            .expect("snapshot journal")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn db_structure_refresh_updates_scope_and_preserves_runtime_state() {
+        let temp = TempDir::new().expect("tempdir");
+        let db_path = temp.path().join("test.db");
+        let agent = AgentFS::open(AgentFSOptions::with_path(
+            db_path.to_string_lossy().to_string(),
+        ))
+        .await
+        .expect("open agentfs");
+        let bridge = build_appfs_bridge_config(AppfsBridgeCliArgs {
+            adapter_http_endpoint: None,
+            adapter_http_timeout_ms: 5_000,
+            adapter_grpc_endpoint: None,
+            adapter_grpc_timeout_ms: 5_000,
+            adapter_bridge_max_retries: 2,
+            adapter_bridge_initial_backoff_ms: 100,
+            adapter_bridge_max_backoff_ms: 1_000,
+            adapter_bridge_circuit_breaker_failures: 5,
+            adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
+        });
+
+        super::ensure_app_structure_initialized_in_db(&agent, "aiim", "sess-test", &bridge)
+            .await
+            .expect("db structure init");
+        let before_cursor = agent
+            .fs
+            .read_file("/aiim/_stream/cursor.res.json")
+            .await
+            .expect("cursor")
+            .expect("cursor exists");
+
+        let mut connector = super::build_app_connector("aiim", &bridge).expect("connector");
+        let outcome = super::refresh_app_structure_in_db(
+            &agent,
+            "aiim",
+            "sess-test",
+            &mut *connector,
+            agentfs_sdk::AppStructureSyncReason::EnterScope,
+            Some("chat-long".to_string()),
+            Some("/_app/enter_scope.act".to_string()),
+        )
+        .await
+        .expect("db structure refresh");
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.active_scope.as_deref(), Some("chat-long"));
+        assert!(outcome
+            .manifest_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("chat-long/messages.res.jsonl"));
+        assert!(agent
+            .fs
+            .stat("/aiim/chats/chat-long")
+            .await
+            .expect("stat")
+            .unwrap()
+            .is_directory());
+        assert!(agent
+            .fs
+            .stat("/aiim/chats/chat-001")
+            .await
+            .expect("stat old")
+            .is_none());
+        let after_cursor = agent
+            .fs
+            .read_file("/aiim/_stream/cursor.res.json")
+            .await
+            .expect("cursor after")
+            .expect("cursor exists after");
+        assert_eq!(before_cursor, after_cursor);
     }
 }

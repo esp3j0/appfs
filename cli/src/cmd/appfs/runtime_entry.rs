@@ -1,6 +1,6 @@
 use super::{
-    build_appfs_bridge_config, AppfsAdapter, AppfsBridgeCliArgs, ResolvedAppfsRuntimeCliArgs,
-    APP_STRUCTURE_SYNC_STATE_FILENAME,
+    build_appfs_bridge_config, AppRuntimeStartupBootstrap, AppfsAdapter, AppfsBridgeCliArgs,
+    ResolvedAppfsRuntimeCliArgs, APP_STRUCTURE_SYNC_STATE_FILENAME,
 };
 use anyhow::Result;
 use serde_json::Value as JsonValue;
@@ -15,13 +15,23 @@ pub(super) struct AppRuntimeEntry {
 pub(super) fn build_runtime_entry(
     root: &Path,
     runtime: ResolvedAppfsRuntimeCliArgs,
+    startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
 ) -> Result<AppRuntimeEntry> {
-    let adapter = AppfsAdapter::new(
-        root.to_path_buf(),
-        runtime.app_id.clone(),
-        runtime.session_id.clone(),
-        build_appfs_bridge_config(runtime.bridge.clone()),
-    )?;
+    let adapter = match startup_bootstrap {
+        Some(startup_bootstrap) => AppfsAdapter::new_with_bootstrap(
+            root.to_path_buf(),
+            runtime.app_id.clone(),
+            runtime.session_id.clone(),
+            build_appfs_bridge_config(runtime.bridge.clone()),
+            Some(startup_bootstrap),
+        )?,
+        None => AppfsAdapter::new(
+            root.to_path_buf(),
+            runtime.app_id.clone(),
+            runtime.session_id.clone(),
+            build_appfs_bridge_config(runtime.bridge.clone()),
+        )?,
+    };
     Ok(AppRuntimeEntry { runtime, adapter })
 }
 

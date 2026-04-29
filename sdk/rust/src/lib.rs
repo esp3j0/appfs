@@ -2,6 +2,7 @@ pub mod appfs_adapter;
 pub mod appfs_adapter_testkit;
 pub mod appfs_connector;
 pub mod appfs_demo_adapter;
+pub mod bulk_materialize;
 pub mod connection_pool;
 pub mod error;
 pub mod filesystem;
@@ -41,12 +42,14 @@ pub use appfs_connector::{
     APPFS_CONNECTOR_SDK_VERSION,
 };
 pub use appfs_demo_adapter::{DemoAppAdapterV1, DemoAppConnector};
+pub use bulk_materialize::{BulkMaterializeEntry, BulkMaterializePlan};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
-    BoxedFile, DirEntry, File, FileSystem, FilesystemStats, FsError, OverlayFS, Stats, TimeChange,
-    DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT,
-    S_IFREG, S_IFSOCK,
+    AgentFsGlobQuery, AgentFsGlobQueryResult, AgentFsQueryEntry, AgentFsQueryEntryKind,
+    AgentFsTreeQuery, AgentFsTreeQueryResult, BoxedFile, DirEntry, File, FileSystem,
+    FilesystemStats, FsError, OverlayFS, Stats, TimeChange, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
+    S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
 };
 pub use kvstore::KvStore;
 pub use schema::{SchemaVersion, AGENTFS_SCHEMA_VERSION};
@@ -389,7 +392,7 @@ impl AgentFS {
             OverlayFS::init_schema(&conn, &base_path_str).await?;
         }
 
-        Self::open_with_pool(pool, sync_db).await
+        Self::open_with_pool_and_cache_key(pool, sync_db, Some(db_path)).await
     }
 
     /// Open an AgentFS instance from a connection pool
@@ -397,8 +400,16 @@ impl AgentFS {
         pool: connection_pool::ConnectionPool,
         sync_db: Option<turso::sync::Database>,
     ) -> Result<Self> {
+        Self::open_with_pool_and_cache_key(pool, sync_db, None).await
+    }
+
+    async fn open_with_pool_and_cache_key(
+        pool: connection_pool::ConnectionPool,
+        sync_db: Option<turso::sync::Database>,
+        cache_key: Option<String>,
+    ) -> Result<Self> {
         let kv = KvStore::from_pool(pool.clone()).await?;
-        let fs = filesystem::AgentFS::from_pool(pool.clone()).await?;
+        let fs = filesystem::AgentFS::from_pool_with_cache_key(pool.clone(), cache_key).await?;
         let tools = ToolCalls::from_pool(pool.clone()).await?;
 
         Ok(Self {
@@ -438,6 +449,24 @@ impl AgentFS {
     /// Get the connection pool
     pub fn get_pool(&self) -> connection_pool::ConnectionPool {
         self.pool.clone()
+    }
+
+    /// Bulk materialize a tree of directories and files directly into the AgentFS DB.
+    ///
+    /// This bypasses mount-backend round-trips and is intended for large startup
+    /// bootstraps such as AppFS structure synchronization.
+    pub async fn bulk_materialize_tree(&self, plan: &BulkMaterializePlan) -> Result<()> {
+        self.fs.bulk_materialize_tree(plan).await
+    }
+
+    /// Query a bounded directory tree directly from the AgentFS DB.
+    pub async fn query_tree(&self, request: AgentFsTreeQuery) -> Result<AgentFsTreeQueryResult> {
+        self.fs.query_tree(request).await
+    }
+
+    /// Query paths matching a glob directly from the AgentFS DB.
+    pub async fn query_glob(&self, request: AgentFsGlobQuery) -> Result<AgentFsGlobQueryResult> {
+        self.fs.query_glob(request).await
     }
 
     /// Check if sync is enabled for this database
