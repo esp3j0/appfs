@@ -269,7 +269,7 @@ class HuoyanBackendTests(unittest.TestCase):
         )
         initial = backend.get_app_structure({"app_id": "huoyan"}, self.context)
         revision = initial["result"]["snapshot"]["revision"]
-        self.assertRegex(revision, r"^huoyan-case:7-p:[0-9a-f]{12}-f:[0-9a-f]{12}$")
+        self.assertRegex(revision, r"^huoyan-case:7-sv:1-p:[0-9a-f]{12}-f:[0-9a-f]{12}$")
 
         self.client.list_nodes_calls.clear()
         unchanged = backend.get_app_structure(

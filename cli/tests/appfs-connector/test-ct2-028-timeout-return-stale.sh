@@ -74,7 +74,7 @@ cat "$SNAPSHOT_FILE" >"$stale_output" || fail "timeout-return_stale with healthy
 hash_after="$(sha256sum "$TMP_ROOT/aiim/chats/chat-001/messages.res.jsonl" | awk '{print $1}')"
 [ "$hash_before" = "$hash_after" ] || fail "healthy stale fallback should keep cached bytes unchanged"
 cmp -s "$SNAPSHOT_FILE" "$stale_output" || fail "healthy stale fallback should return cached bytes"
-grep -F -q "[cache] timeout_return_stale resource=/chats/chat-001/messages.res.jsonl trigger=open" "$MOUNT_LOG" || fail "missing timeout_return_stale log anchor"
+grep -F -q "[cache] timeout_return_stale resource=/chats/chat-001/messages.res.jsonl trigger=read" "$MOUNT_LOG" || fail "missing timeout_return_stale log anchor"
 pass "timeout-return_stale with healthy cache returns degraded success and keeps stale bytes"
 
 stop_mount_process "${MOUNT_PID:-}" "${MOUNTPOINT:-}"
@@ -95,7 +95,7 @@ if cat "$SNAPSHOT_FILE" >/dev/null 2>"$TMP_ROOT/ct2-028-bad.stderr"; then
 fi
 bad_hash_after="$(sha256sum "$TMP_ROOT/aiim/chats/chat-001/messages.res.jsonl" | awk '{print $1}')"
 [ "$bad_hash_before" = "$bad_hash_after" ] || fail "malformed stale timeout should not mutate stale cache bytes"
-grep -F -q "[cache] expand failed resource=/chats/chat-001/messages.res.jsonl phase=timeout on_timeout=return_stale stale_reason=stale_cache_unhealthy trigger=open" "$MOUNT_LOG" || fail "missing malformed stale timeout log"
+grep -F -q "[cache] expand failed resource=/chats/chat-001/messages.res.jsonl phase=timeout on_timeout=return_stale stale_reason=stale_cache_unhealthy trigger=read" "$MOUNT_LOG" || fail "missing malformed stale timeout log"
 pass "malformed stale cache is rejected and ordinary read fails without mutating bytes"
 
 say "CT2-028 done"
