@@ -215,6 +215,44 @@ fn granted_access_to_open_flags(granted_access: u32) -> i32 {
     flags
 }
 
+struct CachedDirectoryEntries {
+    entries: Vec<(String, Stats)>,
+    name_index: HashMap<String, usize>,
+}
+
+impl CachedDirectoryEntries {
+    fn new(entries: Vec<(String, Stats)>) -> Self {
+        let mut name_index = HashMap::with_capacity(entries.len());
+        for (index, (name, _stats)) in entries.iter().enumerate() {
+            name_index.insert(
+                AgentFSWinFsp::sanitize_dir_entry_name(name).to_string(),
+                index,
+            );
+        }
+        Self {
+            entries,
+            name_index,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.name_index.get(name).copied()
+    }
+
+    fn get(&self, name: &str) -> Option<&(String, Stats)> {
+        self.index_of(name)
+            .and_then(|index| self.entries.get(index))
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &(String, Stats)> {
+        self.entries.iter()
+    }
+}
+
 /// Tracks an open file or directory handle
 struct OpenFile {
     /// The file handle (None for directories)
@@ -232,7 +270,7 @@ struct OpenFile {
     /// Path to the file (for deletion on close)
     path: String,
     /// Cached directory entries for a directory handle.
-    dir_entries: Mutex<Option<Arc<Vec<(String, Stats)>>>>,
+    dir_entries: Mutex<Option<Arc<CachedDirectoryEntries>>>,
 }
 
 /// WinFsp filesystem adapter wrapping an AgentFS FileSystem.
@@ -240,7 +278,8 @@ pub struct AgentFSWinFsp {
     fs: Arc<Mutex<dyn FileSystem + Send>>,
     handle: Handle,
     open_files: Mutex<HashMap<u64, OpenFile>>,
-    path_ino_cache: Mutex<HashMap<String, i64>>,
+    path_stats_cache: Mutex<HashMap<String, Stats>>,
+    dir_entries_cache: Mutex<HashMap<i64, Arc<CachedDirectoryEntries>>>,
     next_fh: AtomicU64,
 }
 
@@ -251,7 +290,8 @@ impl AgentFSWinFsp {
             fs,
             handle,
             open_files: Mutex::new(HashMap::new()),
-            path_ino_cache: Mutex::new(HashMap::new()),
+            path_stats_cache: Mutex::new(HashMap::new()),
+            dir_entries_cache: Mutex::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
         }
     }
@@ -292,27 +332,22 @@ impl AgentFSWinFsp {
         }
     }
 
-    fn remember_path_ino(&self, path: &str, ino: i64) {
-        self.path_ino_cache
+    fn remember_path_stats(&self, path: &str, stats: &Stats) {
+        self.path_stats_cache
             .lock()
-            .insert(Self::normalize_cache_path(path), ino);
+            .insert(Self::normalize_cache_path(path), stats.clone());
     }
 
-    fn forget_path_ino(&self, path: &str) {
-        self.path_ino_cache
-            .lock()
-            .remove(&Self::normalize_cache_path(path));
+    fn clear_metadata_caches(&self) {
+        self.path_stats_cache.lock().clear();
+        self.dir_entries_cache.lock().clear();
     }
 
-    fn clear_path_ino_cache(&self) {
-        self.path_ino_cache.lock().clear();
-    }
-
-    fn lookup_cached_path_ino(&self, path: &str) -> Option<i64> {
-        self.path_ino_cache
+    fn lookup_cached_path_stats(&self, path: &str) -> Option<Stats> {
+        self.path_stats_cache
             .lock()
             .get(&Self::normalize_cache_path(path))
-            .copied()
+            .cloned()
     }
 
     /// Parse a path into (parent_ino, name) for operations that need a parent directory.
@@ -362,12 +397,8 @@ impl AgentFSWinFsp {
 
     /// Look up a path and return its stats. Walks the entire path.
     fn path_lookup(&self, path: &str) -> Result<Option<Stats>> {
-        if let Some(ino) = self.lookup_cached_path_ino(path) {
-            let fs = self.fs.clone();
-            match self.block_on(async move { fs.lock().getattr(ino).await })? {
-                Some(stats) => return Ok(Some(stats)),
-                None => self.forget_path_ino(path),
-            }
+        if let Some(stats) = self.lookup_cached_path_stats(path) {
+            return Ok(Some(stats));
         }
 
         let path = path.trim_start_matches('/');
@@ -380,7 +411,7 @@ impl AgentFSWinFsp {
         let fs = self.fs.clone();
         let stats = self.block_on(async move { fs.lock().lookup(parent_ino, &name).await })?;
         if let Some(stats) = stats.as_ref() {
-            self.remember_path_ino(path, stats.ino);
+            self.remember_path_stats(path, stats);
         }
         Ok(stats)
     }
@@ -550,15 +581,15 @@ impl AgentFSWinFsp {
                     Ok(None) => dir_stats.clone(),
                     Err(e) => return Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
                 };
-                self.remember_path_ino(dir_path, dir_stats.ino);
+                self.remember_path_stats(dir_path, &dir_stats);
 
                 let mut all_entries: Vec<(String, Stats)> = Vec::with_capacity(entries.len() + 2);
                 all_entries.push((".".to_string(), dir_stats));
                 all_entries.push(("..".to_string(), parent_stats));
                 for entry in entries {
-                    self.remember_path_ino(
+                    self.remember_path_stats(
                         &Self::join_child_path(dir_path, &entry.name),
-                        entry.stats.ino,
+                        &entry.stats,
                     );
                     all_entries.push((entry.name, entry.stats));
                 }
@@ -574,7 +605,7 @@ impl AgentFSWinFsp {
         fh: u64,
         dir_ino: i64,
         dir_path: &str,
-    ) -> winfsp::Result<Arc<Vec<(String, Stats)>>> {
+    ) -> winfsp::Result<Arc<CachedDirectoryEntries>> {
         if let Some(cached) = {
             let open_files = self.open_files.lock();
             open_files
@@ -584,14 +615,34 @@ impl AgentFSWinFsp {
             return Ok(cached);
         }
 
-        let entries = Arc::new(self.list_directory_entries(dir_ino, dir_path)?);
+        if let Some(cached) = self.dir_entries_cache.lock().get(&dir_ino).cloned() {
+            let open_files = self.open_files.lock();
+            if let Some(open_file) = open_files.get(&fh) {
+                *open_file.dir_entries.lock() = Some(cached.clone());
+            }
+            return Ok(cached);
+        }
+
+        let entries = Arc::new(CachedDirectoryEntries::new(
+            self.list_directory_entries(dir_ino, dir_path)?,
+        ));
         {
             let open_files = self.open_files.lock();
             if let Some(open_file) = open_files.get(&fh) {
                 *open_file.dir_entries.lock() = Some(entries.clone());
             }
         }
+        self.dir_entries_cache
+            .lock()
+            .insert(dir_ino, entries.clone());
         Ok(entries)
+    }
+
+    fn cached_directory_entries_if_loaded(&self, fh: u64) -> Option<Arc<CachedDirectoryEntries>> {
+        let open_files = self.open_files.lock();
+        open_files
+            .get(&fh)
+            .and_then(|open_file| open_file.dir_entries.lock().clone())
     }
 
     fn lookup_directory_entry(
@@ -636,7 +687,7 @@ impl AgentFSWinFsp {
         let stats = self.block_on(async move { fs.lock().lookup(dir_ino, &name_owned).await });
         match stats {
             Ok(Some(stats)) => {
-                self.remember_path_ino(&Self::join_child_path(dir_path, name), stats.ino);
+                self.remember_path_stats(&Self::join_child_path(dir_path, name), &stats);
                 Ok(Some((name.to_string(), stats)))
             }
             Ok(None) => Ok(None),
@@ -660,7 +711,7 @@ impl AgentFSWinFsp {
                 fs_guard.unlink(parent_ino, &name).await
             }
         })?;
-        self.clear_path_ino_cache();
+        self.clear_metadata_caches();
         Ok(())
     }
 
@@ -1020,7 +1071,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
         match existing {
             Ok(Some(stats)) => {
-                self.remember_path_ino(&path, stats.ino);
+                self.remember_path_stats(&path, &stats);
                 // File already exists - open it directly
                 // WinFsp will call overwrite() if truncation is needed
                 tracing::trace!(
@@ -1143,8 +1194,8 @@ impl FileSystemContext for AgentFSWinFsp {
 
                 match result {
                     Ok(stats) => {
-                        self.clear_path_ino_cache();
-                        self.remember_path_ino(&path, stats.ino);
+                        self.clear_metadata_caches();
+                        self.remember_path_stats(&path, &stats);
                         fill_file_info(&stats, file_info.as_mut());
 
                         let fh = self.alloc_fh();
@@ -1362,6 +1413,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
             match result {
                 Ok(()) => {
+                    self.clear_metadata_caches();
                     let fs = self.fs.clone();
                     let stats = self.block_on(async move { fs.lock().getattr(ino).await });
                     match stats {
@@ -1463,7 +1515,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
         match result {
             Ok(()) => {
-                self.clear_path_ino_cache();
+                self.clear_metadata_caches();
                 Ok(())
             }
             Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
@@ -1515,18 +1567,15 @@ impl FileSystemContext for AgentFSWinFsp {
             .as_deref()
             .map(Self::sanitize_dir_entry_name)
             .filter(|name| !name.is_empty());
-        let mut marker_seen = marker_name.is_none();
+        let start_idx = marker_name
+            .and_then(|name| all_entries.index_of(name))
+            .map(|index| index + 1)
+            .unwrap_or(0);
         let mut cursor = 0u32;
 
-        for (name, stats) in all_entries.iter() {
+        for (name, stats) in all_entries.entries.iter().skip(start_idx) {
             let name = Self::sanitize_dir_entry_name(name);
             if !Self::should_include_dir_entry(name, pattern_str.as_deref()) {
-                continue;
-            }
-            if !marker_seen {
-                if Some(name) == marker_name {
-                    marker_seen = true;
-                }
                 continue;
             }
             let mut dir_info: DirInfo<255> = DirInfo::default();
@@ -1574,7 +1623,7 @@ impl FileSystemContext for AgentFSWinFsp {
         let normalized_query = Self::normalize_directory_pattern(&query_name);
         let entry = if normalized_query.contains(['*', '?', DOS_STAR, DOS_QM, DOS_DOT]) {
             let entries = self.cached_directory_entries(context.fh, dir_ino, &dir_path)?;
-            entries
+            let found = entries
                 .iter()
                 .find(|(name, _stats)| {
                     Self::should_include_dir_entry(
@@ -1582,10 +1631,15 @@ impl FileSystemContext for AgentFSWinFsp {
                         Some(normalized_query),
                     )
                 })
-                .map(|(name, stats)| (name.clone(), stats.clone()))
+                .map(|(name, stats)| (name.clone(), stats.clone()));
+            Ok(found)
+        } else if let Some(entries) = self.cached_directory_entries_if_loaded(context.fh) {
+            Ok(entries
+                .get(Self::sanitize_dir_entry_name(normalized_query))
+                .map(|(name, stats)| (name.clone(), stats.clone())))
         } else {
-            self.lookup_directory_entry(dir_ino, &dir_path, normalized_query)?
-        };
+            self.lookup_directory_entry(dir_ino, &dir_path, normalized_query)
+        }?;
 
         match entry {
             Some((name, stats)) => Self::fill_dir_info(out_dir_info, &name, &stats),
@@ -1630,6 +1684,9 @@ impl FileSystemContext for AgentFSWinFsp {
                 Ok(data) => {
                     let len = data.len().min(buffer.len());
                     buffer[..len].copy_from_slice(&data[..len]);
+                    if len > 0 {
+                        self.clear_metadata_caches();
+                    }
                     Ok(len as u32)
                 }
                 Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
@@ -1693,6 +1750,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
             match result {
                 Ok(()) => {
+                    self.clear_metadata_caches();
                     let fs = self.fs.clone();
                     let stats = self.block_on(async move { fs.lock().getattr(ino).await });
                     if let Ok(Some(stats)) = stats {
@@ -1763,6 +1821,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
             match result {
                 Ok(()) => {
+                    self.clear_metadata_caches();
                     let fs = self.fs.clone();
                     if let Ok(Some(stats)) =
                         self.block_on(async move { fs.lock().getattr(ino).await })
@@ -1816,6 +1875,7 @@ impl FileSystemContext for AgentFSWinFsp {
 
             match result {
                 Ok(()) => {
+                    self.clear_metadata_caches();
                     let fs = self.fs.clone();
                     if let Ok(Some(stats)) =
                         self.block_on(async move { fs.lock().getattr(ino).await })
@@ -1988,8 +2048,8 @@ impl FileSystemContext for AgentFSWinFsp {
             path,
             stats.ino
         );
-        self.clear_path_ino_cache();
-        self.remember_path_ino(&path, stats.ino);
+        self.clear_metadata_caches();
+        self.remember_path_stats(&path, &stats);
 
         let mut open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get_mut(&context.fh) {
