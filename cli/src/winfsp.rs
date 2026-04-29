@@ -231,6 +231,8 @@ struct OpenFile {
     deleted: std::sync::atomic::AtomicBool,
     /// Path to the file (for deletion on close)
     path: String,
+    /// Cached directory entries for a directory handle.
+    dir_entries: Mutex<Option<Vec<(String, Stats)>>>,
 }
 
 /// WinFsp filesystem adapter wrapping an AgentFS FileSystem.
@@ -500,6 +502,78 @@ impl AgentFSWinFsp {
                 Ok(all_entries)
             }
             Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+            Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+        }
+    }
+
+    fn cached_directory_entries(
+        &self,
+        fh: u64,
+        dir_ino: i64,
+        dir_path: &str,
+    ) -> winfsp::Result<Vec<(String, Stats)>> {
+        if let Some(cached) = {
+            let open_files = self.open_files.lock();
+            open_files
+                .get(&fh)
+                .and_then(|open_file| open_file.dir_entries.lock().clone())
+        } {
+            return Ok(cached);
+        }
+
+        let entries = self.list_directory_entries(dir_ino, dir_path)?;
+        {
+            let open_files = self.open_files.lock();
+            if let Some(open_file) = open_files.get(&fh) {
+                *open_file.dir_entries.lock() = Some(entries.clone());
+            }
+        }
+        Ok(entries)
+    }
+
+    fn lookup_directory_entry(
+        &self,
+        dir_ino: i64,
+        dir_path: &str,
+        query_name: &str,
+    ) -> winfsp::Result<Option<(String, Stats)>> {
+        let name = Self::sanitize_dir_entry_name(Self::normalize_directory_pattern(query_name));
+        if name.is_empty() {
+            return Ok(None);
+        }
+        if name == "." {
+            let fs = self.fs.clone();
+            let stats = self.block_on(async move { fs.lock().getattr(dir_ino).await });
+            return match stats {
+                Ok(Some(stats)) => Ok(Some((".".to_string(), stats))),
+                Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+                Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+            };
+        }
+        if name == ".." {
+            let parent_ino = if dir_path == "/" {
+                1
+            } else {
+                match self.parse_path(dir_path) {
+                    Ok((parent_ino, _)) => parent_ino,
+                    Err(e) => return Err(FspError::NTSTATUS(anyhow_to_ntstatus(&e))),
+                }
+            };
+            let fs = self.fs.clone();
+            let stats = self.block_on(async move { fs.lock().getattr(parent_ino).await });
+            return match stats {
+                Ok(Some(stats)) => Ok(Some(("..".to_string(), stats))),
+                Ok(None) => Err(FspError::NTSTATUS(STATUS_OBJECT_NAME_NOT_FOUND)),
+                Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
+            };
+        }
+
+        let fs = self.fs.clone();
+        let name_owned = name.to_string();
+        let stats = self.block_on(async move { fs.lock().lookup(dir_ino, &name_owned).await });
+        match stats {
+            Ok(Some(stats)) => Ok(Some((name.to_string(), stats))),
+            Ok(None) => Ok(None),
             Err(e) => Err(FspError::NTSTATUS(error_to_ntstatus(&e))),
         }
     }
@@ -778,6 +852,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                             deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
+                            dir_entries: Mutex::new(None),
                         },
                     );
                     Ok(FileContext { fh })
@@ -793,6 +868,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                             deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
+                            dir_entries: Mutex::new(None),
                         },
                     );
                     Ok(FileContext { fh })
@@ -826,6 +902,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     ),
                                     deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
+                                    dir_entries: Mutex::new(None),
                                 },
                             );
                             Ok(FileContext { fh })
@@ -899,6 +976,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                             deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
+                            dir_entries: Mutex::new(None),
                         },
                     );
                     Ok(FileContext { fh })
@@ -914,6 +992,7 @@ impl FileSystemContext for AgentFSWinFsp {
                             delete_on_close: std::sync::atomic::AtomicBool::new(delete_on_close),
                             deleted: std::sync::atomic::AtomicBool::new(false),
                             path: path_owned,
+                            dir_entries: Mutex::new(None),
                         },
                     );
                     Ok(FileContext { fh })
@@ -946,6 +1025,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     ),
                                     deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
+                                    dir_entries: Mutex::new(None),
                                 },
                             );
                             Ok(FileContext { fh })
@@ -1014,6 +1094,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     ),
                                     deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
+                                    dir_entries: Mutex::new(None),
                                 },
                             );
                             Ok(FileContext { fh })
@@ -1030,6 +1111,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                     ),
                                     deleted: std::sync::atomic::AtomicBool::new(false),
                                     path: path_owned,
+                                    dir_entries: Mutex::new(None),
                                 },
                             );
                             Ok(FileContext { fh })
@@ -1055,6 +1137,7 @@ impl FileSystemContext for AgentFSWinFsp {
                                             ),
                                             deleted: std::sync::atomic::AtomicBool::new(false),
                                             path: path_owned,
+                                            dir_entries: Mutex::new(None),
                                         },
                                     );
                                     Ok(FileContext { fh })
@@ -1344,7 +1427,7 @@ impl FileSystemContext for AgentFSWinFsp {
             }
         };
 
-        let all_entries = self.list_directory_entries(dir_ino, &dir_path)?;
+        let all_entries = self.cached_directory_entries(context.fh, dir_ino, &dir_path)?;
         let original_entry_count = all_entries.len();
         let filtered_entries: Vec<(String, Stats)> = all_entries
             .into_iter()
@@ -1428,14 +1511,18 @@ impl FileSystemContext for AgentFSWinFsp {
             }
         };
 
-        let entries = self.list_directory_entries(dir_ino, &dir_path)?;
         let normalized_query = Self::normalize_directory_pattern(&query_name);
-        let entry = entries.into_iter().find(|(name, _stats)| {
-            Self::should_include_dir_entry(
-                Self::sanitize_dir_entry_name(name),
-                Some(normalized_query),
-            )
-        });
+        let entry = if normalized_query.contains(['*', '?', DOS_STAR, DOS_QM, DOS_DOT]) {
+            let entries = self.cached_directory_entries(context.fh, dir_ino, &dir_path)?;
+            entries.into_iter().find(|(name, _stats)| {
+                Self::should_include_dir_entry(
+                    Self::sanitize_dir_entry_name(name),
+                    Some(normalized_query),
+                )
+            })
+        } else {
+            self.lookup_directory_entry(dir_ino, &dir_path, normalized_query)?
+        };
 
         match entry {
             Some((name, stats)) => Self::fill_dir_info(out_dir_info, &name, &stats),
@@ -1451,6 +1538,9 @@ impl FileSystemContext for AgentFSWinFsp {
     ) -> winfsp::Result<u32> {
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
             let file = open_file.file.clone();
             let buf_len = buffer.len();
             let is_dir = open_file.is_dir;
@@ -1952,6 +2042,8 @@ mod tests {
     struct MockFs {
         by_parent: HashMap<(i64, String), Stats>,
         by_ino: HashMap<i64, Stats>,
+        lookup_calls: Arc<std::sync::atomic::AtomicUsize>,
+        readdir_plus_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl MockFs {
@@ -1962,6 +2054,8 @@ mod tests {
             Self {
                 by_parent: HashMap::new(),
                 by_ino,
+                lookup_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                readdir_plus_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
         }
 
@@ -1976,6 +2070,8 @@ mod tests {
     #[async_trait]
     impl FileSystem for MockFs {
         async fn lookup(&self, parent_ino: i64, name: &str) -> SdkResult<Option<Stats>> {
+            self.lookup_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.by_parent.get(&(parent_ino, name.to_string())).cloned())
         }
 
@@ -1992,6 +2088,8 @@ mod tests {
         }
 
         async fn readdir_plus(&self, _ino: i64) -> SdkResult<Option<Vec<DirEntry>>> {
+            self.readdir_plus_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut entries: Vec<DirEntry> = self
                 .by_parent
                 .iter()
@@ -2144,6 +2242,7 @@ mod tests {
                     delete_on_close: AtomicBool::new(false),
                     deleted: AtomicBool::new(false),
                     path: dir_path.to_string(),
+                    dir_entries: Mutex::new(None),
                 },
             );
             f(adapter, FileContext { fh })
@@ -2263,6 +2362,60 @@ mod tests {
             "ab.txt", "a>>.txt"
         ));
         assert!(AgentFSWinFsp::directory_pattern_matches("a", "a\""));
+    }
+
+    #[test]
+    fn directory_entries_are_cached_per_open_directory_handle() {
+        let fs = MockFs::new()
+            .with_child(1, "a.txt", test_stats(2, 0o100644, 7))
+            .with_child(1, "b.txt", test_stats(3, 0o100644, 9));
+        let readdir_plus_calls = fs.readdir_plus_calls.clone();
+
+        with_open_directory_context(fs, 1, "/", |adapter, context| {
+            let first = adapter
+                .cached_directory_entries(context.fh, 1, "/")
+                .expect("first directory scan");
+            let second = adapter
+                .cached_directory_entries(context.fh, 1, "/")
+                .expect("cached directory scan");
+
+            assert_eq!(first.len(), second.len());
+            assert_eq!(
+                readdir_plus_calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "repeated WinFsp read_directory calls on one handle should not rescan the DB"
+            );
+        });
+    }
+
+    #[test]
+    fn get_dir_info_by_name_exact_lookup_does_not_scan_directory() {
+        let fs = MockFs::new()
+            .with_child(1, "notes.txt", test_stats(2, 0o100644, 7))
+            .with_child(1, "账户信息.res.jsonl", test_stats(3, 0o100644, 123));
+        let lookup_calls = fs.lookup_calls.clone();
+        let readdir_plus_calls = fs.readdir_plus_calls.clone();
+
+        with_open_directory_context(fs, 1, "/", |adapter, context| {
+            let query = U16CString::from_str("账户信息.res.jsonl").expect("exact query");
+            let mut dir_info = DirInfo::<255>::default();
+
+            <AgentFSWinFsp as FileSystemContext>::get_dir_info_by_name(
+                adapter,
+                &context,
+                query.as_ucstr(),
+                &mut dir_info,
+            )
+            .expect("exact lookup should resolve matching entry");
+
+            assert_eq!(dir_info.file_info_mut().file_size, 123);
+            assert_eq!(lookup_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                readdir_plus_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "exact WinFsp get_dir_info_by_name should avoid full directory scans"
+            );
+        });
     }
 
     #[test]

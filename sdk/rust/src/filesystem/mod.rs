@@ -14,8 +14,8 @@ use thiserror::Error;
 
 // Re-export implementations
 pub use agentfs::{
-    AgentFS, AgentFsGlobQuery, AgentFsGlobQueryResult, AgentFsQueryEntry,
-    AgentFsQueryEntryKind, AgentFsTreeQuery, AgentFsTreeQueryResult,
+    AgentFS, AgentFsGlobQuery, AgentFsGlobQueryResult, AgentFsQueryEntry, AgentFsQueryEntryKind,
+    AgentFsTreeQuery, AgentFsTreeQueryResult,
 };
 #[cfg(target_os = "macos")]
 pub use hostfs_darwin::HostFS;

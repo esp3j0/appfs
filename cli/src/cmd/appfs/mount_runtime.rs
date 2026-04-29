@@ -947,6 +947,9 @@ impl SnapshotReadThroughFile {
 #[async_trait]
 impl agentfs_sdk::File for SnapshotReadThroughFile {
     async fn pread(&self, offset: u64, size: u64) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
         self.ensure_read_prepared().await?;
         let file = self.open_backing_file().await?;
         file.pread(offset, size).await
@@ -1686,6 +1689,14 @@ mod tests {
                 fetch_count.load(Ordering::SeqCst),
                 0,
                 "open/fstat must not trigger connector expansion"
+            );
+
+            let empty_probe = file.pread(0, 0).await.expect("zero-byte read");
+            assert!(empty_probe.is_empty());
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                0,
+                "zero-byte read probes must not trigger connector expansion"
             );
 
             let bytes = file.pread(0, 4096).await.expect("read snapshot");

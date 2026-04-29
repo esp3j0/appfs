@@ -2366,12 +2366,15 @@ impl AgentFS {
                 continue;
             }
 
-            let mut stmt = conn.prepare_cached("SELECT d.name, i.ino, i.mode, i.size, i.mtime
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT d.name, i.ino, i.mode, i.size, i.mtime
                 FROM fs_dentry d
                 JOIN fs_inode i ON d.ino = i.ino
                 WHERE d.parent_ino = ?
-                ORDER BY ((i.mode & 61440) != 16384), d.name"
-            ).await?;
+                ORDER BY ((i.mode & 61440) != 16384), d.name",
+                )
+                .await?;
             let mut rows = stmt.query((parent_ino,)).await?;
             let mut returned_for_parent = 0usize;
 
@@ -2466,12 +2469,15 @@ impl AgentFS {
                 continue;
             }
 
-            let mut stmt = conn.prepare_cached("SELECT d.name, i.ino, i.mode, i.size, i.mtime
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT d.name, i.ino, i.mode, i.size, i.mtime
                 FROM fs_dentry d
                 JOIN fs_inode i ON d.ino = i.ino
                 WHERE d.parent_ino = ?
-                ORDER BY ((i.mode & 61440) != 16384), d.name"
-            ).await?;
+                ORDER BY ((i.mode & 61440) != 16384), d.name",
+                )
+                .await?;
             let mut rows = stmt.query((parent_ino,)).await?;
 
             while let Some(row) = rows.next().await? {
@@ -5868,7 +5874,11 @@ mod tests {
             })
             .await?;
 
-        let paths: Vec<&str> = result.entries.iter().map(|entry| entry.path.as_str()).collect();
+        let paths: Vec<&str> = result
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
         assert_eq!(result.root, "huoyan");
         assert_eq!(
             result.revision.as_deref(),
