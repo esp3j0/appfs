@@ -18,6 +18,7 @@ DEFAULT_CASES_LIMIT = 100
 DEFAULT_HOME_SCOPE = "home"
 SAFE_PATH_SEGMENT_MAX_BYTES = 96
 SNAPSHOT_SUFFIX = ".res.jsonl"
+HUOYAN_STRUCTURE_SCHEMA_VERSION = 1
 
 
 def _now_iso() -> str:
@@ -788,7 +789,9 @@ class HuoyanBackend:
             evidence_groups.setdefault(int(child.get("Eid", 0)), []).append(child)
 
         ownership_prefixes = ["_app"]
-        revision_payload: list[dict[str, Any]] = []
+        revision_payload: list[dict[str, Any]] = [
+            {"schema_version": HUOYAN_STRUCTURE_SCHEMA_VERSION}
+        ]
 
         for eid, top_nodes in sorted(evidence_groups.items(), key=lambda item: item[0]):
             evidence_name = str(evidences.get(eid, {}).get("Name") or f"检材-{eid}")
@@ -872,7 +875,9 @@ class HuoyanBackend:
         for child in root_nodes:
             evidence_groups.setdefault(int(child.get("Eid", 0)), []).append(child)
 
-        payload: list[dict[str, Any]] = []
+        payload: list[dict[str, Any]] = [
+            {"schema_version": HUOYAN_STRUCTURE_SCHEMA_VERSION}
+        ]
         for eid, top_nodes in sorted(evidence_groups.items(), key=lambda item: item[0]):
             evidence_name = str(evidences.get(eid, {}).get("Name") or f"检材-{eid}")
             evidence_dir = _dedupe_name(
@@ -1046,10 +1051,13 @@ class HuoyanBackend:
 
     def _case_revision(self, scope: str, probe_digest: str, full_payload: Any) -> str:
         full_digest = self._revision_digest(full_payload)
-        return f"huoyan-{scope}-p:{probe_digest}-f:{full_digest}"
+        return (
+            f"huoyan-{scope}-sv:{HUOYAN_STRUCTURE_SCHEMA_VERSION}"
+            f"-p:{probe_digest}-f:{full_digest}"
+        )
 
     def _known_case_probe_digest(self, scope: str, revision: str) -> str | None:
-        prefix = f"huoyan-{scope}-p:"
+        prefix = f"huoyan-{scope}-sv:{HUOYAN_STRUCTURE_SCHEMA_VERSION}-p:"
         if not revision.startswith(prefix):
             return None
         suffix = revision[len(prefix) :]

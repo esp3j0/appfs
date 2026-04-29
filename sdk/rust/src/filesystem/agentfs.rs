@@ -2,7 +2,8 @@ use crate::error::{Error, Result};
 use crate::{BulkMaterializeEntry, BulkMaterializePlan};
 use async_trait::async_trait;
 use lru::LruCache;
-use std::collections::{BTreeMap, HashMap};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{
@@ -23,6 +24,72 @@ use crate::schema::AGENTFS_SCHEMA_VERSION;
 const ROOT_INO: i64 = 1;
 const DEFAULT_CHUNK_SIZE: usize = 4096;
 const DENTRY_CACHE_MAX_SIZE: usize = 10000;
+
+/// Entry type returned by AgentFS DB-side structure queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentFsQueryEntryKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// A single path entry returned by AgentFS DB-side structure queries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentFsQueryEntry {
+    pub path: String,
+    pub name: String,
+    pub kind: AgentFsQueryEntryKind,
+    pub depth: usize,
+    pub ino: i64,
+    pub size: i64,
+    pub mtime: i64,
+}
+
+/// Request for a bounded directory tree query against the AgentFS DB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentFsTreeQuery {
+    pub root: String,
+    pub max_depth: usize,
+    pub max_entries_per_dir: usize,
+    pub include_files: bool,
+    pub exclude_internal: bool,
+}
+
+/// Result for a bounded directory tree query against the AgentFS DB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentFsTreeQueryResult {
+    pub root: String,
+    pub revision: Option<String>,
+    pub entries: Vec<AgentFsQueryEntry>,
+    pub truncated: bool,
+    pub scanned_entries: usize,
+}
+
+/// Request for a bounded glob query against the AgentFS DB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentFsGlobQuery {
+    pub root: String,
+    pub pattern: String,
+    pub max_depth: usize,
+    pub max_results: usize,
+    pub max_scanned_entries: usize,
+    pub include_dirs: bool,
+    pub case_sensitive: bool,
+    pub exclude_internal: bool,
+}
+
+/// Result for a bounded glob query against the AgentFS DB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentFsGlobQueryResult {
+    pub root: String,
+    pub pattern: String,
+    pub revision: Option<String>,
+    pub results: Vec<AgentFsQueryEntry>,
+    pub truncated: bool,
+    pub scanned_entries: usize,
+}
 
 /// LRU cache for directory entry lookups.
 ///
@@ -2261,6 +2328,241 @@ impl AgentFS {
         Ok(Some(entries))
     }
 
+    /// Query a bounded directory tree directly from the AgentFS database.
+    ///
+    /// This avoids mount-layer round trips and is intended for large AppFS
+    /// trees where walking through FUSE/WinFsp would be too slow.
+    pub async fn query_tree(&self, request: AgentFsTreeQuery) -> Result<AgentFsTreeQueryResult> {
+        let root_path = self.normalize_query_path(&request.root);
+        let root_display = display_path(&root_path);
+        let revision = self.app_structure_revision_for_root(&root_path).await?;
+        let max_depth = request.max_depth;
+        let max_entries_per_dir = if request.max_entries_per_dir == 0 {
+            usize::MAX
+        } else {
+            request.max_entries_per_dir
+        };
+
+        let conn = self.pool.get_connection().await?;
+        let root_ino = self
+            .resolve_path_with_conn(&conn, &root_path)
+            .await?
+            .ok_or(FsError::NotFound)?;
+        let root_stats = self
+            .getattr_with_conn(&conn, root_ino)
+            .await?
+            .ok_or(FsError::NotFound)?;
+        if !root_stats.is_directory() {
+            return Err(FsError::NotADirectory.into());
+        }
+
+        let mut entries = Vec::new();
+        let mut queue = VecDeque::from([(root_ino, root_display.clone(), 0usize)]);
+        let mut truncated = false;
+        let mut scanned_entries = 0usize;
+
+        while let Some((parent_ino, parent_display, parent_depth)) = queue.pop_front() {
+            if parent_depth >= max_depth {
+                continue;
+            }
+
+            let mut stmt = conn.prepare_cached("SELECT d.name, i.ino, i.mode, i.size, i.mtime
+                FROM fs_dentry d
+                JOIN fs_inode i ON d.ino = i.ino
+                WHERE d.parent_ino = ?
+                ORDER BY ((i.mode & 61440) != 16384), d.name"
+            ).await?;
+            let mut rows = stmt.query((parent_ino,)).await?;
+            let mut returned_for_parent = 0usize;
+
+            while let Some(row) = rows.next().await? {
+                let name = row_text(&row, 0);
+                if name.is_empty() {
+                    continue;
+                }
+                if request.exclude_internal && is_internal_component(&name) {
+                    continue;
+                }
+                if returned_for_parent >= max_entries_per_dir {
+                    truncated = true;
+                    break;
+                }
+
+                scanned_entries += 1;
+                let ino = row_i64(&row, 1);
+                let mode = row_i64(&row, 2) as u32;
+                let size = row_i64(&row, 3);
+                let mtime = row_i64(&row, 4);
+                let kind = entry_kind_from_mode(mode);
+                let path = join_display_path(&parent_display, &name);
+                let depth = parent_depth + 1;
+                if !request.include_files && kind != AgentFsQueryEntryKind::Directory {
+                    // Children are ordered directories first, so no later row can
+                    // contribute to a directory-only tree outline.
+                    break;
+                }
+
+                if request.include_files || kind == AgentFsQueryEntryKind::Directory {
+                    entries.push(AgentFsQueryEntry {
+                        path: path.clone(),
+                        name: name.clone(),
+                        kind,
+                        depth,
+                        ino,
+                        size,
+                        mtime,
+                    });
+                    returned_for_parent += 1;
+                }
+
+                if kind == AgentFsQueryEntryKind::Directory {
+                    queue.push_back((ino, path, depth));
+                }
+            }
+        }
+
+        Ok(AgentFsTreeQueryResult {
+            root: root_display,
+            revision,
+            entries,
+            truncated,
+            scanned_entries,
+        })
+    }
+
+    /// Query paths matching a glob directly from the AgentFS database.
+    ///
+    /// The glob is evaluated relative to `root`. Patterns prefixed with the
+    /// root path are accepted and normalized, e.g. `huoyan/**/*.res.jsonl`.
+    pub async fn query_glob(&self, request: AgentFsGlobQuery) -> Result<AgentFsGlobQueryResult> {
+        let root_path = self.normalize_query_path(&request.root);
+        let root_display = display_path(&root_path);
+        let revision = self.app_structure_revision_for_root(&root_path).await?;
+        let pattern = normalize_glob_pattern(&request.pattern, &root_display);
+        let max_depth = request.max_depth.max(1);
+        let max_results = request.max_results.max(1);
+        let max_scanned_entries = request.max_scanned_entries.max(max_results);
+
+        let conn = self.pool.get_connection().await?;
+        let root_ino = self
+            .resolve_path_with_conn(&conn, &root_path)
+            .await?
+            .ok_or(FsError::NotFound)?;
+        let root_stats = self
+            .getattr_with_conn(&conn, root_ino)
+            .await?
+            .ok_or(FsError::NotFound)?;
+        if !root_stats.is_directory() {
+            return Err(FsError::NotADirectory.into());
+        }
+
+        let mut results = Vec::new();
+        let mut queue = VecDeque::from([(root_ino, root_display.clone(), 0usize)]);
+        let mut scanned_entries = 0usize;
+        let mut truncated = false;
+
+        while let Some((parent_ino, parent_display, parent_depth)) = queue.pop_front() {
+            if parent_depth >= max_depth {
+                continue;
+            }
+
+            let mut stmt = conn.prepare_cached("SELECT d.name, i.ino, i.mode, i.size, i.mtime
+                FROM fs_dentry d
+                JOIN fs_inode i ON d.ino = i.ino
+                WHERE d.parent_ino = ?
+                ORDER BY ((i.mode & 61440) != 16384), d.name"
+            ).await?;
+            let mut rows = stmt.query((parent_ino,)).await?;
+
+            while let Some(row) = rows.next().await? {
+                if scanned_entries >= max_scanned_entries {
+                    truncated = true;
+                    break;
+                }
+                scanned_entries += 1;
+
+                let name = row_text(&row, 0);
+                if name.is_empty() {
+                    continue;
+                }
+                if request.exclude_internal && is_internal_component(&name) {
+                    continue;
+                }
+
+                let ino = row_i64(&row, 1);
+                let mode = row_i64(&row, 2) as u32;
+                let size = row_i64(&row, 3);
+                let mtime = row_i64(&row, 4);
+                let kind = entry_kind_from_mode(mode);
+                let display = join_display_path(&parent_display, &name);
+                let relative = relative_to_root_display(&display, &root_display);
+                let depth = parent_depth + 1;
+
+                if kind == AgentFsQueryEntryKind::Directory && depth < max_depth {
+                    queue.push_back((ino, display.clone(), depth));
+                }
+
+                if kind == AgentFsQueryEntryKind::Directory && !request.include_dirs {
+                    continue;
+                }
+                if request.exclude_internal && has_internal_component(relative) {
+                    continue;
+                }
+                if !glob_pattern_matches(&pattern, relative, request.case_sensitive) {
+                    continue;
+                }
+
+                results.push(AgentFsQueryEntry {
+                    path: display,
+                    name,
+                    kind,
+                    depth,
+                    ino,
+                    size,
+                    mtime,
+                });
+                if results.len() >= max_results {
+                    truncated = true;
+                    break;
+                }
+            }
+
+            if truncated {
+                break;
+            }
+        }
+
+        Ok(AgentFsGlobQueryResult {
+            root: root_display,
+            pattern,
+            revision,
+            results,
+            truncated,
+            scanned_entries,
+        })
+    }
+
+    fn normalize_query_path(&self, path: &str) -> String {
+        self.normalize_path(&path.replace('\\', "/"))
+    }
+
+    async fn app_structure_revision_for_root(&self, root_path: &str) -> Result<Option<String>> {
+        let Some(app_id) = self.split_path(root_path).into_iter().next() else {
+            return Ok(None);
+        };
+        let state_path = format!("/{app_id}/_meta/app-structure-sync.state.res.json");
+        let Some(bytes) = self.read_file(&state_path).await? else {
+            return Ok(None);
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(None);
+        };
+        Ok(value
+            .get("revision")
+            .and_then(|revision| revision.as_str())
+            .map(ToString::to_string))
+    }
+
     /// Create a symbolic link with the specified ownership
     pub async fn symlink(&self, target: &str, linkpath: &str, uid: u32, gid: u32) -> Result<()> {
         let conn = self.pool.get_connection().await?;
@@ -4141,6 +4443,136 @@ impl FileSystem for AgentFS {
     }
 }
 
+fn row_text(row: &turso::Row, index: usize) -> String {
+    row.get_value(index)
+        .ok()
+        .and_then(|value| {
+            if let Value::Text(text) = value {
+                Some(text.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn row_i64(row: &turso::Row, index: usize) -> i64 {
+    row.get_value(index)
+        .ok()
+        .and_then(|value| value.as_integer().copied())
+        .unwrap_or(0)
+}
+
+fn entry_kind_from_mode(mode: u32) -> AgentFsQueryEntryKind {
+    match mode & S_IFMT {
+        S_IFREG => AgentFsQueryEntryKind::File,
+        S_IFDIR => AgentFsQueryEntryKind::Directory,
+        S_IFLNK => AgentFsQueryEntryKind::Symlink,
+        _ => AgentFsQueryEntryKind::Other,
+    }
+}
+
+fn display_path(path: &str) -> String {
+    path.trim_start_matches('/').to_string()
+}
+
+fn join_display_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn relative_to_root_display<'a>(path: &'a str, root: &str) -> &'a str {
+    if root.is_empty() {
+        return path;
+    }
+    path.strip_prefix(root)
+        .and_then(|suffix| suffix.strip_prefix('/').or(Some(suffix)))
+        .unwrap_or(path)
+}
+
+fn is_internal_component(name: &str) -> bool {
+    matches!(
+        name,
+        "_app" | "_appfs" | "_meta" | "_stream" | ".well-known"
+    )
+}
+
+fn has_internal_component(path: &str) -> bool {
+    path.split('/')
+        .filter(|part| !part.is_empty())
+        .any(is_internal_component)
+}
+
+fn normalize_glob_pattern(pattern: &str, root_display: &str) -> String {
+    let mut normalized = pattern.replace('\\', "/");
+    normalized = normalized.trim().trim_start_matches("./").to_string();
+    normalized = normalized.trim_start_matches('/').to_string();
+    if !root_display.is_empty() {
+        if normalized == root_display {
+            return "**".to_string();
+        }
+        let root_prefix = format!("{root_display}/");
+        if let Some(stripped) = normalized.strip_prefix(&root_prefix) {
+            normalized = stripped.to_string();
+        }
+    }
+    if normalized.is_empty() {
+        "**".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn glob_pattern_matches(pattern: &str, path: &str, case_sensitive: bool) -> bool {
+    let (pattern, path) = if case_sensitive {
+        (pattern.to_string(), path.to_string())
+    } else {
+        (pattern.to_lowercase(), path.to_lowercase())
+    };
+    let pattern_parts: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
+    let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    glob_segments_match(&pattern_parts, &path_parts)
+}
+
+fn glob_segments_match(pattern: &[&str], path: &[&str]) -> bool {
+    if pattern.is_empty() {
+        return path.is_empty();
+    }
+    if pattern[0] == "**" {
+        return glob_segments_match(&pattern[1..], path)
+            || (!path.is_empty() && glob_segments_match(pattern, &path[1..]));
+    }
+    if path.is_empty() {
+        return false;
+    }
+    wildcard_segment_match(pattern[0], path[0]) && glob_segments_match(&pattern[1..], &path[1..])
+}
+
+fn wildcard_segment_match(pattern: &str, text: &str) -> bool {
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let text_chars: Vec<char> = text.chars().collect();
+    let mut dp = vec![vec![false; text_chars.len() + 1]; pattern_chars.len() + 1];
+    dp[0][0] = true;
+    for i in 1..=pattern_chars.len() {
+        if pattern_chars[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+    for i in 1..=pattern_chars.len() {
+        for j in 1..=text_chars.len() {
+            dp[i][j] = match pattern_chars[i - 1] {
+                '*' => dp[i - 1][j] || dp[i][j - 1],
+                '?' => dp[i - 1][j - 1],
+                ch => ch == text_chars[j - 1] && dp[i - 1][j - 1],
+            };
+        }
+    }
+    dp[pattern_chars.len()][text_chars.len()]
+}
+
 fn split_parent_path(components: &[String]) -> (String, String) {
     let name = components
         .last()
@@ -5405,6 +5837,85 @@ mod tests {
 
         assert!(reader.stat("/root/old").await?.is_none());
         assert!(reader.stat("/root/new").await?.is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_query_tree_returns_bounded_db_tree() -> Result<()> {
+        let (fs, _dir) = create_test_fs().await?;
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan/_meta"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan/检材1"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan/检材1/App分析"));
+        plan.push(BulkMaterializeEntry::ensure_empty_file(
+            "/huoyan/检材1/App分析/APK列表.res.jsonl",
+        ));
+        plan.push(BulkMaterializeEntry::write_file(
+            "/huoyan/_meta/app-structure-sync.state.res.json",
+            br#"{"revision":"huoyan-case:1-sv:1-p:aaaaaaaaaaaa-f:bbbbbbbbbbbb"}"#.to_vec(),
+        ));
+        fs.bulk_materialize_tree(&plan).await?;
+
+        let result = fs
+            .query_tree(AgentFsTreeQuery {
+                root: "huoyan".to_string(),
+                max_depth: 3,
+                max_entries_per_dir: 100,
+                include_files: true,
+                exclude_internal: true,
+            })
+            .await?;
+
+        let paths: Vec<&str> = result.entries.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(result.root, "huoyan");
+        assert_eq!(
+            result.revision.as_deref(),
+            Some("huoyan-case:1-sv:1-p:aaaaaaaaaaaa-f:bbbbbbbbbbbb")
+        );
+        assert!(paths.contains(&"huoyan/检材1"));
+        assert!(paths.contains(&"huoyan/检材1/App分析"));
+        assert!(paths.contains(&"huoyan/检材1/App分析/APK列表.res.jsonl"));
+        assert!(!paths.contains(&"huoyan/_meta"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_query_glob_matches_relative_and_root_prefixed_patterns() -> Result<()> {
+        let (fs, _dir) = create_test_fs().await?;
+        let mut plan = BulkMaterializePlan::new();
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan/检材1"));
+        plan.push(BulkMaterializeEntry::ensure_dir("/huoyan/检材1/App分析"));
+        plan.push(BulkMaterializeEntry::ensure_empty_file(
+            "/huoyan/检材1/App分析/APK列表.res.jsonl",
+        ));
+        plan.push(BulkMaterializeEntry::ensure_empty_file(
+            "/huoyan/检材1/App分析/readme.txt",
+        ));
+        fs.bulk_materialize_tree(&plan).await?;
+
+        let result = fs
+            .query_glob(AgentFsGlobQuery {
+                root: "/huoyan".to_string(),
+                pattern: "huoyan/**/*.RES.JSONL".to_string(),
+                max_depth: 8,
+                max_results: 10,
+                max_scanned_entries: 100,
+                include_dirs: false,
+                case_sensitive: false,
+                exclude_internal: true,
+            })
+            .await?;
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].path,
+            "huoyan/检材1/App分析/APK列表.res.jsonl"
+        );
+        assert_eq!(result.results[0].kind, AgentFsQueryEntryKind::File);
 
         Ok(())
     }

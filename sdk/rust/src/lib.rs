@@ -46,9 +46,10 @@ pub use bulk_materialize::{BulkMaterializeEntry, BulkMaterializePlan};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
-    BoxedFile, DirEntry, File, FileSystem, FilesystemStats, FsError, OverlayFS, Stats, TimeChange,
-    DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT,
-    S_IFREG, S_IFSOCK,
+    AgentFsGlobQuery, AgentFsGlobQueryResult, AgentFsQueryEntry, AgentFsQueryEntryKind,
+    AgentFsTreeQuery, AgentFsTreeQueryResult, BoxedFile, DirEntry, File, FileSystem,
+    FilesystemStats, FsError, OverlayFS, Stats, TimeChange, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
+    S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
 };
 pub use kvstore::KvStore;
 pub use schema::{SchemaVersion, AGENTFS_SCHEMA_VERSION};
@@ -456,6 +457,16 @@ impl AgentFS {
     /// bootstraps such as AppFS structure synchronization.
     pub async fn bulk_materialize_tree(&self, plan: &BulkMaterializePlan) -> Result<()> {
         self.fs.bulk_materialize_tree(plan).await
+    }
+
+    /// Query a bounded directory tree directly from the AgentFS DB.
+    pub async fn query_tree(&self, request: AgentFsTreeQuery) -> Result<AgentFsTreeQueryResult> {
+        self.fs.query_tree(request).await
+    }
+
+    /// Query paths matching a glob directly from the AgentFS DB.
+    pub async fn query_glob(&self, request: AgentFsGlobQuery) -> Result<AgentFsGlobQueryResult> {
+        self.fs.query_glob(request).await
     }
 
     /// Check if sync is enabled for this database

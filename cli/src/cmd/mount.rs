@@ -738,8 +738,8 @@ async fn mount_winfsp_backend(args: MountArgs, ready_tx: Option<MountReadyTx>) -
     eprintln!("Mounted at {}", mountpoint.display());
     eprintln!("Press Ctrl+C to unmount and exit.");
 
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await?;
+    // Wait for a console shutdown signal so the MountHandle can unmount cleanly.
+    crate::shutdown_signal::wait_for_shutdown_signal().await?;
 
     // MountHandle will be dropped automatically and unmount
     Ok(())
@@ -877,7 +877,7 @@ fn mount_fuse(args: MountArgs, ready_tx: Option<MountReadyTx>) -> Result<()> {
             eprintln!("Mounted at {}", mountpoint.display());
             eprintln!("Press Ctrl+C to unmount and exit.");
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = crate::shutdown_signal::wait_for_shutdown_signal() => {}
                 _ = wait_for_external_unmount(mountpoint.clone()) => {
                     eprintln!(
                         "Mountpoint {} was unmounted externally; exiting foreground mode.",
@@ -1089,7 +1089,7 @@ async fn mount_nfs_backend(args: MountArgs, ready_tx: Option<MountReadyTx>) -> R
 
         eprintln!("Mounted at {}", mountpoint.display());
         eprintln!("Press Ctrl+C to unmount and exit.");
-        tokio::signal::ctrl_c().await?;
+        crate::shutdown_signal::wait_for_shutdown_signal().await?;
 
         // Handle drops automatically when we exit this scope
     } else {

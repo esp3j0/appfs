@@ -1,4 +1,7 @@
-use agentfs_sdk::{AgentFS as SdkAgentFS, AgentFSOptions, AppConnector};
+use agentfs_sdk::{
+    AgentFS as SdkAgentFS, AgentFSOptions, AgentFsGlobQuery, AgentFsGlobQueryResult,
+    AgentFsQueryEntryKind, AgentFsTreeQuery, AgentFsTreeQueryResult, AppConnector,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -11,6 +14,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+use crate::opts::AppfsQueryFormat;
 
 mod action_dispatcher;
 mod bridge_resilience;
@@ -199,6 +204,31 @@ pub struct AppfsLaunchArgs {
     pub attach_role: Option<String>,
     pub startup_timeout_ms: u64,
     pub agent_args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppfsQueryTreeArgs {
+    pub db: PathBuf,
+    pub root: String,
+    pub max_depth: usize,
+    pub max_entries_per_dir: usize,
+    pub include_files: bool,
+    pub include_internal: bool,
+    pub format: AppfsQueryFormat,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppfsQueryGlobArgs {
+    pub db: PathBuf,
+    pub root: String,
+    pub pattern: String,
+    pub max_depth: usize,
+    pub max_results: usize,
+    pub max_scanned_entries: usize,
+    pub include_dirs: bool,
+    pub ignore_case: bool,
+    pub include_internal: bool,
+    pub format: AppfsQueryFormat,
 }
 
 fn build_managed_mount_args(args: &AppfsUpArgs) -> crate::cmd::MountArgs {
@@ -761,7 +791,7 @@ async fn handle_appfs_adapter_command_with_startup_context(
         match (action_wake.as_ref(), interval.as_mut()) {
             (Some(wake), Some(interval)) => {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
+                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
                         eprintln!("AppFS adapter stopping...");
                         return Ok(());
                     }
@@ -779,7 +809,7 @@ async fn handle_appfs_adapter_command_with_startup_context(
             }
             (Some(wake), None) => {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
+                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
                         eprintln!("AppFS adapter stopping...");
                         return Ok(());
                     }
@@ -792,7 +822,7 @@ async fn handle_appfs_adapter_command_with_startup_context(
             }
             (None, Some(interval)) => {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
+                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
                         eprintln!("AppFS adapter stopping...");
                         return Ok(());
                     }
@@ -804,7 +834,7 @@ async fn handle_appfs_adapter_command_with_startup_context(
                 }
             }
             (None, None) => {
-                tokio::signal::ctrl_c().await?;
+                crate::shutdown_signal::wait_for_shutdown_signal().await?;
                 eprintln!("AppFS adapter stopping...");
                 return Ok(());
             }
@@ -1082,6 +1112,89 @@ fn refresh_runtime_parent_directory(path: &Path) {
 
 pub async fn handle_appfs_up_command(args: AppfsUpArgs) -> Result<()> {
     run_managed_appfs_with_bootstrap(args, |_| Ok(()), None).await
+}
+
+pub async fn handle_appfs_query_tree_command(args: AppfsQueryTreeArgs) -> Result<()> {
+    let db_path = args
+        .db
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("query db path must be valid UTF-8: {}", args.db.display()))?
+        .to_string();
+    let agent = crate::cmd::init::open_agentfs(AgentFSOptions::with_path(db_path)).await?;
+    let result = agent
+        .query_tree(AgentFsTreeQuery {
+            root: args.root,
+            max_depth: args.max_depth,
+            max_entries_per_dir: args.max_entries_per_dir,
+            include_files: args.include_files,
+            exclude_internal: !args.include_internal,
+        })
+        .await?;
+    match args.format {
+        AppfsQueryFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        AppfsQueryFormat::Text => print_tree_query_text(&result),
+    }
+    Ok(())
+}
+
+pub async fn handle_appfs_query_glob_command(args: AppfsQueryGlobArgs) -> Result<()> {
+    let db_path = args
+        .db
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("query db path must be valid UTF-8: {}", args.db.display()))?
+        .to_string();
+    let agent = crate::cmd::init::open_agentfs(AgentFSOptions::with_path(db_path)).await?;
+    let result = agent
+        .query_glob(AgentFsGlobQuery {
+            root: args.root,
+            pattern: args.pattern,
+            max_depth: args.max_depth,
+            max_results: args.max_results,
+            max_scanned_entries: args.max_scanned_entries,
+            include_dirs: args.include_dirs,
+            case_sensitive: !args.ignore_case,
+            exclude_internal: !args.include_internal,
+        })
+        .await?;
+    match args.format {
+        AppfsQueryFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        AppfsQueryFormat::Text => print_glob_query_text(&result),
+    }
+    Ok(())
+}
+
+fn print_tree_query_text(result: &AgentFsTreeQueryResult) {
+    for entry in &result.entries {
+        let indent = "  ".repeat(entry.depth.saturating_sub(1));
+        let suffix = if entry.kind == AgentFsQueryEntryKind::Directory {
+            "/"
+        } else {
+            ""
+        };
+        println!("{indent}{}{suffix}", entry.name);
+    }
+    if result.truncated {
+        eprintln!(
+            "tree output truncated after scanning {} entries",
+            result.scanned_entries
+        );
+    }
+}
+
+fn print_glob_query_text(result: &AgentFsGlobQueryResult) {
+    for entry in &result.results {
+        println!("{}", entry.path);
+    }
+    if result.truncated {
+        eprintln!(
+            "glob output truncated after scanning {} entries",
+            result.scanned_entries
+        );
+    }
 }
 
 pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> Result<()> {
