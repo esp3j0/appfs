@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/app.skill.output.schema.json",
+  "title": "AIIM App Skill Output",
+  "type": "object",
+  "required": [
+    "app_id"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "when_to_use": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ]
+    },
+    "overview_markdown": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allowed_tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "include_generated_sections": {
+      "type": "object",
+      "properties": {
+        "scope_summary": {
+          "type": "boolean"
+        },
+        "control_actions": {
+          "type": "boolean"
+        },
+        "recommended_actions": {
+          "type": "boolean"
+        },
+        "contact_routing": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
