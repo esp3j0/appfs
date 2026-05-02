@@ -17,8 +17,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
+    time::{Duration, Instant},
 };
 use tokio::runtime::Handle;
 use tracing;
@@ -47,6 +48,8 @@ const OPEN_RDONLY: i32 = 0x0000;
 const OPEN_WRONLY: i32 = 0x0001;
 const OPEN_RDWR: i32 = 0x0002;
 const OPEN_NO_READ_HINT: i32 = 0x2000_0000;
+const WINFSP_VOLUME_INFO_CACHE_MS_ENV: &str = "APPFS_WINFSP_VOLUME_INFO_CACHE_MS";
+const DEFAULT_WINFSP_VOLUME_INFO_CACHE_MS: u64 = 1000;
 
 // NT directory wildcard characters used by Win32 query-directory calls.
 const DOS_STAR: char = '<';
@@ -191,6 +194,17 @@ fn volume_capacity(bytes_used: u64) -> (u64, u64) {
     (total_size, free_size)
 }
 
+fn volume_info_cache_ttl() -> Duration {
+    static TTL: OnceLock<Duration> = OnceLock::new();
+    *TTL.get_or_init(|| {
+        let ttl_ms = std::env::var(WINFSP_VOLUME_INFO_CACHE_MS_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_WINFSP_VOLUME_INFO_CACHE_MS);
+        Duration::from_millis(ttl_ms)
+    })
+}
+
 fn granted_access_to_open_flags(granted_access: u32) -> i32 {
     let wants_read =
         granted_access == 0 || (granted_access & (FILE_READ_DATA | GENERIC_READ_ACCESS)) != 0;
@@ -218,6 +232,12 @@ fn granted_access_to_open_flags(granted_access: u32) -> i32 {
 struct CachedDirectoryEntries {
     entries: Vec<(String, Stats)>,
     name_index: HashMap<String, usize>,
+}
+
+struct CachedVolumeInfo {
+    total_size: u64,
+    free_size: u64,
+    cached_at: Instant,
 }
 
 impl CachedDirectoryEntries {
@@ -279,7 +299,9 @@ pub struct AgentFSWinFsp {
     handle: Handle,
     open_files: Mutex<HashMap<u64, OpenFile>>,
     path_stats_cache: Mutex<HashMap<String, Stats>>,
+    ino_stats_cache: Mutex<HashMap<i64, Stats>>,
     dir_entries_cache: Mutex<HashMap<i64, Arc<CachedDirectoryEntries>>>,
+    volume_info_cache: Mutex<Option<CachedVolumeInfo>>,
     next_fh: AtomicU64,
 }
 
@@ -291,7 +313,9 @@ impl AgentFSWinFsp {
             handle,
             open_files: Mutex::new(HashMap::new()),
             path_stats_cache: Mutex::new(HashMap::new()),
+            ino_stats_cache: Mutex::new(HashMap::new()),
             dir_entries_cache: Mutex::new(HashMap::new()),
+            volume_info_cache: Mutex::new(None),
             next_fh: AtomicU64::new(1),
         }
     }
@@ -336,11 +360,27 @@ impl AgentFSWinFsp {
         self.path_stats_cache
             .lock()
             .insert(Self::normalize_cache_path(path), stats.clone());
+        self.ino_stats_cache.lock().insert(stats.ino, stats.clone());
     }
 
     fn clear_metadata_caches(&self) {
         self.path_stats_cache.lock().clear();
+        self.ino_stats_cache.lock().clear();
         self.dir_entries_cache.lock().clear();
+        self.volume_info_cache.lock().take();
+    }
+
+    fn invalidate_cached_stats(&self, path: &str, ino: i64) {
+        let normalized = Self::normalize_cache_path(path);
+        self.path_stats_cache.lock().remove(&normalized);
+        self.ino_stats_cache.lock().remove(&ino);
+
+        if let Some((parent, _)) = normalized.rsplit_once('/') {
+            let parent = if parent.is_empty() { "/" } else { parent };
+            if let Some(parent_stats) = self.lookup_cached_path_stats(parent) {
+                self.dir_entries_cache.lock().remove(&parent_stats.ino);
+            }
+        }
     }
 
     fn lookup_cached_path_stats(&self, path: &str) -> Option<Stats> {
@@ -348,6 +388,36 @@ impl AgentFSWinFsp {
             .lock()
             .get(&Self::normalize_cache_path(path))
             .cloned()
+    }
+
+    fn lookup_cached_ino_stats(&self, ino: i64) -> Option<Stats> {
+        self.ino_stats_cache.lock().get(&ino).cloned()
+    }
+
+    fn cached_volume_info(&self) -> Option<(u64, u64)> {
+        let ttl = volume_info_cache_ttl();
+        if ttl.is_zero() {
+            return None;
+        }
+
+        self.volume_info_cache.lock().as_ref().and_then(|cached| {
+            if cached.cached_at.elapsed() <= ttl {
+                Some((cached.total_size, cached.free_size))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn remember_volume_info(&self, total_size: u64, free_size: u64) {
+        if volume_info_cache_ttl().is_zero() {
+            return;
+        }
+        *self.volume_info_cache.lock() = Some(CachedVolumeInfo {
+            total_size,
+            free_size,
+            cached_at: Instant::now(),
+        });
     }
 
     /// Parse a path into (parent_ino, name) for operations that need a parent directory.
@@ -1333,13 +1403,23 @@ impl FileSystemContext for AgentFSWinFsp {
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             let ino = open_file.ino;
+            let path = open_file.path.clone();
             drop(open_files);
+
+            if let Some(stats) = self
+                .lookup_cached_path_stats(&path)
+                .or_else(|| self.lookup_cached_ino_stats(ino))
+            {
+                fill_file_info(&stats, file_info);
+                return Ok(());
+            }
 
             let fs = self.fs.clone();
             let stats = self.block_on(async move { fs.lock().getattr(ino).await });
 
             match stats {
                 Ok(Some(stats)) => {
+                    self.remember_path_stats(&path, &stats);
                     fill_file_info(&stats, file_info);
                     Ok(())
                 }
@@ -1388,6 +1468,7 @@ impl FileSystemContext for AgentFSWinFsp {
         let open_files = self.open_files.lock();
         if let Some(open_file) = open_files.get(&context.fh) {
             let ino = open_file.ino;
+            let path = open_file.path.clone();
             tracing::debug!(
                 "WinFsp::set_basic_info: fh={} ino={} last_access_time={} last_write_time={}",
                 context.fh,
@@ -1408,6 +1489,28 @@ impl FileSystemContext for AgentFSWinFsp {
                 TimeChange::Set((last_write_time as i64 / 10_000_000) - 11644473600, 0)
             };
 
+            // MSYS/Git Bash can issue access-time-only metadata updates while
+            // listing. Persisting those touches turns read-only enumeration into
+            // hundreds of DB writes and invalidates hot directory caches. AgentFS
+            // does not rely on atime freshness, so treat access-only updates as
+            // a successful no-op.
+            if matches!(mtime, TimeChange::Omit) {
+                if let Some(stats) = self
+                    .lookup_cached_path_stats(&path)
+                    .or_else(|| self.lookup_cached_ino_stats(ino))
+                {
+                    fill_file_info(&stats, file_info);
+                    return Ok(());
+                }
+                let fs = self.fs.clone();
+                let stats = self.block_on(async move { fs.lock().getattr(ino).await });
+                if let Ok(Some(stats)) = stats {
+                    self.remember_path_stats(&path, &stats);
+                    fill_file_info(&stats, file_info);
+                }
+                return Ok(());
+            }
+
             let fs = self.fs.clone();
             let result = self.block_on(async move { fs.lock().utimens(ino, atime, mtime).await });
 
@@ -1418,6 +1521,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     let stats = self.block_on(async move { fs.lock().getattr(ino).await });
                     match stats {
                         Ok(Some(stats)) => {
+                            self.remember_path_stats(&path, &stats);
                             fill_file_info(&stats, file_info);
                             Ok(())
                         }
@@ -1662,6 +1766,8 @@ impl FileSystemContext for AgentFSWinFsp {
             let buf_len = buffer.len();
             let is_dir = open_file.is_dir;
             let is_symlink = open_file.is_symlink;
+            let path = open_file.path.clone();
+            let ino = open_file.ino;
             drop(open_files);
 
             // file is Option<BoxedFile>, need to handle None case
@@ -1685,7 +1791,7 @@ impl FileSystemContext for AgentFSWinFsp {
                     let len = data.len().min(buffer.len());
                     buffer[..len].copy_from_slice(&data[..len]);
                     if len > 0 {
-                        self.clear_metadata_caches();
+                        self.invalidate_cached_stats(&path, ino);
                     }
                     Ok(len as u32)
                 }
@@ -1930,12 +2036,19 @@ impl FileSystemContext for AgentFSWinFsp {
     }
 
     fn get_volume_info(&self, out_volume_info: &mut VolumeInfo) -> winfsp::Result<()> {
+        if let Some((total_size, free_size)) = self.cached_volume_info() {
+            out_volume_info.total_size = total_size;
+            out_volume_info.free_size = free_size;
+            return Ok(());
+        }
+
         let fs = self.fs.clone();
         let stats = self.block_on(async move { fs.lock().statfs().await });
 
         match stats {
             Ok(stats) => {
                 let (total_size, free_size) = volume_capacity(stats.bytes_used);
+                self.remember_volume_info(total_size, free_size);
                 out_volume_info.total_size = total_size;
                 out_volume_info.free_size = free_size;
                 Ok(())
@@ -2159,16 +2272,22 @@ mod tests {
     use parking_lot::Mutex;
     use std::{
         collections::HashMap,
-        sync::{atomic::AtomicBool, Arc},
+        sync::{
+            atomic::{AtomicBool, AtomicUsize},
+            Arc,
+        },
     };
-    use winfsp::filesystem::{DirInfo, FileSystemContext};
+    use winfsp::filesystem::{DirInfo, FileInfo, FileSystemContext, VolumeInfo};
     use winfsp::U16CString;
 
     struct MockFs {
         by_parent: HashMap<(i64, String), Stats>,
         by_ino: HashMap<i64, Stats>,
-        lookup_calls: Arc<std::sync::atomic::AtomicUsize>,
-        readdir_plus_calls: Arc<std::sync::atomic::AtomicUsize>,
+        lookup_calls: Arc<AtomicUsize>,
+        getattr_calls: Arc<AtomicUsize>,
+        readdir_plus_calls: Arc<AtomicUsize>,
+        statfs_calls: Arc<AtomicUsize>,
+        utimens_calls: Arc<AtomicUsize>,
     }
 
     impl MockFs {
@@ -2179,8 +2298,11 @@ mod tests {
             Self {
                 by_parent: HashMap::new(),
                 by_ino,
-                lookup_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                readdir_plus_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                lookup_calls: Arc::new(AtomicUsize::new(0)),
+                getattr_calls: Arc::new(AtomicUsize::new(0)),
+                readdir_plus_calls: Arc::new(AtomicUsize::new(0)),
+                statfs_calls: Arc::new(AtomicUsize::new(0)),
+                utimens_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -2201,6 +2323,8 @@ mod tests {
         }
 
         async fn getattr(&self, ino: i64) -> SdkResult<Option<Stats>> {
+            self.getattr_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.by_ino.get(&ino).cloned())
         }
 
@@ -2242,7 +2366,9 @@ mod tests {
             _atime: TimeChange,
             _mtime: TimeChange,
         ) -> SdkResult<()> {
-            unimplemented!()
+            self.utimens_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         }
 
         async fn open(&self, _ino: i64, _flags: i32) -> SdkResult<BoxedFile> {
@@ -2317,6 +2443,8 @@ mod tests {
         }
 
         async fn statfs(&self) -> SdkResult<FilesystemStats> {
+            self.statfs_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(FilesystemStats {
                 inodes: self.by_ino.len() as u64,
                 bytes_used: 0,
@@ -2347,6 +2475,17 @@ mod tests {
         let handle = rt.handle().clone();
         let adapter = AgentFSWinFsp::new(Arc::new(Mutex::new(fs)), handle);
         rt.block_on(async move { f(&adapter) })
+    }
+
+    fn blank_volume_info() -> VolumeInfo {
+        // VolumeInfo contains private label fields and WinFsp passes it as an
+        // out-parameter. Zero-initialization matches that call pattern in tests.
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn blank_file_info() -> FileInfo {
+        // FileInfo is an out-parameter in WinFsp callbacks.
+        unsafe { std::mem::zeroed() }
     }
 
     fn with_open_directory_context<T>(
@@ -2403,6 +2542,32 @@ mod tests {
         let (total, free) = volume_capacity(bytes_used);
         assert_eq!(total, bytes_used + 64 * 1024 * 1024);
         assert_eq!(free, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn volume_info_is_cached_until_metadata_changes() {
+        let fs = MockFs::new();
+        let statfs_calls = fs.statfs_calls.clone();
+        with_adapter(fs, |adapter| {
+            let mut first = blank_volume_info();
+            adapter
+                .get_volume_info(&mut first)
+                .expect("first volume info");
+            let mut second = blank_volume_info();
+            adapter
+                .get_volume_info(&mut second)
+                .expect("cached volume info");
+            assert_eq!(first.total_size, second.total_size);
+            assert_eq!(first.free_size, second.free_size);
+            assert_eq!(statfs_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+            adapter.clear_metadata_caches();
+            let mut third = blank_volume_info();
+            adapter
+                .get_volume_info(&mut third)
+                .expect("refreshed volume info");
+            assert_eq!(statfs_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        });
     }
 
     #[test]
@@ -2509,6 +2674,104 @@ mod tests {
                 readdir_plus_calls.load(std::sync::atomic::Ordering::SeqCst),
                 1,
                 "repeated WinFsp read_directory calls on one handle should not rescan the DB"
+            );
+        });
+    }
+
+    #[test]
+    fn get_file_info_uses_cached_directory_stats() {
+        let fs = MockFs::new().with_child(1, "notes.txt", test_stats(2, 0o100644, 7));
+        let getattr_calls = fs.getattr_calls.clone();
+
+        with_open_directory_context(fs, 1, "/", |adapter, dir_context| {
+            adapter
+                .cached_directory_entries(dir_context.fh, 1, "/")
+                .expect("directory cache should load");
+            let getattr_after_scan = getattr_calls.load(std::sync::atomic::Ordering::SeqCst);
+
+            let fh = adapter.alloc_fh();
+            adapter.open_files.lock().insert(
+                fh,
+                OpenFile {
+                    file: None,
+                    ino: 2,
+                    is_dir: false,
+                    is_symlink: false,
+                    delete_on_close: AtomicBool::new(false),
+                    deleted: AtomicBool::new(false),
+                    path: "/notes.txt".to_string(),
+                    dir_entries: Mutex::new(None),
+                },
+            );
+            let mut info = blank_file_info();
+            <AgentFSWinFsp as FileSystemContext>::get_file_info(
+                adapter,
+                &FileContext { fh },
+                &mut info,
+            )
+            .expect("cached get_file_info should succeed");
+
+            assert_eq!(info.file_size, 7);
+            assert_eq!(
+                getattr_calls.load(std::sync::atomic::Ordering::SeqCst),
+                getattr_after_scan,
+                "get_file_info should use stats cached from readdir_plus"
+            );
+        });
+    }
+
+    #[test]
+    fn access_time_only_set_basic_info_is_metadata_noop() {
+        let fs = MockFs::new().with_child(1, "notes.txt", test_stats(2, 0o100644, 7));
+        let readdir_plus_calls = fs.readdir_plus_calls.clone();
+        let utimens_calls = fs.utimens_calls.clone();
+
+        with_open_directory_context(fs, 1, "/", |adapter, dir_context| {
+            adapter
+                .cached_directory_entries(dir_context.fh, 1, "/")
+                .expect("directory cache should load");
+
+            let fh = adapter.alloc_fh();
+            adapter.open_files.lock().insert(
+                fh,
+                OpenFile {
+                    file: None,
+                    ino: 2,
+                    is_dir: false,
+                    is_symlink: false,
+                    delete_on_close: AtomicBool::new(false),
+                    deleted: AtomicBool::new(false),
+                    path: "/notes.txt".to_string(),
+                    dir_entries: Mutex::new(None),
+                },
+            );
+            let mut info = blank_file_info();
+            <AgentFSWinFsp as FileSystemContext>::set_basic_info(
+                adapter,
+                &FileContext { fh },
+                0,
+                0,
+                11644473600 * 10_000_000,
+                0,
+                0,
+                &mut info,
+            )
+            .expect("access-time-only update should be accepted");
+
+            assert_eq!(info.file_size, 7);
+            assert_eq!(
+                utimens_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "access-time-only update should not write through to the DB"
+            );
+
+            adapter
+                .cached_directory_entries(dir_context.fh, 1, "/")
+                .expect("directory cache should remain valid");
+            assert_eq!(
+                readdir_plus_calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "access-time-only update should not clear directory caches"
             );
         });
     }
