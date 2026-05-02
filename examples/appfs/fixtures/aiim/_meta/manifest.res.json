@@ -82,6 +82,31 @@
       "output_mode": "json",
       "output_schema": "_meta/schemas/contact.profile.output.schema.json"
     },
+    "_app/control.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/app.control.output.schema.json"
+    },
+    "_app/skill.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/app.skill.output.schema.json"
+    },
+    "_app/actions.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/app.actions.output.schema.json"
+    },
+    "_app/available_scopes.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/app.available_scopes.output.schema.json"
+    },
+    "_app/current_scope.res.json": {
+      "kind": "resource",
+      "output_mode": "json",
+      "output_schema": "_meta/schemas/app.current_scope.output.schema.json"
+    },
     "contacts/{contact_id}/send_message.act": {
       "kind": "action",
       "input_mode": "json",
@@ -97,6 +122,34 @@
         "action.failed"
       ],
       "example": "echo '{\"text\":\"hi\"}' >> /app/aiim/contacts/zhangsan/send_message.act"
+    },
+    "_app/enter_scope.act": {
+      "kind": "action",
+      "input_mode": "json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 1000,
+      "input_schema": "_meta/schemas/enter_scope.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 2048,
+      "event_types": [
+        "action.completed",
+        "action.failed"
+      ],
+      "example": "echo '{\"target_scope\":\"chat-long\"}' >> /app/aiim/_app/enter_scope.act"
+    },
+    "_app/refresh_structure.act": {
+      "kind": "action",
+      "input_mode": "json",
+      "execution_mode": "inline",
+      "inline_timeout_ms": 1000,
+      "input_schema": "_meta/schemas/refresh_structure.input.schema.json",
+      "event_schema": "_meta/schemas/events.evt.schema.json",
+      "max_payload_bytes": 2048,
+      "event_types": [
+        "action.completed",
+        "action.failed"
+      ],
+      "example": "echo '{}' >> /app/aiim/_app/refresh_structure.act"
     },
     "files/{file_id}/download.act": {
       "kind": "action",

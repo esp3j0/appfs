@@ -39,13 +39,37 @@ class MockAiimBackend:
     closed_handles: set[str] = field(default_factory=set)
     live_pages: dict[str, int] = field(default_factory=dict)
 
-    def _action_manifest(self, template: str, execution_mode: str = "inline") -> dict[str, Any]:
-        return {
+    def _action_manifest(
+        self,
+        template: str,
+        execution_mode: str = "inline",
+        *,
+        input_schema: str | None = None,
+        event_schema: str | None = None,
+        max_payload_bytes: int | None = None,
+        inline_timeout_ms: int | None = None,
+        event_types: list[str] | None = None,
+        example: str | None = None,
+    ) -> dict[str, Any]:
+        manifest: dict[str, Any] = {
             "template": template,
             "kind": "action",
             "input_mode": "json",
             "execution_mode": execution_mode,
         }
+        if input_schema is not None:
+            manifest["input_schema"] = input_schema
+        if event_schema is not None:
+            manifest["event_schema"] = event_schema
+        if max_payload_bytes is not None:
+            manifest["max_payload_bytes"] = max_payload_bytes
+        if inline_timeout_ms is not None and execution_mode == "inline":
+            manifest["inline_timeout_ms"] = inline_timeout_ms
+        if event_types is not None:
+            manifest["event_types"] = event_types
+        if example is not None:
+            manifest["example"] = example
+        return manifest
 
     def _snapshot_manifest(self, template: str, max_bytes: int) -> dict[str, Any]:
         return {
@@ -59,6 +83,14 @@ class MockAiimBackend:
                 "read_through_timeout_ms": 10000,
                 "on_timeout": "return_stale",
             },
+        }
+
+    def _json_resource_manifest(self, template: str, output_schema: str) -> dict[str, Any]:
+        return {
+            "template": template,
+            "kind": "resource",
+            "output_mode": "json",
+            "output_schema": output_schema,
         }
 
     def _live_manifest(self, template: str) -> dict[str, Any]:
@@ -88,10 +120,28 @@ class MockAiimBackend:
                 "scope": None,
             },
             {
+                "path": "contacts/zhangsan/profile.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "contacts/{contact_id}/profile.res.json",
+                    "_meta/schemas/contact.profile.output.schema.json",
+                ),
+                "seed_content": self._contact_profile(),
+                "mutable": False,
+                "scope": None,
+            },
+            {
                 "path": "contacts/zhangsan/send_message.act",
                 "kind": "action_file",
                 "manifest_entry": self._action_manifest(
-                    "contacts/{contact_id}/send_message.act", "inline"
+                    "contacts/{contact_id}/send_message.act",
+                    "inline",
+                    input_schema="_meta/schemas/send_message.input.schema.json",
+                    event_schema="_meta/schemas/events.evt.schema.json",
+                    max_payload_bytes=8192,
+                    inline_timeout_ms=2000,
+                    event_types=["action.accepted", "action.completed", "action.failed"],
+                    example="echo '{\"text\":\"明天上午十点开会\"}' >> /app/aiim/contacts/zhangsan/send_message.act",
                 ),
                 "seed_content": None,
                 "mutable": True,
@@ -127,7 +177,15 @@ class MockAiimBackend:
             {
                 "path": "_paging/fetch_next.act",
                 "kind": "action_file",
-                "manifest_entry": self._action_manifest("_paging/fetch_next.act", "inline"),
+                "manifest_entry": self._action_manifest(
+                    "_paging/fetch_next.act",
+                    "inline",
+                    input_schema="_meta/schemas/paging.fetch_next.input.schema.json",
+                    event_schema="_meta/schemas/events.evt.schema.json",
+                    max_payload_bytes=512,
+                    inline_timeout_ms=500,
+                    event_types=["action.completed", "action.failed"],
+                ),
                 "seed_content": None,
                 "mutable": True,
                 "scope": None,
@@ -135,7 +193,15 @@ class MockAiimBackend:
             {
                 "path": "_paging/close.act",
                 "kind": "action_file",
-                "manifest_entry": self._action_manifest("_paging/close.act", "inline"),
+                "manifest_entry": self._action_manifest(
+                    "_paging/close.act",
+                    "inline",
+                    input_schema="_meta/schemas/paging.close.input.schema.json",
+                    event_schema="_meta/schemas/events.evt.schema.json",
+                    max_payload_bytes=512,
+                    inline_timeout_ms=500,
+                    event_types=["action.completed", "action.failed"],
+                ),
                 "seed_content": None,
                 "mutable": True,
                 "scope": None,
@@ -149,9 +215,73 @@ class MockAiimBackend:
                 "scope": None,
             },
             {
+                "path": "_app/control.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "_app/control.res.json",
+                    "_meta/schemas/app.control.output.schema.json",
+                ),
+                "seed_content": self._app_control_resource(),
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_app/skill.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "_app/skill.res.json",
+                    "_meta/schemas/app.skill.output.schema.json",
+                ),
+                "seed_content": self._app_skill_resource(),
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_app/actions.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "_app/actions.res.json",
+                    "_meta/schemas/app.actions.output.schema.json",
+                ),
+                "seed_content": self._app_actions_resource(),
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_app/available_scopes.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "_app/available_scopes.res.json",
+                    "_meta/schemas/app.available_scopes.output.schema.json",
+                ),
+                "seed_content": self._available_scopes_resource(active_scope),
+                "mutable": False,
+                "scope": None,
+            },
+            {
+                "path": "_app/current_scope.res.json",
+                "kind": "static_json_resource",
+                "manifest_entry": self._json_resource_manifest(
+                    "_app/current_scope.res.json",
+                    "_meta/schemas/app.current_scope.output.schema.json",
+                ),
+                "seed_content": self._current_scope_resource(active_scope),
+                "mutable": False,
+                "scope": None,
+            },
+            {
                 "path": "_app/enter_scope.act",
                 "kind": "action_file",
-                "manifest_entry": self._action_manifest("_app/enter_scope.act", "inline"),
+                "manifest_entry": self._action_manifest(
+                    "_app/enter_scope.act",
+                    "inline",
+                    input_schema="_meta/schemas/enter_scope.input.schema.json",
+                    event_schema="_meta/schemas/events.evt.schema.json",
+                    max_payload_bytes=2048,
+                    inline_timeout_ms=1000,
+                    event_types=["action.completed", "action.failed"],
+                    example="echo '{\"target_scope\":\"chat-long\"}' >> /app/aiim/_app/enter_scope.act",
+                ),
                 "seed_content": None,
                 "mutable": True,
                 "scope": None,
@@ -159,7 +289,16 @@ class MockAiimBackend:
             {
                 "path": "_app/refresh_structure.act",
                 "kind": "action_file",
-                "manifest_entry": self._action_manifest("_app/refresh_structure.act", "inline"),
+                "manifest_entry": self._action_manifest(
+                    "_app/refresh_structure.act",
+                    "inline",
+                    input_schema="_meta/schemas/refresh_structure.input.schema.json",
+                    event_schema="_meta/schemas/events.evt.schema.json",
+                    max_payload_bytes=2048,
+                    inline_timeout_ms=1000,
+                    event_types=["action.completed", "action.failed"],
+                    example="echo '{}' >> /app/aiim/_app/refresh_structure.act",
+                ),
                 "seed_content": None,
                 "mutable": True,
                 "scope": None,
@@ -230,6 +369,144 @@ class MockAiimBackend:
             )
 
         return nodes
+
+    def _contact_profile(self) -> dict[str, Any]:
+        return {
+            "id": "contact-zhangsan",
+            "display_name": "张三",
+            "contact_id": "zhangsan",
+            "name_en": "Zhang San",
+            "aliases": ["张三", "老张", "zhangsan", "Zhang San"],
+            "tags": ["incident", "oncall"],
+            "last_active_at": "2026-04-26T09:00:00Z",
+            "status": "online",
+            "role": "incident commander",
+            "send_message_action": "contacts/zhangsan/send_message.act",
+        }
+
+    def _app_control_resource(self) -> dict[str, Any]:
+        return {
+            "app_id": "aiim",
+            "description": "AIIM demo app for incident chat, contact messaging, and scope switching.",
+            "events_path": "_stream/events.evt.jsonl",
+            "current_scope_path": "_app/current_scope.res.json",
+            "available_scopes_path": "_app/available_scopes.res.json",
+            "actions": [
+                {
+                    "name": "enter_scope",
+                    "path": "_app/enter_scope.act",
+                    "summary": "Switch the app structure to a named scope such as chat-001 or chat-long.",
+                    "input_schema": "_meta/schemas/enter_scope.input.schema.json",
+                    "example_payload": {"target_scope": "chat-long"},
+                },
+                {
+                    "name": "refresh_structure",
+                    "path": "_app/refresh_structure.act",
+                    "summary": "Refresh the current app structure. Optionally include target_scope to refresh a specific view.",
+                    "input_schema": "_meta/schemas/refresh_structure.input.schema.json",
+                    "example_payload": {},
+                },
+            ],
+        }
+
+    def _app_skill_resource(self) -> dict[str, Any]:
+        return {
+            "app_id": "aiim",
+            "description": "一个 AI 专用的聊天软件，用于收发消息。",
+            "when_to_use": [
+                "当用户想要向某人发送消息、查看聊天记录，或者处理其他与聊天相关的任务时使用。",
+                "在当前挂载的 AIIM app 上执行专用 act 或控制操作之前，先加载这个 skill。",
+            ],
+            "overview_markdown": "AIIM 是当前挂载出来的聊天软件。你可以用它查看聊天记录、给联系人发送消息，并在需要时切换不同聊天 scope 后再继续读取或操作。",
+            "allowed_tools": ["bash", "read_file", "glob_search"],
+            "include_generated_sections": {
+                "scope_summary": True,
+                "control_actions": True,
+                "recommended_actions": True,
+                "contact_routing": True,
+            },
+        }
+
+    def _app_actions_resource(self) -> dict[str, Any]:
+        return {
+            "app_id": "aiim",
+            "recommended_actions": [
+                {
+                    "name": "send_message",
+                    "path": "contacts/zhangsan/send_message.act",
+                    "summary": "Send a direct message to 张三 / zhangsan.",
+                    "input_schema": "_meta/schemas/send_message.input.schema.json",
+                    "use_when": [
+                        "Notify 张三 about a meeting, incident update, or follow-up.",
+                        "User asks to tell 张三 / zhangsan / 老张 something.",
+                    ],
+                    "example_payload": {
+                        "text": "明天上午十点开会",
+                        "priority": "normal",
+                    },
+                },
+                {
+                    "name": "enter_scope",
+                    "path": "_app/enter_scope.act",
+                    "summary": "Switch the mounted app tree to another scope before reading or acting.",
+                    "input_schema": "_meta/schemas/enter_scope.input.schema.json",
+                    "use_when": ["Need chat-long instead of the default chat-001 view."],
+                    "example_payload": {"target_scope": "chat-long"},
+                },
+                {
+                    "name": "refresh_structure",
+                    "path": "_app/refresh_structure.act",
+                    "summary": "Refresh the app tree after scope-sensitive changes or connector updates.",
+                    "input_schema": "_meta/schemas/refresh_structure.input.schema.json",
+                    "use_when": ["App layout may have changed and paths should be reloaded."],
+                    "example_payload": {},
+                },
+            ],
+            "contact_routes": [
+                {
+                    "contact_id": "zhangsan",
+                    "profile_path": "contacts/zhangsan/profile.res.json",
+                    "send_message_path": "contacts/zhangsan/send_message.act",
+                    "mention_tokens": ["张三", "老张", "zhangsan", "Zhang San"],
+                }
+            ],
+        }
+
+    def _available_scopes_resource(self, active_scope: str) -> dict[str, Any]:
+        return {
+            "app_id": "aiim",
+            "active_scope": active_scope,
+            "scopes": [
+                {
+                    "scope_id": "chat-001",
+                    "display_name": "Default chat view",
+                    "summary": "Primary working view with chats/chat-001/messages.res.jsonl.",
+                    "enter_payload": {"target_scope": "chat-001"},
+                },
+                {
+                    "scope_id": "chat-long",
+                    "display_name": "Long chat stress view",
+                    "summary": "Scope with a long chat transcript for pagination and large-context checks.",
+                    "enter_payload": {"target_scope": "chat-long"},
+                },
+            ],
+        }
+
+    def _current_scope_resource(self, active_scope: str) -> dict[str, Any]:
+        display_name = "Long chat stress view" if active_scope == "chat-long" else "Default chat view"
+        primary_resource = (
+            "chats/chat-long/messages.res.jsonl"
+            if active_scope == "chat-long"
+            else "chats/chat-001/messages.res.jsonl"
+        )
+        return {
+            "app_id": "aiim",
+            "active_scope": active_scope,
+            "display_name": display_name,
+            "primary_resource": primary_resource,
+            "entered_via": "_app/enter_scope.act",
+            "structure_revision_hint": f"demo-structure-{active_scope}",
+        }
 
     def _structure_snapshot(self, scope: str | None) -> dict[str, Any]:
         if scope in (None, "chat-001"):
