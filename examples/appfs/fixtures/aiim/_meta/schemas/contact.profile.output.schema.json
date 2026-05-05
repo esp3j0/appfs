@@ -16,11 +16,34 @@
       "type": "string",
       "minLength": 1
     },
+    "contact_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name_en": {
+      "type": "string"
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "tags": {
       "type": "array",
       "items": {
         "type": "string"
       }
+    },
+    "status": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "send_message_action": {
+      "type": "string",
+      "minLength": 1
     },
     "last_active_at": {
       "type": [

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/app.control.output.schema.json",
+  "title": "AIIM App Control Output",
+  "type": "object",
+  "required": [
+    "app_id",
+    "events_path",
+    "actions"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "events_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "current_scope_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "available_scopes_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "summary"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input_schema": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

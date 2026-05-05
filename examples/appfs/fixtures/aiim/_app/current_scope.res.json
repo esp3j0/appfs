@@ -1,0 +1,8 @@
+{
+  "app_id": "aiim",
+  "active_scope": "chat-001",
+  "display_name": "Default chat view",
+  "primary_resource": "chats/chat-001/messages.res.jsonl",
+  "entered_via": "_app/enter_scope.act",
+  "structure_revision_hint": "demo-structure-chat-001"
+}

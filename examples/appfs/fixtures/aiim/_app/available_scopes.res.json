@@ -1,0 +1,22 @@
+{
+  "app_id": "aiim",
+  "active_scope": "chat-001",
+  "scopes": [
+    {
+      "scope_id": "chat-001",
+      "display_name": "Default chat view",
+      "summary": "Primary working view with chats/chat-001/messages.res.jsonl.",
+      "enter_payload": {
+        "target_scope": "chat-001"
+      }
+    },
+    {
+      "scope_id": "chat-long",
+      "display_name": "Long chat stress view",
+      "summary": "Scope with a long chat transcript for pagination and large-context checks.",
+      "enter_payload": {
+        "target_scope": "chat-long"
+      }
+    }
+  ]
+}
