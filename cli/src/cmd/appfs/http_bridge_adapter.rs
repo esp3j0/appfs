@@ -640,8 +640,8 @@ fn map_status_error_connector(status: u16, body: &str) -> ConnectorError {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_status_error_connector, map_status_error_v1};
-    use agentfs_sdk::{connector_error_codes, AdapterErrorV1};
+    use super::{map_status_error_connector, map_status_error_v1, WrappedRequest};
+    use agentfs_sdk::{connector_error_codes, AdapterErrorV1, ConnectorContext};
 
     #[test]
     fn map_status_error_v1_accepts_adapter_error_shape() {
@@ -680,5 +680,25 @@ mod tests {
         let err = map_status_error_connector(503, "upstream down");
         assert_eq!(err.code, connector_error_codes::UPSTREAM_UNAVAILABLE);
         assert!(err.retryable);
+    }
+
+    #[test]
+    fn wrapped_connector_request_serializes_principal_context() {
+        let wrapped = WrappedRequest {
+            context: ConnectorContext {
+                app_id: "tinode".to_string(),
+                session_id: "sess-1".to_string(),
+                request_id: "req-1".to_string(),
+                client_token: None,
+                trace_id: None,
+                principal_id: Some("default".to_string()),
+                profile_id: Some("tinode:default".to_string()),
+            },
+            request: serde_json::json!({"path": "/contacts/send_message.act"}),
+        };
+
+        let json = serde_json::to_value(&wrapped).expect("serialize wrapped request");
+        assert_eq!(json["context"]["principal_id"], "default");
+        assert_eq!(json["context"]["profile_id"], "tinode:default");
     }
 }

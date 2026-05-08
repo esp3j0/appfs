@@ -4,10 +4,12 @@ pub mod appfs_connector;
 pub mod appfs_demo_adapter;
 pub mod bulk_materialize;
 pub mod connection_pool;
+pub mod credential_store;
 pub mod error;
 pub mod filesystem;
 pub mod kvstore;
 pub mod schema;
+pub mod tinode_connector;
 pub mod toolcalls;
 
 use error::{Error, Result};
@@ -34,15 +36,19 @@ pub use appfs_adapter_testkit::{
 pub use appfs_connector::{
     connector_error_codes, ActionExecutionMode, ActionStreamingPlan, AppConnector,
     AppStructureNode, AppStructureNodeKind, AppStructureSnapshot, AppStructureSyncReason,
-    AppStructureSyncResult, AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo,
-    ConnectorTransport, FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
-    FetchSnapshotChunkResponse, GetAppStructureRequest, GetAppStructureResponse, HealthStatus,
-    LiveMode, LivePageInfo, RefreshAppStructureRequest, RefreshAppStructureResponse, SnapshotMeta,
-    SnapshotRecord, SnapshotResume, SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
-    APPFS_CONNECTOR_SDK_VERSION,
+    AppStructureSyncResult, AuthStatus, ConnectorContext, ConnectorError, ConnectorInboundEvent,
+    ConnectorInfo, ConnectorTransport, FetchLivePageRequest, FetchLivePageResponse,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, GetAppStructureRequest,
+    GetAppStructureResponse, HealthStatus, LiveMode, LivePageInfo, RefreshAppStructureRequest,
+    RefreshAppStructureResponse, SnapshotMeta, SnapshotRecord, SnapshotResume, SubmitActionOutcome,
+    SubmitActionRequest, SubmitActionResponse, APPFS_CONNECTOR_SDK_VERSION,
 };
 pub use appfs_demo_adapter::{DemoAppAdapterV1, DemoAppConnector};
 pub use bulk_materialize::{BulkMaterializeEntry, BulkMaterializePlan};
+pub use credential_store::{
+    connector_credentials_key, ConnectorCredentialRecord, ConnectorCredentialStatus,
+    ConnectorCredentialStore, ConnectorCredentialSummary,
+};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use filesystem::HostFS;
 pub use filesystem::{
@@ -53,6 +59,7 @@ pub use filesystem::{
 };
 pub use kvstore::KvStore;
 pub use schema::{SchemaVersion, AGENTFS_SCHEMA_VERSION};
+pub use tinode_connector::{TinodeConnector, TinodeConnectorConfig};
 pub use toolcalls::{ToolCall, ToolCallStats, ToolCallStatus, ToolCalls};
 
 /// Directory containing agentfs databases
