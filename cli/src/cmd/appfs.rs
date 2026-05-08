@@ -1211,7 +1211,10 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
         &resolved_apps,
     )
     .await?;
-    for resolved_app in resolved_apps.values() {
+    for resolved_app in resolved_apps
+        .values()
+        .filter(|app| app.visibility == compose::schema::AppfsComposeAppVisibility::Public)
+    {
         let session_id = normalize_appfs_session_id(resolved_app.session_id.clone());
         let bridge_config =
             build_appfs_bridge_config(bridge_args_from_resolved_compose_app(resolved_app));
@@ -1219,12 +1222,15 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
             &agent,
             &resolved_app.app_id,
             &session_id,
+            None,
+            None,
             &bridge_config,
         )
         .await?;
     }
-    let startup_app_ids = resolved_apps
-        .values()
+    let startup_app_ids = registry_doc
+        .apps
+        .iter()
         .map(|app| app.app_id.clone())
         .collect::<Vec<_>>();
     let startup_plan = build_managed_runtime_bootstrap_plan(&agent, &startup_app_ids).await?;
@@ -1266,11 +1272,13 @@ fn bridge_args_from_resolved_compose_app(
     AppfsBridgeCliArgs {
         adapter_http_endpoint: match app.transport_kind {
             compose::schema::AppfsComposeTransportKind::Http => Some(app.endpoint.clone()),
-            compose::schema::AppfsComposeTransportKind::Grpc => None,
+            compose::schema::AppfsComposeTransportKind::Grpc
+            | compose::schema::AppfsComposeTransportKind::InProcess => None,
         },
         adapter_http_timeout_ms: app.transport.http_timeout_ms,
         adapter_grpc_endpoint: match app.transport_kind {
-            compose::schema::AppfsComposeTransportKind::Http => None,
+            compose::schema::AppfsComposeTransportKind::Http
+            | compose::schema::AppfsComposeTransportKind::InProcess => None,
             compose::schema::AppfsComposeTransportKind::Grpc => Some(app.endpoint.clone()),
         },
         adapter_grpc_timeout_ms: app.transport.grpc_timeout_ms,
@@ -1514,6 +1522,8 @@ struct ActionCursorDoc {
 struct AppfsAdapter {
     app_id: String,
     session_id: String,
+    principal_id: Option<String>,
+    profile_id: Option<String>,
     app_dir: PathBuf,
     direct_db_path: Option<String>,
     action_specs: Vec<ActionSpec>,
@@ -1561,6 +1571,42 @@ mod supervisor_tests {
             adapter_bridge_circuit_breaker_failures: 5,
             adapter_bridge_circuit_breaker_cooldown_ms: 3_000,
         }
+    }
+
+    fn configure_tinode_env_for_tests() {
+        std::env::set_var("APPFS_TINODE_ENDPOINT", "http://127.0.0.1:6060");
+        std::env::set_var("APPFS_TINODE_LOGIN_PREFIX", "appfs_test");
+        std::env::set_var("APPFS_TINODE_CREDENTIAL_POLICY", "auto-create");
+    }
+
+    fn write_tinode_private_policy(root: &std::path::Path) {
+        registry::write_app_policy_registry(
+            root,
+            &registry::AppfsAppPolicyRegistryDoc {
+                version: registry::APPFS_REGISTRY_VERSION,
+                apps: vec![registry::AppfsAppPolicyRecord {
+                    app_id: "tinode".to_string(),
+                    visibility: registry::AppfsAppPolicyVisibility::Private,
+                    connector: "tinode-in-process".to_string(),
+                    transport: registry::AppfsRegistryTransportDoc {
+                        kind: registry::AppfsRegistryTransportKind::InProcess,
+                        endpoint: None,
+                        http_timeout_ms: 5000,
+                        grpc_timeout_ms: 5000,
+                        bridge_max_retries: 2,
+                        bridge_initial_backoff_ms: 100,
+                        bridge_max_backoff_ms: 1000,
+                        bridge_circuit_breaker_failures: 5,
+                        bridge_circuit_breaker_cooldown_ms: 3000,
+                    },
+                    path: None,
+                    path_template: Some("private/{principal_id}/tinode".to_string()),
+                    profile_template: Some("tinode:{principal_id}".to_string()),
+                    credential_policy: Some("auto-create".to_string()),
+                }],
+            },
+        )
+        .expect("write tinode private policy");
     }
 
     #[test]
@@ -2048,7 +2094,13 @@ mod supervisor_tests {
         let existing = registry::AppfsAppsRegistryDoc {
             version: registry::APPFS_REGISTRY_VERSION,
             apps: vec![registry::AppfsRegisteredAppDoc {
+                instance_id: "aiim".to_string(),
                 app_id: "aiim".to_string(),
+                visibility: registry::AppfsRegisteredAppVisibility::Public,
+                parent_app_id: None,
+                principal_id: None,
+                profile_id: None,
+                path: "aiim".to_string(),
                 transport: registry::AppfsRegistryTransportDoc {
                     kind: registry::AppfsRegistryTransportKind::InProcess,
                     endpoint: None,
@@ -2121,6 +2173,252 @@ mod supervisor_tests {
             events[0].get("type").and_then(|value| value.as_str()),
             Some("action.completed")
         );
+    }
+
+    #[test]
+    fn runtime_supervisor_can_create_update_and_delete_principal() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        let create_action = temp.path().join("_appfs/principals/create_principal.act");
+        assert!(create_action.exists());
+        append_text(
+            &create_action,
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"description\":\"The default project agent.\",\"kind\":\"agent\",\"client_token\":\"principal-create-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll create principal");
+
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.default_principal_id, "default");
+        assert_eq!(registry.principals.len(), 1);
+        assert_eq!(registry.principals[0].principal_id, "default");
+        assert_eq!(registry.principals[0].display_name, "Default agent");
+        let view_path = temp.path().join("_appfs/principals/default.res.json");
+        assert!(view_path.exists());
+        let view: registry::PrincipalRecord =
+            serde_json::from_slice(&fs::read(&view_path).expect("read principal view"))
+                .expect("parse principal view");
+        assert_eq!(view, registry.principals[0]);
+
+        let events = control_events(&temp, "principal-create-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.created")
+        );
+
+        append_text(
+            &create_action,
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"client_token\":\"principal-create-002\"}\n",
+        );
+        supervisor
+            .poll_once()
+            .expect("poll duplicate create principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.principals.len(), 1);
+        let events = control_events(&temp, "principal-create-002");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.exists")
+        );
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/update_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default project agent\",\"client_token\":\"principal-update-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll update principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.principals[0].display_name, "Default project agent");
+
+        append_text(
+            &temp.path().join("_appfs/principals/delete_principal.act"),
+            "{\"principal_id\":\"default\",\"client_token\":\"principal-delete-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll delete principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert!(registry.principals.is_empty());
+        assert!(!view_path.exists());
+        let events = control_events(&temp, "principal-delete-001");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.deleted")
+        );
+    }
+
+    #[test]
+    fn runtime_supervisor_materializes_private_tinode_skeleton_for_created_principal() {
+        let temp = TempDir::new().expect("tempdir");
+        configure_tinode_env_for_tests();
+        write_tinode_private_policy(temp.path());
+
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/create_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"kind\":\"agent\",\"client_token\":\"principal-private-001\"}\n",
+        );
+
+        supervisor.poll_once().expect("poll create principal");
+
+        assert!(supervisor.runtimes.contains_key("tinode--default"));
+        let tinode_root = temp.path().join("private/default/tinode");
+        assert!(tinode_root.exists());
+        assert!(tinode_root.join("_meta/manifest.res.json").exists());
+        assert!(tinode_root.join("_stream/events.evt.jsonl").exists());
+        for expected in [
+            "_app/actions.res.json",
+            "_app/control.res.json",
+            "_app/self.res.json",
+            "_app/skill.res.json",
+            "_app/ensure_credentials.act",
+            "_app/refresh_structure.act",
+            "_app/refresh_inbox.act",
+            "contacts/index.res.jsonl",
+            "contacts/send_message.act",
+            "contacts/resolve.act",
+            "contacts/search_results.res.jsonl",
+            "groups/index.res.jsonl",
+            "groups/create_group.act",
+            "inbox/recent.res.jsonl",
+            "inbox/unread.res.jsonl",
+            "inbox/mark_read.act",
+            "topics/index.res.jsonl",
+        ] {
+            assert!(tinode_root.join(expected).exists(), "missing {expected}");
+        }
+        let self_doc: JsonValue =
+            serde_json::from_slice(&fs::read(tinode_root.join("_app/self.res.json")).unwrap())
+                .expect("parse tinode self");
+        assert_eq!(self_doc["credential_status"], "missing");
+        assert_eq!(self_doc["principal_id"], "default");
+        assert_eq!(self_doc["profile_id"], "tinode:default");
+        let self_rendered = self_doc.to_string();
+        for forbidden in ["token", "refresh_token", "password", "secret", "cookie"] {
+            assert!(!self_rendered.contains(forbidden));
+        }
+
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read app registry")
+            .expect("app registry exists");
+        assert_eq!(stored.apps.len(), 1);
+        assert_eq!(stored.apps[0].instance_id, "tinode--default");
+        assert_eq!(stored.apps[0].app_id, "tinode");
+        assert_eq!(
+            stored.apps[0].visibility,
+            registry::AppfsRegisteredAppVisibility::PrivateInstance
+        );
+        assert_eq!(stored.apps[0].principal_id.as_deref(), Some("default"));
+        assert_eq!(stored.apps[0].profile_id.as_deref(), Some("tinode:default"));
+        assert_eq!(stored.apps[0].path, "private/default/tinode");
+
+        let events = control_events(&temp, "principal-private-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.exists")
+        );
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("app_instances"))
+                .and_then(|value| value.as_array())
+                .map(|instances| instances.len()),
+            Some(0)
+        );
+
+        append_text(
+            &temp.path().join("_appfs/principals/delete_principal.act"),
+            "{\"principal_id\":\"default\",\"client_token\":\"principal-private-delete-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll delete principal");
+        let events = control_events(&temp, "principal-private-delete-001");
+        assert_eq!(events.len(), 1);
+        let content = events[0].get("content").expect("delete content");
+        assert_eq!(
+            content
+                .get("credentials_cleanup")
+                .and_then(|value| value.as_str()),
+            Some("requested")
+        );
+        let cleanup = content
+            .get("credential_cleanup_requests")
+            .and_then(|value| value.as_array())
+            .expect("cleanup requests");
+        assert_eq!(cleanup.len(), 1);
+        assert_eq!(
+            cleanup[0]
+                .get("instance_id")
+                .and_then(|value| value.as_str()),
+            Some("tinode--default")
+        );
+        assert_eq!(
+            cleanup[0]
+                .get("profile_id")
+                .and_then(|value| value.as_str()),
+            Some("tinode:default")
+        );
+    }
+
+    #[test]
+    fn runtime_supervisor_backfills_private_apps_for_existing_principals() {
+        let temp = TempDir::new().expect("tempdir");
+        configure_tinode_env_for_tests();
+
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/create_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"kind\":\"agent\",\"client_token\":\"principal-before-policy-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll create principal");
+        assert!(!supervisor.runtimes.contains_key("tinode--default"));
+
+        write_tinode_private_policy(temp.path());
+        supervisor.poll_once().expect("poll backfill private app");
+
+        assert!(supervisor.runtimes.contains_key("tinode--default"));
+        let tinode_root = temp.path().join("private/default/tinode");
+        assert!(tinode_root.join("_app/skill.res.json").exists());
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read app registry")
+            .expect("app registry exists");
+        assert!(stored.apps.iter().any(|app| {
+            app.instance_id == "tinode--default"
+                && app.profile_id.as_deref() == Some("tinode:default")
+        }));
     }
 
     #[test]

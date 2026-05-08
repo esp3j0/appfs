@@ -16,6 +16,9 @@ pub mod connector_error_codes {
     pub const UPSTREAM_UNAVAILABLE: &str = "UPSTREAM_UNAVAILABLE";
     pub const RATE_LIMITED: &str = "RATE_LIMITED";
     pub const AUTH_EXPIRED: &str = "AUTH_EXPIRED";
+    pub const PROFILE_NOT_READY: &str = "PROFILE_NOT_READY";
+    pub const PROFILE_NOT_FOUND: &str = "PROFILE_NOT_FOUND";
+    pub const CREDENTIALS_FAILED: &str = "CREDENTIALS_FAILED";
     pub const PERMISSION_DENIED: &str = "PERMISSION_DENIED";
     pub const RESOURCE_EXHAUSTED: &str = "RESOURCE_EXHAUSTED";
     pub const TIMEOUT: &str = "TIMEOUT";
@@ -53,6 +56,10 @@ pub struct ConnectorContext {
     pub client_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +197,16 @@ pub struct SubmitActionResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_duration_ms: Option<u32>,
     pub outcome: SubmitActionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorInboundEvent {
+    pub event_type: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
@@ -332,6 +349,13 @@ pub trait AppConnector: Send {
         ctx: &ConnectorContext,
     ) -> std::result::Result<SubmitActionResponse, ConnectorError>;
 
+    fn drain_inbound_events(
+        &mut self,
+        _ctx: &ConnectorContext,
+    ) -> std::result::Result<Vec<ConnectorInboundEvent>, ConnectorError> {
+        Ok(Vec::new())
+    }
+
     fn get_app_structure(
         &mut self,
         _request: GetAppStructureRequest,
@@ -352,6 +376,7 @@ pub trait AppConnector: Send {
 #[cfg(test)]
 mod tests {
     use super::connector_error_codes as code;
+    use super::ConnectorContext;
 
     #[test]
     fn connector_error_codes_match_expected_set() {
@@ -365,6 +390,9 @@ mod tests {
             code::UPSTREAM_UNAVAILABLE,
             code::RATE_LIMITED,
             code::AUTH_EXPIRED,
+            code::PROFILE_NOT_READY,
+            code::PROFILE_NOT_FOUND,
+            code::CREDENTIALS_FAILED,
             code::PERMISSION_DENIED,
             code::RESOURCE_EXHAUSTED,
             code::TIMEOUT,
@@ -382,6 +410,9 @@ mod tests {
             "UPSTREAM_UNAVAILABLE",
             "RATE_LIMITED",
             "AUTH_EXPIRED",
+            "PROFILE_NOT_READY",
+            "PROFILE_NOT_FOUND",
+            "CREDENTIALS_FAILED",
             "PERMISSION_DENIED",
             "RESOURCE_EXHAUSTED",
             "TIMEOUT",
@@ -390,5 +421,37 @@ mod tests {
         ];
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn connector_context_roundtrips_principal_and_profile() {
+        let ctx = ConnectorContext {
+            app_id: "tinode".to_string(),
+            session_id: "sess-1".to_string(),
+            request_id: "req-1".to_string(),
+            client_token: None,
+            trace_id: None,
+            principal_id: Some("default".to_string()),
+            profile_id: Some("tinode:default".to_string()),
+        };
+
+        let json = serde_json::to_value(&ctx).expect("serialize context");
+        assert_eq!(json["app_id"], "tinode");
+        assert_eq!(json["principal_id"], "default");
+        assert_eq!(json["profile_id"], "tinode:default");
+
+        let restored: ConnectorContext = serde_json::from_value(json).expect("deserialize context");
+        assert_eq!(restored, ctx);
+    }
+
+    #[test]
+    fn connector_context_accepts_public_context_without_principal() {
+        let restored: ConnectorContext =
+            serde_json::from_str(r#"{"app_id":"aiim","session_id":"sess-1","request_id":"req-1"}"#)
+                .expect("deserialize public context");
+
+        assert_eq!(restored.app_id, "aiim");
+        assert_eq!(restored.principal_id, None);
+        assert_eq!(restored.profile_id, None);
     }
 }

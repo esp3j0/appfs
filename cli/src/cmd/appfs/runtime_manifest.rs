@@ -12,7 +12,11 @@ pub(crate) const APPFS_MULTI_AGENT_MODE_SHARED: &str = "shared_mount_distinct_at
 const CONTROL_REGISTER_ACTION_PATH: &str = "/_appfs/register_app.act";
 const CONTROL_UNREGISTER_ACTION_PATH: &str = "/_appfs/unregister_app.act";
 const CONTROL_LIST_ACTION_PATH: &str = "/_appfs/list_apps.act";
+const CONTROL_CREATE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/create_principal.act";
+const CONTROL_UPDATE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/update_principal.act";
+const CONTROL_DELETE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/delete_principal.act";
 const CONTROL_REGISTRY_PATH: &str = "/_appfs/apps.registry.json";
+const CONTROL_PRINCIPALS_REGISTRY_PATH: &str = "/_appfs/principals.registry.json";
 const CONTROL_EVENTS_PATH: &str = "/_appfs/_stream/events.evt.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +24,11 @@ pub(crate) struct AppfsRuntimeManifestControlPlaneDoc {
     pub(crate) register_action: String,
     pub(crate) unregister_action: String,
     pub(crate) list_action: String,
+    pub(crate) create_principal_action: String,
+    pub(crate) update_principal_action: String,
+    pub(crate) delete_principal_action: String,
     pub(crate) registry: String,
+    pub(crate) principals_registry: String,
     pub(crate) events: String,
 }
 
@@ -71,7 +79,11 @@ pub(crate) fn build_runtime_manifest(
             register_action: CONTROL_REGISTER_ACTION_PATH.to_string(),
             unregister_action: CONTROL_UNREGISTER_ACTION_PATH.to_string(),
             list_action: CONTROL_LIST_ACTION_PATH.to_string(),
+            create_principal_action: CONTROL_CREATE_PRINCIPAL_ACTION_PATH.to_string(),
+            update_principal_action: CONTROL_UPDATE_PRINCIPAL_ACTION_PATH.to_string(),
+            delete_principal_action: CONTROL_DELETE_PRINCIPAL_ACTION_PATH.to_string(),
             registry: CONTROL_REGISTRY_PATH.to_string(),
+            principals_registry: CONTROL_PRINCIPALS_REGISTRY_PATH.to_string(),
             events: CONTROL_EVENTS_PATH.to_string(),
         },
         capabilities: AppfsRuntimeManifestCapabilitiesDoc {

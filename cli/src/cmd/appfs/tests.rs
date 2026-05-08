@@ -1,9 +1,11 @@
 use serde_json::Value;
 
 use super::action_dispatcher::{
-    parse_action_line, parse_enter_scope_request, parse_list_apps_request, parse_paging_request,
-    parse_register_app_request, parse_snapshot_refresh_request, parse_structure_refresh_request,
-    parse_unregister_app_request, validate_submit_payload as validate_payload,
+    parse_action_line, parse_create_principal_request, parse_delete_principal_request,
+    parse_ensure_credentials_request, parse_enter_scope_request, parse_list_apps_request,
+    parse_paging_request, parse_register_app_request, parse_snapshot_refresh_request,
+    parse_structure_refresh_request, parse_unregister_app_request, parse_update_principal_request,
+    validate_submit_payload as validate_payload,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
 use super::registry::AppfsRegistryTransportKind;
@@ -285,6 +287,19 @@ fn parse_structure_refresh_allows_optional_target_scope() {
 }
 
 #[test]
+fn parse_ensure_credentials_allows_optional_expected_profile() {
+    let req = parse_ensure_credentials_request(r#"{}"#).expect("expected default ensure");
+    assert_eq!(req.expected_profile_id, None);
+
+    let req = parse_ensure_credentials_request(r#"{"expected_profile_id":"tinode:default"}"#)
+        .expect("expected profile guard");
+    assert_eq!(req.expected_profile_id.as_deref(), Some("tinode:default"));
+
+    assert!(parse_ensure_credentials_request(r#"{"expected_profile_id":42}"#).is_err());
+    assert!(parse_ensure_credentials_request(r#"[]"#).is_err());
+}
+
+#[test]
 fn parse_register_app_request_requires_transport_and_app_id() {
     let req = parse_register_app_request(
         r#"{"app_id":"notion","session_id":"sess-notion","transport":{"kind":"http","endpoint":"http://127.0.0.1:8080","http_timeout_ms":5000,"grpc_timeout_ms":5000,"bridge_max_retries":2,"bridge_initial_backoff_ms":100,"bridge_max_backoff_ms":1000,"bridge_circuit_breaker_failures":5,"bridge_circuit_breaker_cooldown_ms":3000}}"#,
@@ -308,6 +323,56 @@ fn parse_unregister_app_request_requires_app_id() {
 fn parse_list_apps_request_requires_json_object() {
     assert!(parse_list_apps_request(r#"{}"#).is_ok());
     assert!(parse_list_apps_request(r#"[]"#).is_err());
+}
+
+#[test]
+fn parse_create_principal_request_requires_safe_principal_id() {
+    let req = parse_create_principal_request(
+        r#"{"principal_id":"incident-reporter","display_name":"Incident reporter","description":"Summarizes incidents.","kind":"agent"}"#,
+    )
+    .expect("valid principal create request");
+    assert_eq!(req.principal_id, "incident-reporter");
+    assert_eq!(req.display_name, "Incident reporter");
+    assert_eq!(req.description.as_deref(), Some("Summarizes incidents."));
+    assert_eq!(req.kind, "agent");
+
+    assert!(parse_create_principal_request(
+        r#"{"principal_id":"","display_name":"Default agent"}"#
+    )
+    .is_err());
+    assert!(parse_create_principal_request(
+        r#"{"principal_id":"../default","display_name":"Default agent"}"#
+    )
+    .is_err());
+    assert!(parse_create_principal_request(
+        r#"{"principal_id":"default\\evil","display_name":"Default agent"}"#
+    )
+    .is_err());
+    assert!(parse_create_principal_request(
+        r#"{"principal_id":".","display_name":"Default agent"}"#
+    )
+    .is_err());
+    assert!(parse_create_principal_request(
+        r#"{"principal_id":"default:ads","display_name":"Default agent"}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn parse_update_and_delete_principal_requests_require_principal_id() {
+    let req = parse_update_principal_request(
+        r#"{"principal_id":"default","display_name":"Default agent v2"}"#,
+    )
+    .expect("valid principal update request");
+    assert_eq!(req.principal_id, "default");
+    assert_eq!(req.display_name.as_deref(), Some("Default agent v2"));
+
+    let req = parse_delete_principal_request(r#"{"principal_id":"default"}"#)
+        .expect("valid principal delete request");
+    assert_eq!(req.principal_id, "default");
+
+    assert!(parse_update_principal_request(r#"{}"#).is_err());
+    assert!(parse_delete_principal_request(r#"{"principal_id":".."}"#).is_err());
 }
 
 #[test]

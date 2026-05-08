@@ -908,6 +908,8 @@ fn to_connector_proto_context(ctx: &ConnectorContext) -> connector_proto::Connec
         request_id: ctx.request_id.clone(),
         client_token: ctx.client_token.clone(),
         trace_id: ctx.trace_id.clone(),
+        principal_id: ctx.principal_id.clone(),
+        profile_id: ctx.profile_id.clone(),
     }
 }
 
@@ -918,6 +920,8 @@ fn to_structure_proto_context(ctx: &ConnectorContext) -> structure_proto::Connec
         request_id: ctx.request_id.clone(),
         client_token: ctx.client_token.clone(),
         trace_id: ctx.trace_id.clone(),
+        principal_id: ctx.principal_id.clone(),
+        profile_id: ctx.profile_id.clone(),
     }
 }
 
@@ -1433,8 +1437,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_connector_json_text, to_proto_execution_mode, to_proto_input_mode,
-        GrpcBridgeAdapterV1, GrpcBridgeConnector,
+        parse_connector_json_text, to_connector_proto_context, to_proto_execution_mode,
+        to_proto_input_mode, to_structure_proto_context, GrpcBridgeAdapterV1, GrpcBridgeConnector,
     };
     use agentfs_sdk::{
         ActionExecutionMode, AdapterControlActionV1, AdapterControlOutcomeV1,
@@ -2075,7 +2079,21 @@ mod tests {
             request_id: "req-grpc".to_string(),
             client_token: Some("tok-grpc".to_string()),
             trace_id: Some("trace-grpc".to_string()),
+            principal_id: Some("default".to_string()),
+            profile_id: Some("tinode:default".to_string()),
         }
+    }
+
+    #[test]
+    fn grpc_connector_context_maps_principal_and_profile() {
+        let ctx = connector_test_ctx();
+        let connector_ctx = to_connector_proto_context(&ctx);
+        assert_eq!(connector_ctx.principal_id.as_deref(), Some("default"));
+        assert_eq!(connector_ctx.profile_id.as_deref(), Some("tinode:default"));
+
+        let structure_ctx = to_structure_proto_context(&ctx);
+        assert_eq!(structure_ctx.principal_id.as_deref(), Some("default"));
+        assert_eq!(structure_ctx.profile_id.as_deref(), Some("tinode:default"));
     }
 
     async fn spawn_test_grpc_connector_server() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {

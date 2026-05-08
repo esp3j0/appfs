@@ -1,9 +1,10 @@
 use agentfs_sdk::{
     connector_error_codes, ActionExecutionMode, AgentFS as SdkAgentFS, AgentFSOptions,
     AppAdapterV1, AppConnector, AppStructureSyncReason, AuthStatus, ConnectorContext,
-    ConnectorError, ConnectorInfo, ConnectorTransport, DemoAppConnector, FetchLivePageRequest,
-    FetchLivePageResponse, FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, HealthStatus,
-    SnapshotMeta, SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
+    ConnectorCredentialSummary, ConnectorError, ConnectorInboundEvent, ConnectorInfo,
+    ConnectorTransport, DemoAppConnector, FetchLivePageRequest, FetchLivePageResponse,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, HealthStatus, SnapshotMeta,
+    SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse, TinodeConnector,
 };
 use anyhow::{Context, Result};
 use serde_json::Value as JsonValue;
@@ -27,7 +28,7 @@ use super::shared::{
     MultilineRecoveryOutcome,
 };
 use super::tree_sync::{
-    ensure_app_structure_initialized, refresh_app_structure, refresh_app_structure_in_db,
+    ensure_app_structure_initialized_at, refresh_app_structure, refresh_app_structure_in_db,
 };
 use super::{
     ActionCursorDoc, ActionCursorState, ActionSpec, AppRuntimeStartupBootstrap, AppfsAdapter,
@@ -275,6 +276,7 @@ impl AppConnector for LegacyAdapterConnector {
 }
 
 impl AppfsAdapter {
+    #[allow(dead_code)]
     pub(super) fn new(
         root: PathBuf,
         app_id: String,
@@ -284,6 +286,7 @@ impl AppfsAdapter {
         Self::new_with_bootstrap(root, app_id, session_id, bridge_config, None)
     }
 
+    #[allow(dead_code)]
     pub(super) fn new_with_bootstrap(
         root: PathBuf,
         app_id: String,
@@ -291,10 +294,40 @@ impl AppfsAdapter {
         bridge_config: AppfsBridgeConfig,
         startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
     ) -> Result<Self> {
+        Self::new_with_mount_path(
+            root,
+            app_id.clone(),
+            app_id,
+            None,
+            None,
+            session_id,
+            bridge_config,
+            startup_bootstrap,
+        )
+    }
+
+    pub(super) fn new_with_mount_path(
+        root: PathBuf,
+        app_id: String,
+        app_mount_path: String,
+        principal_id: Option<String>,
+        profile_id: Option<String>,
+        session_id: String,
+        bridge_config: AppfsBridgeConfig,
+        startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
+    ) -> Result<Self> {
         if startup_bootstrap.is_none() {
-            ensure_app_structure_initialized(&root, &app_id, &session_id, &bridge_config)?;
+            ensure_app_structure_initialized_at(
+                &root,
+                &app_id,
+                &app_mount_path,
+                principal_id.clone(),
+                profile_id.clone(),
+                &session_id,
+                &bridge_config,
+            )?;
         }
-        let app_dir = root.join(&app_id);
+        let app_dir = root.join(&app_mount_path);
         let manifest_path = app_dir.join("_meta").join("manifest.res.json");
         let events_path = app_dir.join("_stream").join("events.evt.jsonl");
         let cursor_path = app_dir.join("_stream").join("cursor.res.json");
@@ -371,6 +404,8 @@ impl AppfsAdapter {
         let mut adapter = Self {
             app_id,
             session_id,
+            principal_id,
+            profile_id,
             app_dir,
             direct_db_path: startup_bootstrap
                 .as_ref()
@@ -452,8 +487,57 @@ impl AppfsAdapter {
         Ok(())
     }
 
+    fn drain_connector_inbound_events(&mut self) -> Result<()> {
+        let request_id = Self::new_request_id();
+        let request_ctx = ConnectorContext {
+            app_id: self.app_id.clone(),
+            session_id: self.session_id.clone(),
+            request_id: request_id.clone(),
+            client_token: None,
+            trace_id: None,
+            principal_id: self.principal_id.clone(),
+            profile_id: self.profile_id.clone(),
+        };
+
+        match self.connector.drain_inbound_events(&request_ctx) {
+            Ok(events) => {
+                for event in events {
+                    self.emit_connector_inbound_event(&request_id, event)?;
+                }
+            }
+            Err(ConnectorError {
+                code,
+                message,
+                retryable,
+                ..
+            }) => {
+                eprintln!(
+                    "AppFS adapter ignored inbound drain failure for app {}: code={code} message={message} retryable={retryable}",
+                    self.app_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_connector_inbound_event(
+        &mut self,
+        request_id: &str,
+        event: ConnectorInboundEvent,
+    ) -> Result<()> {
+        self.emit_event(
+            &event.path,
+            request_id,
+            &event.event_type,
+            event.content,
+            event.error,
+            None,
+        )
+    }
+
     pub(super) fn poll_once(&mut self) -> Result<()> {
         self.drain_streaming_jobs()?;
+        self.drain_connector_inbound_events()?;
 
         let mut actions = self.collect_action_files()?;
         actions.sort();
@@ -759,6 +843,16 @@ impl AppfsAdapter {
                     client_token,
                 );
             }
+            Ok(action_dispatcher::DispatchRoute::EnsureCredentials(request)) => {
+                return self.handle_ensure_credentials(
+                    &normalized_path,
+                    &request_id,
+                    request.expected_profile_id.as_deref(),
+                    payload,
+                    spec,
+                    client_token,
+                );
+            }
             Ok(action_dispatcher::DispatchRoute::BusinessSubmit) => {}
             Err(action_dispatcher::DispatchRouteParseError::PagingFetchNext) => {
                 eprintln!(
@@ -795,6 +889,13 @@ impl AppfsAdapter {
                 );
                 return Ok(ProcessOutcome::Consumed);
             }
+            Err(action_dispatcher::DispatchRouteParseError::EnsureCredentials) => {
+                eprintln!(
+                    "AppFS adapter rejected malformed ensure_credentials payload at submit-time: {}",
+                    normalized_path
+                );
+                return Ok(ProcessOutcome::Consumed);
+            }
         }
 
         let request_ctx = ConnectorContext {
@@ -803,6 +904,8 @@ impl AppfsAdapter {
             request_id: request_id.clone(),
             client_token: client_token.clone(),
             trace_id: None,
+            principal_id: self.principal_id.clone(),
+            profile_id: self.profile_id.clone(),
         };
         let execution_mode = match spec.execution_mode {
             ExecutionMode::Inline => ActionExecutionMode::Inline,
@@ -823,6 +926,18 @@ impl AppfsAdapter {
                 outcome: SubmitActionOutcome::Completed { content },
                 ..
             }) => {
+                let (content, side_events) = split_connector_side_events(content);
+                for event in side_events {
+                    let event_path = event.path.as_deref().unwrap_or(&normalized_path);
+                    self.emit_event(
+                        event_path,
+                        &request_id,
+                        &event.event_type,
+                        event.content,
+                        event.error,
+                        client_token.clone(),
+                    )?;
+                }
                 self.emit_event(
                     &normalized_path,
                     &request_id,
@@ -864,6 +979,121 @@ impl AppfsAdapter {
                 self.emit_failed_with_retryable(
                     &normalized_path,
                     &request_id,
+                    &code,
+                    &message,
+                    retryable,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+        }
+    }
+
+    fn handle_ensure_credentials(
+        &mut self,
+        normalized_path: &str,
+        request_id: &str,
+        expected_profile_id: Option<&str>,
+        payload: &str,
+        spec: &ActionSpec,
+        client_token: Option<String>,
+    ) -> Result<ProcessOutcome> {
+        let Some(profile_id) = self.profile_id.clone() else {
+            self.emit_credential_failed(
+                normalized_path,
+                request_id,
+                connector_error_codes::PROFILE_NOT_READY,
+                "ensure_credentials requires a private app profile_id in connector context",
+                false,
+                client_token,
+            )?;
+            return Ok(ProcessOutcome::Consumed);
+        };
+        if let Some(expected_profile_id) = expected_profile_id {
+            if expected_profile_id != profile_id {
+                self.emit_credential_failed(
+                    normalized_path,
+                    request_id,
+                    connector_error_codes::INVALID_ARGUMENT,
+                    &format!(
+                        "expected_profile_id {expected_profile_id} does not match effective profile_id {profile_id}"
+                    ),
+                    false,
+                    client_token,
+                )?;
+                return Ok(ProcessOutcome::Consumed);
+            }
+        }
+
+        let request_ctx = ConnectorContext {
+            app_id: self.app_id.clone(),
+            session_id: self.session_id.clone(),
+            request_id: request_id.to_string(),
+            client_token: client_token.clone(),
+            trace_id: None,
+            principal_id: self.principal_id.clone(),
+            profile_id: Some(profile_id.clone()),
+        };
+        let execution_mode = match spec.execution_mode {
+            ExecutionMode::Inline => ActionExecutionMode::Inline,
+            ExecutionMode::Streaming => ActionExecutionMode::Streaming,
+        };
+        let payload_json: JsonValue =
+            serde_json::from_str(payload).context("validated JSON payload must parse")?;
+
+        match self.connector.submit_action(
+            SubmitActionRequest {
+                path: normalized_path.to_string(),
+                payload: payload_json,
+                execution_mode,
+            },
+            &request_ctx,
+        ) {
+            Ok(SubmitActionResponse {
+                outcome: SubmitActionOutcome::Completed { content },
+                ..
+            }) => {
+                let safe_summary =
+                    ConnectorCredentialSummary::from_connector_content(&content, &profile_id);
+                self.emit_event(
+                    normalized_path,
+                    request_id,
+                    "profile.credentials.ready",
+                    Some(serde_json::to_value(safe_summary)?),
+                    None,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Ok(SubmitActionResponse {
+                outcome: SubmitActionOutcome::Streaming { .. },
+                ..
+            }) => {
+                self.emit_credential_failed(
+                    normalized_path,
+                    request_id,
+                    connector_error_codes::INVALID_ARGUMENT,
+                    "ensure_credentials must complete inline and cannot stream credential state",
+                    false,
+                    client_token,
+                )?;
+                Ok(ProcessOutcome::Consumed)
+            }
+            Err(ConnectorError {
+                code,
+                message,
+                retryable,
+                ..
+            }) => {
+                if is_transient_connector_failure(&code, retryable) {
+                    eprintln!(
+                        "AppFS adapter transient connector failure for {normalized_path}: code={code} message={message}; will retry without advancing cursor"
+                    );
+                    return Ok(ProcessOutcome::RetryPending);
+                }
+                self.emit_credential_failed(
+                    normalized_path,
+                    request_id,
                     &code,
                     &message,
                     retryable,
@@ -942,6 +1172,14 @@ pub(super) fn build_app_connector(
             Duration::from_millis(bridge_config.adapter_http_timeout_ms.max(1)),
             bridge_config.runtime_options,
         ))
+    } else if app_id == "tinode" {
+        Box::new(TinodeConnector::from_env().map_err(|err| {
+            anyhow::anyhow!(
+                "failed to initialize Tinode connector: {}: {}",
+                err.code,
+                err.message
+            )
+        })?)
     } else {
         Box::new(DemoAppConnector::new(app_id.to_string()))
     };
@@ -957,6 +1195,50 @@ pub(super) fn build_app_connector(
         );
     }
     Ok(connector)
+}
+
+struct ConnectorSideEvent {
+    event_type: String,
+    path: Option<String>,
+    content: Option<JsonValue>,
+    error: Option<JsonValue>,
+}
+
+fn split_connector_side_events(mut content: JsonValue) -> (JsonValue, Vec<ConnectorSideEvent>) {
+    let Some(object) = content.as_object_mut() else {
+        return (content, Vec::new());
+    };
+    let Some(raw_events) = object.remove("_appfs_events") else {
+        return (content, Vec::new());
+    };
+    let Some(raw_events) = raw_events.as_array() else {
+        return (content, Vec::new());
+    };
+
+    let events = raw_events
+        .iter()
+        .filter_map(|raw| {
+            let event_type = raw
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?
+                .to_string();
+            Some(ConnectorSideEvent {
+                event_type,
+                path: raw
+                    .get("path")
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                content: raw.get("content").cloned(),
+                error: raw.get("error").cloned(),
+            })
+        })
+        .collect();
+
+    (content, events)
 }
 
 pub(super) fn parse_manifest_contract_json(
@@ -1382,6 +1664,8 @@ impl AppfsAdapter {
         if let Some(db_path) = self.direct_db_path.clone() {
             let app_id = self.app_id.clone();
             let session_id = self.session_id.clone();
+            let principal_id = self.principal_id.clone();
+            let profile_id = self.profile_id.clone();
             let connector = &mut self.connector;
             return crate::get_runtime().block_on(async move {
                 let agent = SdkAgentFS::open(AgentFSOptions::with_path(db_path)).await?;
@@ -1389,6 +1673,8 @@ impl AppfsAdapter {
                     &agent,
                     &app_id,
                     &session_id,
+                    principal_id,
+                    profile_id,
                     &mut **connector,
                     reason,
                     target_scope,
@@ -1406,6 +1692,8 @@ impl AppfsAdapter {
             root,
             &self.app_id,
             &self.session_id,
+            self.principal_id.clone(),
+            self.profile_id.clone(),
             &mut *self.connector,
             reason,
             target_scope,
@@ -1502,6 +1790,8 @@ mod tests {
             request_id: "req-1".to_string(),
             client_token: None,
             trace_id: None,
+            principal_id: None,
+            profile_id: None,
         }
     }
 
@@ -1649,6 +1939,23 @@ mod tests {
             bridge_config(),
         )
         .expect("structured adapter");
+
+        (temp, adapter)
+    }
+
+    fn private_structured_adapter() -> (TempDir, AppfsAdapter) {
+        let temp = TempDir::new().expect("tempdir");
+        let adapter = AppfsAdapter::new_with_mount_path(
+            temp.path().to_path_buf(),
+            "demo-private".to_string(),
+            "private/default/demo-private".to_string(),
+            Some("default".to_string()),
+            Some("demo-private:default".to_string()),
+            "sess-test".to_string(),
+            bridge_config(),
+            None,
+        )
+        .expect("private structured adapter");
 
         (temp, adapter)
     }
@@ -2353,11 +2660,41 @@ mod tests {
     }
 
     #[test]
+    fn connector_side_events_are_split_and_reserved_field_is_hidden() {
+        let (content, events) = super::split_connector_side_events(json!({
+            "ok": true,
+            "_appfs_events": [
+                {"type": "message.sent", "path": "contacts/zhangsan/messages.res.jsonl", "content": {"message_id": "m1"}},
+                {"type": "action.accepted", "content": {"ok": true}},
+                {"content": {"ignored": true}}
+            ]
+        }));
+
+        assert_eq!(content["ok"], true);
+        assert!(content.get("_appfs_events").is_none());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "message.sent");
+        assert_eq!(
+            events[0].path.as_deref(),
+            Some("contacts/zhangsan/messages.res.jsonl")
+        );
+        assert_eq!(
+            events[0]
+                .content
+                .as_ref()
+                .and_then(|value| value.get("message_id"))
+                .and_then(|value| value.as_str()),
+            Some("m1")
+        );
+    }
+
+    #[test]
     fn structured_bootstrap_exposes_app_control_actions() {
         let (_temp, adapter) = structured_adapter();
 
         assert!(adapter.app_dir.join("_app/enter_scope.act").exists());
         assert!(adapter.app_dir.join("_app/refresh_structure.act").exists());
+        assert!(!adapter.app_dir.join("_app/ensure_credentials.act").exists());
         assert!(adapter
             .action_specs
             .iter()
@@ -2366,10 +2703,96 @@ mod tests {
             .action_specs
             .iter()
             .any(|spec| spec.template == "_app/refresh_structure.act"));
+        assert!(!adapter
+            .action_specs
+            .iter()
+            .any(|spec| spec.template == "_app/ensure_credentials.act"));
         assert!(adapter
             .snapshot_specs
             .iter()
             .any(|spec| spec.template == "chats/chat-001/messages.res.jsonl"));
+    }
+
+    #[test]
+    fn ensure_credentials_emits_only_safe_profile_summary() {
+        let (_temp, mut adapter) = private_structured_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/ensure_credentials.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        assert!(action_path.exists());
+        assert!(adapter
+            .action_specs
+            .iter()
+            .any(|spec| spec.template == "_app/ensure_credentials.act"));
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ensure-001\",\"expected_profile_id\":\"demo-private:default\"}\n",
+        );
+        adapter.poll_once().expect("poll ensure credentials");
+
+        let events = token_events(&events_path, "ensure-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("profile.credentials.ready")
+        );
+        let content = events[0].get("content").expect("credential content");
+        assert_eq!(
+            content
+                .get("credential_status")
+                .and_then(|value| value.as_str()),
+            Some("ready")
+        );
+        assert_eq!(
+            content.get("profile_id").and_then(|value| value.as_str()),
+            Some("demo-private:default")
+        );
+        assert_eq!(
+            content
+                .get("upstream_user_id")
+                .and_then(|value| value.as_str()),
+            Some("demo-user-demo-private:default")
+        );
+        assert_eq!(
+            content.get("login").and_then(|value| value.as_str()),
+            Some("demo-demo-private:default")
+        );
+        assert!(content.get("token").is_none());
+        assert!(!content.to_string().contains("demo-secret-token"));
+    }
+
+    #[test]
+    fn ensure_credentials_rejects_payload_profile_mismatch() {
+        let (_temp, mut adapter) = private_structured_adapter();
+        adapter.prepare_action_sinks().expect("prepare sinks");
+
+        let action_path = adapter.app_dir.join("_app/ensure_credentials.act");
+        let events_path = adapter.app_dir.join("_stream/events.evt.jsonl");
+
+        append_text(
+            &action_path,
+            "{\"client_token\":\"ensure-mismatch-001\",\"expected_profile_id\":\"demo-private:attacker\"}\n",
+        );
+        adapter
+            .poll_once()
+            .expect("poll ensure credentials mismatch");
+
+        let events = token_events(&events_path, "ensure-mismatch-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get("type").and_then(|value| value.as_str()),
+            Some("profile.credentials.failed")
+        );
+        assert_eq!(
+            events[0]
+                .get("error")
+                .and_then(|value| value.get("code"))
+                .and_then(|value| value.as_str()),
+            Some("INVALID_ARGUMENT")
+        );
     }
 
     #[test]

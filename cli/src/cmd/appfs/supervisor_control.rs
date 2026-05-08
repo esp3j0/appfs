@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use super::action_dispatcher::{
-    normalize_actionline_payload, parse_list_apps_request, parse_register_app_request,
-    parse_unregister_app_request, RegisterAppRequest, UnregisterAppRequest,
+    normalize_actionline_payload, parse_create_principal_request, parse_delete_principal_request,
+    parse_list_apps_request, parse_register_app_request, parse_unregister_app_request,
+    parse_update_principal_request, CreatePrincipalRequest, DeletePrincipalRequest,
+    RegisterAppRequest, UnregisterAppRequest, UpdatePrincipalRequest,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
 use super::shared::{decode_jsonl_line, extract_client_token};
@@ -20,6 +22,9 @@ const CONTROL_SESSION_ID: &str = "runtime-control";
 const CONTROL_REGISTER_ACTION: &str = "register_app.act";
 const CONTROL_UNREGISTER_ACTION: &str = "unregister_app.act";
 const CONTROL_LIST_ACTION: &str = "list_apps.act";
+const CONTROL_CREATE_PRINCIPAL_ACTION: &str = "principals/create_principal.act";
+const CONTROL_UPDATE_PRINCIPAL_ACTION: &str = "principals/update_principal.act";
+const CONTROL_DELETE_PRINCIPAL_ACTION: &str = "principals/delete_principal.act";
 
 type NormalizedPayload = (String, Option<String>);
 type NormalizePayloadError = (&'static str, &'static str, Option<String>);
@@ -39,6 +44,21 @@ pub(super) enum SupervisorControlInvocation {
     List {
         request_id: String,
         client_token: Option<String>,
+    },
+    CreatePrincipal {
+        request_id: String,
+        client_token: Option<String>,
+        request: CreatePrincipalRequest,
+    },
+    UpdatePrincipal {
+        request_id: String,
+        client_token: Option<String>,
+        request: UpdatePrincipalRequest,
+    },
+    DeletePrincipal {
+        request_id: String,
+        client_token: Option<String>,
+        request: DeletePrincipalRequest,
     },
 }
 
@@ -78,8 +98,10 @@ impl SupervisorControlPlane {
 
     pub(super) fn prepare_action_sinks(&mut self) -> Result<()> {
         let control_dir = self.root.join(CONTROL_APP_ID);
+        let principals_dir = control_dir.join("principals");
         let stream_dir = control_dir.join("_stream");
         ensure_dir_exists(&control_dir, "AppFS control dir")?;
+        ensure_dir_exists(&principals_dir, "AppFS principals control dir")?;
         ensure_dir_exists(&stream_dir, "AppFS control stream dir")?;
         ensure_dir_exists(&self.replay_dir, "AppFS control replay dir")?;
         if !self.events_path.exists() {
@@ -110,6 +132,9 @@ impl SupervisorControlPlane {
             CONTROL_REGISTER_ACTION,
             CONTROL_UNREGISTER_ACTION,
             CONTROL_LIST_ACTION,
+            CONTROL_CREATE_PRINCIPAL_ACTION,
+            CONTROL_UPDATE_PRINCIPAL_ACTION,
+            CONTROL_DELETE_PRINCIPAL_ACTION,
         ] {
             let action_path = control_dir.join(action_name);
             if !action_path.exists() {
@@ -130,6 +155,9 @@ impl SupervisorControlPlane {
             CONTROL_LIST_ACTION,
             CONTROL_REGISTER_ACTION,
             CONTROL_UNREGISTER_ACTION,
+            CONTROL_CREATE_PRINCIPAL_ACTION,
+            CONTROL_UPDATE_PRINCIPAL_ACTION,
+            CONTROL_DELETE_PRINCIPAL_ACTION,
         ] {
             out.extend(self.drain_action_file(action_name)?);
         }
@@ -389,6 +417,21 @@ fn parse_invocation(
                 client_token,
             })
         }
+        CONTROL_CREATE_PRINCIPAL_ACTION => Ok(SupervisorControlInvocation::CreatePrincipal {
+            request_id: request_id.to_string(),
+            client_token,
+            request: parse_create_principal_request(payload_json)?,
+        }),
+        CONTROL_UPDATE_PRINCIPAL_ACTION => Ok(SupervisorControlInvocation::UpdatePrincipal {
+            request_id: request_id.to_string(),
+            client_token,
+            request: parse_update_principal_request(payload_json)?,
+        }),
+        CONTROL_DELETE_PRINCIPAL_ACTION => Ok(SupervisorControlInvocation::DeletePrincipal {
+            request_id: request_id.to_string(),
+            client_token,
+            request: parse_delete_principal_request(payload_json)?,
+        }),
         _ => Err(ERR_INVALID_ARGUMENT),
     }
 }
@@ -398,6 +441,9 @@ fn control_action_path(action_name: &str) -> &'static str {
         CONTROL_REGISTER_ACTION => "/_appfs/register_app.act",
         CONTROL_UNREGISTER_ACTION => "/_appfs/unregister_app.act",
         CONTROL_LIST_ACTION => "/_appfs/list_apps.act",
+        CONTROL_CREATE_PRINCIPAL_ACTION => "/_appfs/principals/create_principal.act",
+        CONTROL_UPDATE_PRINCIPAL_ACTION => "/_appfs/principals/update_principal.act",
+        CONTROL_DELETE_PRINCIPAL_ACTION => "/_appfs/principals/delete_principal.act",
         _ => "/_appfs/unknown.act",
     }
 }
@@ -457,6 +503,31 @@ fn write_json_file(path: &Path, value: &JsonValue) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SupervisorControlPlane;
+    use tempfile::TempDir;
+
+    #[test]
+    fn supervisor_control_prepares_principal_action_sinks() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut control =
+            SupervisorControlPlane::new(temp.path().to_path_buf(), false).expect("control plane");
+        control.prepare_action_sinks().expect("prepare sinks");
+
+        for rel_path in [
+            "_appfs/principals/create_principal.act",
+            "_appfs/principals/update_principal.act",
+            "_appfs/principals/delete_principal.act",
+        ] {
+            assert!(
+                temp.path().join(rel_path).exists(),
+                "{rel_path} should exist"
+            );
+        }
+    }
 }
 
 fn ensure_dir_exists(path: &Path, label: &str) -> Result<()> {
