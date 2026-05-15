@@ -306,6 +306,7 @@ impl AppfsAdapter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_mount_path(
         root: PathBuf,
         app_id: String,

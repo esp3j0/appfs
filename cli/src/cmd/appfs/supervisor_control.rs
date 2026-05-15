@@ -505,6 +505,18 @@ fn write_json_file(path: &Path, value: &JsonValue) -> Result<()> {
     Ok(())
 }
 
+fn ensure_dir_exists(path: &Path, label: &str) -> Result<()> {
+    fs::create_dir(path)
+        .or_else(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })
+        .with_context(|| format!("Failed to create {} {}", label, path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::SupervisorControlPlane;
@@ -528,16 +540,4 @@ mod tests {
             );
         }
     }
-}
-
-fn ensure_dir_exists(path: &Path, label: &str) -> Result<()> {
-    fs::create_dir(path)
-        .or_else(|err| {
-            if err.kind() == std::io::ErrorKind::AlreadyExists {
-                Ok(())
-            } else {
-                Err(err)
-            }
-        })
-        .with_context(|| format!("Failed to create {} {}", label, path.display()))
 }
