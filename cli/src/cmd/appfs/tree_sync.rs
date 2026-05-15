@@ -155,6 +155,7 @@ pub(super) async fn ensure_app_structure_initialized_in_db(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn refresh_app_structure_in_db(
     agent: &SdkAgentFS,
     app_id: &str,
@@ -255,6 +256,7 @@ pub(super) async fn refresh_app_structure_in_db(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn refresh_app_structure(
     root: &Path,
     app_id: &str,

@@ -465,7 +465,7 @@ impl SnapshotReadThroughContext {
             let Some(resource_rel) = strip_mount_prefix(&normalized_path, &mount_path) else {
                 continue;
             };
-            if best.as_ref().map_or(true, |(existing, _)| {
+            if best.as_ref().is_none_or(|(existing, _)| {
                 mount_path.len() > normalize_mount_path(&existing.app_mount_path).len()
             }) {
                 best = Some((config, resource_rel.to_string()));
@@ -1945,6 +1945,7 @@ mod tests {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn install_snapshot_runtime_at(
         wrapper: &MountSnapshotReadThroughFs,
         instance_id: &str,

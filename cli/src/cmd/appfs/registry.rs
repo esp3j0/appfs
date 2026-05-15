@@ -253,10 +253,10 @@ fn write_pretty_json_file<T: Serialize>(path: &Path, doc: &T, label: &str) -> Re
     fs::write(&tmp_path, bytes)
         .with_context(|| format!("failed to write temporary {label} {}", tmp_path.display()))?;
     if path.exists() {
-        fs::remove_file(&path)
+        fs::remove_file(path)
             .with_context(|| format!("failed to replace existing {label} {}", path.display()))?;
     }
-    fs::rename(&tmp_path, &path)
+    fs::rename(&tmp_path, path)
         .with_context(|| format!("failed to publish {label} {}", path.display()))?;
     Ok(())
 }

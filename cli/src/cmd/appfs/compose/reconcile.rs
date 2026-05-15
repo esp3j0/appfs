@@ -183,6 +183,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 
+    #[allow(clippy::too_many_arguments)]
     fn resolved_app(
         app_id: &str,
         connector_name: &str,
