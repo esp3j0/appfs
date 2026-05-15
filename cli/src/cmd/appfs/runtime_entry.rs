@@ -10,6 +10,17 @@ use std::path::Path;
 pub(super) struct AppRuntimeEntry {
     pub(super) runtime: ResolvedAppfsRuntimeCliArgs,
     pub(super) adapter: AppfsAdapter,
+    pub(super) registry_metadata: AppRuntimeRegistryMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AppRuntimeRegistryMetadata {
+    pub(super) instance_id: String,
+    pub(super) visibility: crate::cmd::appfs::registry::AppfsRegisteredAppVisibility,
+    pub(super) parent_app_id: Option<String>,
+    pub(super) principal_id: Option<String>,
+    pub(super) profile_id: Option<String>,
+    pub(super) path: String,
 }
 
 pub(super) fn build_runtime_entry(
@@ -17,22 +28,48 @@ pub(super) fn build_runtime_entry(
     runtime: ResolvedAppfsRuntimeCliArgs,
     startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
 ) -> Result<AppRuntimeEntry> {
-    let adapter = match startup_bootstrap {
-        Some(startup_bootstrap) => AppfsAdapter::new_with_bootstrap(
-            root.to_path_buf(),
-            runtime.app_id.clone(),
-            runtime.session_id.clone(),
-            build_appfs_bridge_config(runtime.bridge.clone()),
-            Some(startup_bootstrap),
-        )?,
-        None => AppfsAdapter::new(
-            root.to_path_buf(),
-            runtime.app_id.clone(),
-            runtime.session_id.clone(),
-            build_appfs_bridge_config(runtime.bridge.clone()),
-        )?,
-    };
-    Ok(AppRuntimeEntry { runtime, adapter })
+    build_runtime_entry_with_metadata(
+        root,
+        runtime.clone(),
+        AppRuntimeRegistryMetadata::public(runtime.app_id.clone()),
+        startup_bootstrap,
+    )
+}
+
+pub(super) fn build_runtime_entry_with_metadata(
+    root: &Path,
+    runtime: ResolvedAppfsRuntimeCliArgs,
+    metadata: AppRuntimeRegistryMetadata,
+    startup_bootstrap: Option<AppRuntimeStartupBootstrap>,
+) -> Result<AppRuntimeEntry> {
+    let adapter = AppfsAdapter::new_with_mount_path(
+        root.to_path_buf(),
+        runtime.app_id.clone(),
+        metadata.path.clone(),
+        metadata.principal_id.clone(),
+        metadata.profile_id.clone(),
+        runtime.session_id.clone(),
+        build_appfs_bridge_config(runtime.bridge.clone()),
+        startup_bootstrap,
+    )?;
+    Ok(AppRuntimeEntry {
+        runtime,
+        adapter,
+        registry_metadata: metadata,
+    })
+}
+
+impl AppRuntimeRegistryMetadata {
+    pub(super) fn public(app_id: String) -> Self {
+        Self {
+            instance_id: app_id.clone(),
+            visibility: crate::cmd::appfs::registry::AppfsRegisteredAppVisibility::Public,
+            parent_app_id: None,
+            principal_id: None,
+            profile_id: None,
+            path: app_id,
+        }
+    }
 }
 
 pub(super) fn read_active_scope(app_dir: &Path) -> Option<String> {

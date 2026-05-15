@@ -123,6 +123,29 @@ impl AppfsAdapter {
         )
     }
 
+    pub(super) fn emit_credential_failed(
+        &mut self,
+        action_path: &str,
+        request_id: &str,
+        error_code: &str,
+        message: &str,
+        retryable: bool,
+        client_token: Option<String>,
+    ) -> Result<()> {
+        self.emit_event(
+            action_path,
+            request_id,
+            "profile.credentials.failed",
+            None,
+            Some(json!({
+                "code": error_code,
+                "message": message,
+                "retryable": retryable,
+            })),
+            client_token,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn emit_snapshot_too_large(
         &mut self,

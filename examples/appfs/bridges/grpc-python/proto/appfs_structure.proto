@@ -8,6 +8,8 @@ message ConnectorContext {
   string request_id = 3;
   optional string client_token = 4;
   optional string trace_id = 5;
+  optional string principal_id = 6;
+  optional string profile_id = 7;
 }
 
 message ConnectorError {

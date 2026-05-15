@@ -1,0 +1,25 @@
+{
+  "app_id": "aiim",
+  "description": "AIIM demo app for incident chat, contact messaging, and scope switching.",
+  "events_path": "_stream/events.evt.jsonl",
+  "current_scope_path": "_app/current_scope.res.json",
+  "available_scopes_path": "_app/available_scopes.res.json",
+  "actions": [
+    {
+      "name": "enter_scope",
+      "path": "_app/enter_scope.act",
+      "summary": "Switch the app structure to a named scope such as chat-001 or chat-long.",
+      "input_schema": "_meta/schemas/enter_scope.input.schema.json",
+      "example_payload": {
+        "target_scope": "chat-long"
+      }
+    },
+    {
+      "name": "refresh_structure",
+      "path": "_app/refresh_structure.act",
+      "summary": "Refresh the current app structure. Optionally include target_scope to refresh a specific view.",
+      "input_schema": "_meta/schemas/refresh_structure.input.schema.json",
+      "example_payload": {}
+    }
+  ]
+}

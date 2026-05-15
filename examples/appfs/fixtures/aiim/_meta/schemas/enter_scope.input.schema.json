@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/enter_scope.input.schema.json",
+  "title": "Enter Scope Input",
+  "type": "object",
+  "required": [
+    "target_scope"
+  ],
+  "properties": {
+    "target_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_token": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}
