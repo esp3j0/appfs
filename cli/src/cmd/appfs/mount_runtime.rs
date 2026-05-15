@@ -73,17 +73,31 @@ struct MountSnapshotReadThroughFs {
 
 struct MountSnapshotRuntime {
     app_id: String,
+    app_mount_path: String,
     session_id: String,
+    principal_id: Option<String>,
+    profile_id: Option<String>,
     snapshot_specs: Vec<SnapshotSpec>,
     snapshot_expand_journal: HashMap<String, SnapshotExpandJournalEntry>,
     connector: Box<dyn agentfs_sdk::AppConnector>,
 }
 
 #[derive(Clone)]
+struct MountSnapshotRuntimeConfig {
+    instance_id: String,
+    app_id: String,
+    app_mount_path: String,
+    session_id: Option<String>,
+    principal_id: Option<String>,
+    profile_id: Option<String>,
+    bridge: super::AppfsBridgeCliArgs,
+}
+
+#[derive(Clone)]
 struct SnapshotReadThroughContext {
     inner: DynFs,
     managed: bool,
-    runtime_configs: Arc<Mutex<HashMap<String, AppfsRuntimeCliArgs>>>,
+    runtime_configs: Arc<Mutex<HashMap<String, MountSnapshotRuntimeConfig>>>,
     registry_fingerprint: Arc<Mutex<Option<Vec<u8>>>>,
     path_cache: Arc<Mutex<HashMap<i64, String>>>,
     runtimes: Arc<Mutex<HashMap<String, MountSnapshotRuntime>>>,
@@ -109,7 +123,7 @@ struct SnapshotReadThroughFile {
 #[derive(Default)]
 struct SnapshotReadThroughFileState {
     file: Option<BoxedFile>,
-    read_prepared: bool,
+    read_buffer: Option<Vec<u8>>,
 }
 
 impl MountSnapshotRuntime {
@@ -123,7 +137,7 @@ impl MountSnapshotRuntime {
     fn journal_path(&self) -> String {
         format!(
             "{}/_stream/{}",
-            self.app_id, SNAPSHOT_EXPAND_JOURNAL_FILENAME
+            self.app_mount_path, SNAPSHOT_EXPAND_JOURNAL_FILENAME
         )
     }
 
@@ -144,7 +158,7 @@ impl MountSnapshotRuntime {
         }
         format!(
             "{}/_stream/snapshot-expand-tmp/{}.pending.jsonl",
-            self.app_id, sanitized
+            self.app_mount_path, sanitized
         )
     }
 
@@ -155,6 +169,38 @@ impl MountSnapshotRuntime {
             request_id: request_id.to_string(),
             client_token: None,
             trace_id: None,
+            principal_id: self.principal_id.clone(),
+            profile_id: self.profile_id.clone(),
+        }
+    }
+
+    fn resource_fs_rel(&self, resource_rel: &str) -> String {
+        format!("{}/{}", self.app_mount_path, resource_rel)
+    }
+}
+
+impl MountSnapshotRuntimeConfig {
+    fn from_cli(runtime: AppfsRuntimeCliArgs) -> Self {
+        Self {
+            instance_id: runtime.app_id.clone(),
+            app_mount_path: runtime.app_id.clone(),
+            app_id: runtime.app_id,
+            session_id: runtime.session_id,
+            principal_id: None,
+            profile_id: None,
+            bridge: runtime.bridge,
+        }
+    }
+
+    fn from_registry(app: &registry::AppfsRegisteredAppDoc) -> Self {
+        Self {
+            instance_id: app.instance_id.clone(),
+            app_id: app.app_id.clone(),
+            app_mount_path: normalize_mount_path(&app.path),
+            session_id: Some(app.session_id.clone()),
+            principal_id: app.principal_id.clone(),
+            profile_id: app.profile_id.clone(),
+            bridge: registry::bridge_args_from_transport_doc(&app.transport),
         }
     }
 }
@@ -220,7 +266,10 @@ impl MountSnapshotReadThroughFs {
             .runtimes
             .iter()
             .cloned()
-            .map(|runtime| (runtime.app_id.clone(), runtime))
+            .map(|runtime| {
+                let mount_config = MountSnapshotRuntimeConfig::from_cli(runtime);
+                (mount_config.instance_id.clone(), mount_config)
+            })
             .collect();
         Self {
             ctx: SnapshotReadThroughContext {
@@ -246,27 +295,28 @@ impl SnapshotReadThroughContext {
         self.path_cache.lock().await.insert(ino, rel_path);
     }
 
-    async fn expand_lock_for(&self, app_id: &str, resource_rel: &str) -> Arc<Mutex<()>> {
+    async fn expand_lock_for(&self, instance_id: &str, resource_rel: &str) -> Arc<Mutex<()>> {
         let mut locks = self.expand_locks.lock().await;
-        let key = format!("{app_id}:{resource_rel}");
+        let key = format!("{instance_id}:{resource_rel}");
         locks
             .entry(key)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
 
-    async fn runtime_loaded(&self, app_id: &str) -> Result<bool> {
+    async fn runtime_loaded(&self, instance_id: &str) -> Result<bool> {
         self.refresh_registry_snapshot().await?;
-        let Some(runtime_config) = self.runtime_configs.lock().await.get(app_id).cloned() else {
+        let Some(runtime_config) = self.runtime_configs.lock().await.get(instance_id).cloned()
+        else {
             return Ok(false);
         };
 
         let mut guard = self.runtimes.lock().await;
-        if guard.contains_key(app_id) {
+        if guard.contains_key(instance_id) {
             return Ok(true);
         }
 
-        let manifest_rel = format!("{app_id}/_meta/manifest.res.json");
+        let manifest_rel = format!("{}/_meta/manifest.res.json", runtime_config.app_mount_path);
         let manifest_bytes = match self.read_file_if_exists(&manifest_rel).await? {
             Some(bytes) => bytes,
             None => return Ok(false),
@@ -277,8 +327,11 @@ impl SnapshotReadThroughContext {
             parse_manifest_contract_json(&manifest_json, &format!("/{}", manifest_rel))?;
         let session_id = super::normalize_appfs_session_id(runtime_config.session_id.clone());
         let bridge_config = super::build_appfs_bridge_config(runtime_config.bridge.clone());
-        let connector = build_app_connector(app_id, &bridge_config)?;
-        let journal_path = format!("{app_id}/_stream/{}", SNAPSHOT_EXPAND_JOURNAL_FILENAME);
+        let connector = build_app_connector(&runtime_config.app_id, &bridge_config)?;
+        let journal_path = format!(
+            "{}/_stream/{}",
+            runtime_config.app_mount_path, SNAPSHOT_EXPAND_JOURNAL_FILENAME
+        );
         let snapshot_expand_journal = match self.read_file_if_exists(&journal_path).await? {
             Some(bytes) => {
                 let doc: SnapshotExpandJournalDoc = serde_json::from_slice(&bytes)
@@ -289,16 +342,23 @@ impl SnapshotReadThroughContext {
         };
 
         let mut snapshot_expand_journal = snapshot_expand_journal;
-        self.recover_incomplete_expands(app_id, &journal_path, &mut snapshot_expand_journal)
-            .await?;
+        self.recover_incomplete_expands(
+            &runtime_config.app_mount_path,
+            &journal_path,
+            &mut snapshot_expand_journal,
+        )
+        .await?;
         let runtime = MountSnapshotRuntime {
-            app_id: app_id.to_string(),
+            app_id: runtime_config.app_id,
+            app_mount_path: runtime_config.app_mount_path,
             session_id,
+            principal_id: runtime_config.principal_id,
+            profile_id: runtime_config.profile_id,
             snapshot_specs: manifest_contract.snapshot_specs,
             snapshot_expand_journal,
             connector,
         };
-        guard.insert(app_id.to_string(), runtime);
+        guard.insert(instance_id.to_string(), runtime);
         Ok(true)
     }
 
@@ -320,10 +380,13 @@ impl SnapshotReadThroughContext {
         }
         let doc = registry::parse_app_registry_bytes(&bytes)
             .context("failed to load managed AppFS registry for mount read-through")?;
-        let runtime_args = registry::runtime_args_from_registry(&doc)?;
-        let runtime_configs = runtime_args
-            .into_iter()
-            .map(|runtime| (runtime.app_id.clone(), runtime))
+        let runtime_configs = doc
+            .apps
+            .iter()
+            .map(|app| {
+                let runtime = MountSnapshotRuntimeConfig::from_registry(app);
+                (runtime.instance_id.clone(), runtime)
+            })
             .collect::<HashMap<_, _>>();
         *self.runtime_configs.lock().await = runtime_configs;
         *self.registry_fingerprint.lock().await = Some(bytes);
@@ -336,7 +399,7 @@ impl SnapshotReadThroughContext {
 
     async fn recover_incomplete_expands(
         &self,
-        app_id: &str,
+        app_mount_path: &str,
         journal_path: &str,
         journal_resources: &mut HashMap<String, SnapshotExpandJournalEntry>,
     ) -> Result<()> {
@@ -350,7 +413,7 @@ impl SnapshotReadThroughContext {
             .collect();
         for (resource_rel, entry) in entries {
             if let Some(temp_artifact) = entry.temp_artifact.as_deref() {
-                if self.is_valid_temp_artifact(app_id, temp_artifact) {
+                if self.is_valid_temp_artifact(app_mount_path, temp_artifact) {
                     let temp_rel = temp_artifact.trim_start_matches('/');
                     let _ = self.remove_file_if_exists(temp_rel).await;
                 }
@@ -365,7 +428,7 @@ impl SnapshotReadThroughContext {
             .await
     }
 
-    fn is_valid_temp_artifact(&self, app_id: &str, temp_artifact: &str) -> bool {
+    fn is_valid_temp_artifact(&self, app_mount_path: &str, temp_artifact: &str) -> bool {
         let trimmed = temp_artifact.trim().trim_start_matches('/');
         if trimmed.is_empty() {
             return false;
@@ -383,69 +446,93 @@ impl SnapshotReadThroughContext {
             }
         }
         normalized.starts_with(
-            Path::new(app_id)
+            Path::new(app_mount_path)
                 .join("_stream")
                 .join("snapshot-expand-tmp"),
         )
+    }
+
+    async fn runtime_resource_from_fs_path(
+        &self,
+        fs_rel_path: &str,
+    ) -> Result<Option<(String, String)>> {
+        self.refresh_registry_snapshot().await?;
+        let normalized_path = normalize_mount_path(fs_rel_path);
+        let configs = self.runtime_configs.lock().await;
+        let mut best: Option<(&MountSnapshotRuntimeConfig, String)> = None;
+        for config in configs.values() {
+            let mount_path = normalize_mount_path(&config.app_mount_path);
+            let Some(resource_rel) = strip_mount_prefix(&normalized_path, &mount_path) else {
+                continue;
+            };
+            if best.as_ref().map_or(true, |(existing, _)| {
+                mount_path.len() > normalize_mount_path(&existing.app_mount_path).len()
+            }) {
+                best = Some((config, resource_rel.to_string()));
+            }
+        }
+        Ok(best.map(|(config, resource_rel)| (config.instance_id.clone(), resource_rel)))
     }
 
     async fn maybe_snapshot_resource_from_fs_path(
         &self,
         fs_rel_path: &str,
     ) -> Result<Option<(String, String)>> {
-        let Some((app_id, resource_rel)) = split_app_relative_path(fs_rel_path) else {
+        let Some((instance_id, resource_rel)) =
+            self.runtime_resource_from_fs_path(fs_rel_path).await?
+        else {
             return Ok(None);
         };
-        if !self.runtime_loaded(app_id).await? {
+        if !self.runtime_loaded(&instance_id).await? {
             return Ok(None);
         }
         let guard = self.runtimes.lock().await;
-        let Some(runtime) = guard.get(app_id) else {
+        let Some(runtime) = guard.get(&instance_id) else {
             return Ok(None);
         };
         Ok(runtime
-            .find_snapshot_spec(resource_rel)
-            .map(|_| (app_id.to_string(), resource_rel.to_string())))
+            .find_snapshot_spec(&resource_rel)
+            .map(|_| (instance_id, resource_rel)))
     }
 
-    async fn journal_contains(&self, app_id: &str, resource_rel: &str) -> Result<bool> {
-        if !self.runtime_loaded(app_id).await? {
+    async fn journal_contains(&self, instance_id: &str, resource_rel: &str) -> Result<bool> {
+        if !self.runtime_loaded(instance_id).await? {
             return Ok(false);
         }
         let guard = self.runtimes.lock().await;
         Ok(guard
-            .get(app_id)
+            .get(instance_id)
             .is_some_and(|runtime| runtime.snapshot_expand_journal.contains_key(resource_rel)))
     }
 
     async fn ensure_snapshot_materialized(
         &self,
-        app_id: &str,
+        instance_id: &str,
         resource_rel: &str,
         trigger: &str,
     ) -> Result<()> {
-        if !self.runtime_loaded(app_id).await? {
+        if !self.runtime_loaded(instance_id).await? {
             anyhow::bail!("AppFS manifest is not available yet for mount-side read-through");
         }
 
-        let expand_lock = self.expand_lock_for(app_id, resource_rel).await;
+        let expand_lock = self.expand_lock_for(instance_id, resource_rel).await;
         let _expand_guard = expand_lock.lock().await;
         let request_id = format!("read-{}", uuid::Uuid::new_v4().simple());
         let resource_path = format!("/{}", resource_rel);
-        let (snapshot_spec, temp_rel) = {
+        let (snapshot_spec, temp_rel, resource_fs_rel) = {
             let mut guard = self.runtimes.lock().await;
             let runtime = guard
-                .get_mut(app_id)
+                .get_mut(instance_id)
                 .expect("runtime_loaded() should initialize runtime");
             let snapshot_spec = runtime
                 .find_snapshot_spec(resource_rel)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("snapshot resource is not declared in manifest"))?;
             let temp_rel = runtime.temp_rel_path(resource_rel);
-            (snapshot_spec, temp_rel)
+            let resource_fs_rel = runtime.resource_fs_rel(resource_rel);
+            (snapshot_spec, temp_rel, resource_fs_rel)
         };
-        let resource_fs_rel = format!("{}/{}", app_id, resource_rel);
-        let has_journal = self.journal_contains(app_id, resource_rel).await?;
+        let has_journal = self.journal_contains(instance_id, resource_rel).await?;
         let force_expand_existing =
             matches!(trigger, "open" | "read") && snapshot_force_expand_on_refresh();
         let current_stats = self.lookup_path(&resource_fs_rel).await?;
@@ -462,7 +549,7 @@ impl SnapshotReadThroughContext {
         {
             let mut guard = self.runtimes.lock().await;
             let runtime = guard
-                .get_mut(app_id)
+                .get_mut(instance_id)
                 .expect("runtime_loaded() should initialize runtime");
             runtime.snapshot_expand_journal.insert(
                 resource_rel.to_string(),
@@ -476,7 +563,7 @@ impl SnapshotReadThroughContext {
                 },
             );
         }
-        self.flush_runtime_snapshot_journal(app_id).await?;
+        self.flush_runtime_snapshot_journal(instance_id).await?;
 
         eprintln!(
             "[cache] mount read-through resource={} trigger={} timeout_ms={} on_timeout={}",
@@ -512,7 +599,7 @@ impl SnapshotReadThroughContext {
                 Some("stale_cache_disabled".to_string())
             };
             let stale_ok = stale_health.is_none();
-            self.remove_snapshot_journal_entry(app_id, resource_rel)
+            self.remove_snapshot_journal_entry(instance_id, resource_rel)
                 .await?;
             if stale_ok {
                 eprintln!(
@@ -540,12 +627,12 @@ impl SnapshotReadThroughContext {
         let expanded_jsonl = {
             let mut guard = self.runtimes.lock().await;
             let runtime = guard
-                .get_mut(app_id)
+                .get_mut(instance_id)
                 .expect("runtime_loaded() should initialize runtime");
             self.fetch_snapshot_jsonl_from_upstream(runtime, resource_rel, &request_id)?
         };
         if expanded_jsonl.len() > snapshot_spec.max_materialized_bytes {
-            self.remove_snapshot_journal_entry(app_id, resource_rel)
+            self.remove_snapshot_journal_entry(instance_id, resource_rel)
                 .await?;
             eprintln!(
                 "[cache] snapshot_too_large resource={} size={} max_size={} trigger={}",
@@ -567,14 +654,14 @@ impl SnapshotReadThroughContext {
         }
 
         self.materialize_snapshot_file(
-            app_id,
+            instance_id,
             resource_rel,
             &temp_rel,
             &expanded_jsonl,
             &request_id,
         )
         .await?;
-        self.remove_snapshot_journal_entry(app_id, resource_rel)
+        self.remove_snapshot_journal_entry(instance_id, resource_rel)
             .await?;
         eprintln!(
             "[cache] expanded resource={} bytes={} trigger={}",
@@ -583,6 +670,128 @@ impl SnapshotReadThroughContext {
             trigger
         );
         Ok(())
+    }
+
+    async fn read_snapshot_bytes(
+        &self,
+        instance_id: &str,
+        resource_rel: &str,
+        trigger: &str,
+    ) -> Result<Vec<u8>> {
+        if !self.runtime_loaded(instance_id).await? {
+            anyhow::bail!("AppFS manifest is not available yet for mount-side read-through");
+        }
+
+        let expand_lock = self.expand_lock_for(instance_id, resource_rel).await;
+        let _expand_guard = expand_lock.lock().await;
+        let request_id = format!("read-{}", uuid::Uuid::new_v4().simple());
+        let resource_path = format!("/{}", resource_rel);
+        let (snapshot_spec, resource_fs_rel) = {
+            let guard = self.runtimes.lock().await;
+            let runtime = guard
+                .get(instance_id)
+                .expect("runtime_loaded() should initialize runtime");
+            let snapshot_spec = runtime
+                .find_snapshot_spec(resource_rel)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("snapshot resource is not declared in manifest"))?;
+            let resource_fs_rel = runtime.resource_fs_rel(resource_rel);
+            (snapshot_spec, resource_fs_rel)
+        };
+
+        eprintln!(
+            "[cache] mount read-through resource={} trigger={} timeout_ms={} on_timeout={}",
+            resource_path,
+            trigger,
+            snapshot_spec.read_through_timeout_ms,
+            snapshot_spec.on_timeout.as_str()
+        );
+
+        let simulated_delay_ms = snapshot_expand_delay_ms();
+        if simulated_delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(simulated_delay_ms));
+        }
+
+        if simulated_delay_ms > snapshot_spec.read_through_timeout_ms {
+            let mut stale_health = if matches!(
+                snapshot_spec.on_timeout,
+                SnapshotOnTimeoutPolicy::ReturnStale
+            ) {
+                Some("stale_cache_missing")
+            } else {
+                Some("stale_cache_disabled")
+            };
+            if matches!(
+                snapshot_spec.on_timeout,
+                SnapshotOnTimeoutPolicy::ReturnStale
+            ) {
+                if let Some(stale_bytes) = self.read_file_if_exists(&resource_fs_rel).await? {
+                    if stale_bytes.len() > snapshot_spec.max_materialized_bytes {
+                        stale_health = Some("stale_cache_too_large");
+                    } else {
+                        match self.validate_stale_snapshot_jsonl(&stale_bytes) {
+                            Ok(_) => {
+                                eprintln!(
+                                    "[cache] timeout_return_stale resource={} trigger={}",
+                                    resource_path, trigger
+                                );
+                                return Ok(stale_bytes);
+                            }
+                            Err(_) => {
+                                stale_health = Some("stale_cache_unhealthy");
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "[cache] expand failed resource={} phase=timeout on_timeout={} stale_reason={} trigger={}",
+                resource_path,
+                snapshot_spec.on_timeout.as_str(),
+                stale_health.unwrap_or("stale_cache_missing"),
+                trigger
+            );
+            return Err(io_error(
+                RAW_TIMEOUT_ERROR,
+                format!("snapshot read-through timed out: {}", resource_path),
+            )
+            .into());
+        }
+
+        let expanded_jsonl = {
+            let mut guard = self.runtimes.lock().await;
+            let runtime = guard
+                .get_mut(instance_id)
+                .expect("runtime_loaded() should initialize runtime");
+            self.fetch_snapshot_jsonl_from_upstream(runtime, resource_rel, &request_id)?
+        };
+        if expanded_jsonl.len() > snapshot_spec.max_materialized_bytes {
+            eprintln!(
+                "[cache] snapshot_too_large resource={} size={} max_size={} trigger={}",
+                resource_path,
+                expanded_jsonl.len(),
+                snapshot_spec.max_materialized_bytes,
+                trigger
+            );
+            return Err(io_error(
+                RAW_IO_ERROR,
+                format!(
+                    "snapshot too large for {}: {} > {}",
+                    resource_path,
+                    expanded_jsonl.len(),
+                    snapshot_spec.max_materialized_bytes
+                ),
+            )
+            .into());
+        }
+
+        eprintln!(
+            "[cache] read-through resource={} bytes={} trigger={}",
+            resource_path,
+            expanded_jsonl.len(),
+            trigger
+        );
+        Ok(expanded_jsonl)
     }
 
     fn fetch_snapshot_jsonl_from_upstream(
@@ -634,31 +843,27 @@ impl SnapshotReadThroughContext {
             })?;
             resume = SnapshotResume::Cursor(next_cursor);
         }
-        if out.is_empty() {
-            return Err(io_error(
-                RAW_IO_ERROR,
-                format!(
-                    "connector returned empty snapshot stream for /{}",
-                    resource_rel
-                ),
-            )
-            .into());
-        }
         Ok(out)
     }
 
     async fn materialize_snapshot_file(
         &self,
-        app_id: &str,
+        instance_id: &str,
         resource_rel: &str,
         temp_rel: &str,
         content: &[u8],
         request_id: &str,
     ) -> Result<()> {
-        let target_rel = format!("{}/{}", app_id, resource_rel);
+        let target_rel = {
+            let guard = self.runtimes.lock().await;
+            let runtime = guard
+                .get(instance_id)
+                .expect("runtime_loaded() should initialize runtime");
+            runtime.resource_fs_rel(resource_rel)
+        };
         self.write_file_bytes(temp_rel, content).await?;
 
-        self.mark_snapshot_journal_publishing(app_id, resource_rel, request_id, temp_rel)
+        self.mark_snapshot_journal_publishing(instance_id, resource_rel, request_id, temp_rel)
             .await?;
 
         let publish_delay_ms = snapshot_publish_delay_ms();
@@ -666,8 +871,14 @@ impl SnapshotReadThroughContext {
             std::thread::sleep(Duration::from_millis(publish_delay_ms));
         }
 
-        self.remove_file_if_exists(&target_rel).await?;
-        self.rename_path(temp_rel, &target_rel).await
+        if self.lookup_path(&target_rel).await?.is_some() {
+            // Keep the resource path present for readers. On Windows, a remove+rename publish can
+            // race with Get-Content and surface as a transient "path not found".
+            self.write_file_bytes(&target_rel, content).await?;
+            self.remove_file_if_exists(temp_rel).await
+        } else {
+            self.rename_path(temp_rel, &target_rel).await
+        }
     }
 
     async fn save_snapshot_expand_journal(
@@ -903,7 +1114,7 @@ impl SnapshotReadThroughContext {
 
 impl SnapshotReadThroughFile {
     async fn is_read_prepared(&self) -> bool {
-        self.state.lock().await.read_prepared
+        self.state.lock().await.read_buffer.is_some()
     }
 
     async fn is_cold_empty_placeholder(&self) -> Result<bool, agentfs_sdk::error::Error> {
@@ -943,32 +1154,60 @@ impl SnapshotReadThroughFile {
         Ok(file)
     }
 
-    async fn ensure_read_prepared(&self) -> Result<(), agentfs_sdk::error::Error> {
-        {
-            let state = self.state.lock().await;
-            if state.read_prepared {
-                return Ok(());
-            }
+    async fn cached_backing_buffer_if_usable(
+        &self,
+    ) -> Result<Option<Vec<u8>>, agentfs_sdk::error::Error> {
+        if snapshot_force_expand_on_refresh() {
+            return Ok(None);
         }
-
-        {
-            let mut state = self.state.lock().await;
-            if state.read_prepared {
-                return Ok(());
-            }
-            state.file = None;
-        }
-
-        self.ctx
-            .ensure_snapshot_materialized(&self.app_id, &self.resource_rel, "read")
+        let stats = self
+            .ctx
+            .lookup_path(&self.rel_path)
             .await
             .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
-        let file = self.open_backing_file().await?;
+        let Some(stats) = stats else {
+            return Ok(None);
+        };
+        if stats.size <= 0 {
+            return Ok(None);
+        }
+        let bytes = self
+            .ctx
+            .read_file_if_exists(&self.rel_path)
+            .await
+            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
+        Ok(bytes)
+    }
+
+    async fn read_buffer(&self) -> Result<Vec<u8>, agentfs_sdk::error::Error> {
+        {
+            let state = self.state.lock().await;
+            if let Some(buffer) = state.read_buffer.as_ref() {
+                return Ok(buffer.clone());
+            }
+        }
+
+        if let Some(buffer) = self.cached_backing_buffer_if_usable().await? {
+            let mut state = self.state.lock().await;
+            if let Some(existing) = state.read_buffer.as_ref() {
+                return Ok(existing.clone());
+            }
+            state.read_buffer = Some(buffer.clone());
+            return Ok(buffer);
+        }
+
+        let buffer = self
+            .ctx
+            .read_snapshot_bytes(&self.app_id, &self.resource_rel, "read")
+            .await
+            .map_err(|err| map_anyhow_to_sdk_error(err, RAW_IO_ERROR))?;
 
         let mut state = self.state.lock().await;
-        state.file = Some(file);
-        state.read_prepared = true;
-        Ok(())
+        if let Some(existing) = state.read_buffer.as_ref() {
+            return Ok(existing.clone());
+        }
+        state.read_buffer = Some(buffer.clone());
+        Ok(buffer)
     }
 }
 
@@ -993,9 +1232,8 @@ impl agentfs_sdk::File for SnapshotReadThroughFile {
             );
             return Ok(Vec::new());
         }
-        self.ensure_read_prepared().await?;
-        let file = self.open_backing_file().await?;
-        file.pread(offset, size).await
+        let buffer = self.read_buffer().await?;
+        Ok(read_slice(&buffer, offset, size))
     }
 
     async fn pwrite(&self, offset: u64, data: &[u8]) -> Result<(), agentfs_sdk::error::Error> {
@@ -1405,13 +1643,31 @@ fn join_rel_path(parent: &str, name: &str) -> String {
     }
 }
 
-fn split_app_relative_path(rel_path: &str) -> Option<(&str, &str)> {
-    let trimmed = rel_path.trim_matches('/');
-    let (app_id, rest) = trimmed.split_once('/')?;
-    if app_id.is_empty() || rest.is_empty() {
+fn normalize_mount_path(path: &str) -> String {
+    path.trim().trim_matches(['/', '\\']).replace('\\', "/")
+}
+
+fn strip_mount_prefix<'a>(rel_path: &'a str, mount_path: &str) -> Option<&'a str> {
+    if mount_path.is_empty() {
         return None;
     }
-    Some((app_id, rest))
+    if rel_path == mount_path {
+        return None;
+    }
+    rel_path
+        .strip_prefix(mount_path)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|rest| !rest.is_empty())
+}
+
+fn read_slice(buffer: &[u8], offset: u64, size: u64) -> Vec<u8> {
+    let start = usize::try_from(offset).unwrap_or(usize::MAX);
+    if start >= buffer.len() {
+        return Vec::new();
+    }
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    let end = start.saturating_add(size).min(buffer.len());
+    buffer[start..end].to_vec()
 }
 
 fn io_error(errno: i32, message: String) -> std::io::Error {
@@ -1434,8 +1690,8 @@ fn map_anyhow_to_sdk_error(err: anyhow::Error, default_errno: i32) -> agentfs_sd
 mod tests {
     use super::{
         action_wake_is_relevant_path, open_requests_read, should_skip_existing_expand,
-        should_suppress_snapshot_probe_read, ActionWakeHandle, AppfsRuntimeCliArgs,
-        MountSnapshotReadThroughConfig, MountSnapshotReadThroughFs, MountSnapshotRuntime,
+        should_suppress_snapshot_probe_read, ActionWakeHandle, MountSnapshotReadThroughConfig,
+        MountSnapshotReadThroughFs, MountSnapshotRuntime, MountSnapshotRuntimeConfig,
         SnapshotOnTimeoutPolicy, SnapshotSpec, OPEN_NO_READ_HINT, OPEN_READ_ONLY, OPEN_READ_WRITE,
         OPEN_WRITE_ONLY, ROOT_INO,
     };
@@ -1533,6 +1789,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeSnapshotConnector {
         fetch_count: Arc<AtomicUsize>,
+        contexts: Arc<std::sync::Mutex<Vec<ConnectorContext>>>,
         snapshot_lines: Vec<serde_json::Value>,
     }
 
@@ -1540,6 +1797,19 @@ mod tests {
         fn new(fetch_count: Arc<AtomicUsize>, snapshot_lines: Vec<serde_json::Value>) -> Self {
             Self {
                 fetch_count,
+                contexts: Arc::new(std::sync::Mutex::new(Vec::new())),
+                snapshot_lines,
+            }
+        }
+
+        fn with_contexts(
+            fetch_count: Arc<AtomicUsize>,
+            contexts: Arc<std::sync::Mutex<Vec<ConnectorContext>>>,
+            snapshot_lines: Vec<serde_json::Value>,
+        ) -> Self {
+            Self {
+                fetch_count,
+                contexts,
                 snapshot_lines,
             }
         }
@@ -1583,9 +1853,13 @@ mod tests {
         fn fetch_snapshot_chunk(
             &mut self,
             _request: FetchSnapshotChunkRequest,
-            _ctx: &ConnectorContext,
+            ctx: &ConnectorContext,
         ) -> std::result::Result<FetchSnapshotChunkResponse, ConnectorError> {
             self.fetch_count.fetch_add(1, Ordering::SeqCst);
+            self.contexts
+                .lock()
+                .expect("fake connector contexts")
+                .push(ctx.clone());
             let records = self
                 .snapshot_lines
                 .iter()
@@ -1658,19 +1932,49 @@ mod tests {
         resource_rel: &str,
         connector: Box<dyn AppConnector>,
     ) {
+        install_snapshot_runtime_at(
+            wrapper,
+            app_id,
+            app_id,
+            app_id,
+            None,
+            None,
+            resource_rel,
+            connector,
+        )
+        .await;
+    }
+
+    async fn install_snapshot_runtime_at(
+        wrapper: &MountSnapshotReadThroughFs,
+        instance_id: &str,
+        app_id: &str,
+        app_mount_path: &str,
+        principal_id: Option<&str>,
+        profile_id: Option<&str>,
+        resource_rel: &str,
+        connector: Box<dyn AppConnector>,
+    ) {
         wrapper.ctx.runtime_configs.lock().await.insert(
-            app_id.to_string(),
-            AppfsRuntimeCliArgs {
+            instance_id.to_string(),
+            MountSnapshotRuntimeConfig {
+                instance_id: instance_id.to_string(),
                 app_id: app_id.to_string(),
+                app_mount_path: app_mount_path.to_string(),
                 session_id: Some("sess-test".to_string()),
+                principal_id: principal_id.map(ToOwned::to_owned),
+                profile_id: profile_id.map(ToOwned::to_owned),
                 bridge: test_bridge_args(),
             },
         );
         wrapper.ctx.runtimes.lock().await.insert(
-            app_id.to_string(),
+            instance_id.to_string(),
             MountSnapshotRuntime {
                 app_id: app_id.to_string(),
+                app_mount_path: app_mount_path.to_string(),
                 session_id: "sess-test".to_string(),
+                principal_id: principal_id.map(ToOwned::to_owned),
+                profile_id: profile_id.map(ToOwned::to_owned),
                 snapshot_specs: vec![SnapshotSpec {
                     template: resource_rel.to_string(),
                     max_materialized_bytes: 1024 * 1024,
@@ -1763,10 +2067,174 @@ mod tests {
                 "first content read should perform exactly one expansion"
             );
 
-            let materialized = fs::read(&snapshot_path).expect("read materialized snapshot");
+            let placeholder = fs::read(&snapshot_path).expect("read snapshot placeholder");
+            assert!(
+                placeholder.is_empty(),
+                "pread read-through must not mutate the placeholder file"
+            );
+        });
+    }
+
+    #[test]
+    fn materialized_snapshot_pread_uses_backing_cache() {
+        let temp = TempDir::new().expect("tempdir");
+        let snapshot_rel = "aiim/chats/chat-001/messages.res.jsonl";
+        let snapshot_path = temp.path().join(snapshot_rel);
+        fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("create snapshot parent");
+        fs::write(&snapshot_path, b"{\"id\":\"cached\",\"text\":\"hot\"}\n")
+            .expect("seed hot snapshot cache");
+
+        let wrapper = build_wrapper(&temp, None);
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+
+        crate::get_runtime().block_on(async move {
+            install_snapshot_runtime(
+                &wrapper,
+                "aiim",
+                "chats/chat-001/messages.res.jsonl",
+                Box::new(FakeSnapshotConnector::new(
+                    fetch_count.clone(),
+                    vec![json!({"id":"upstream","text":"should not fetch"})],
+                )),
+            )
+            .await;
+
+            let snapshot = wrapper
+                .ctx
+                .lookup_path(snapshot_rel)
+                .await
+                .expect("lookup snapshot")
+                .expect("snapshot stats");
+            wrapper
+                .ctx
+                .cache_path(snapshot.ino, snapshot_rel.to_string())
+                .await;
+            let file = wrapper
+                .open(snapshot.ino, OPEN_READ_ONLY)
+                .await
+                .expect("open snapshot");
+            let bytes = file.pread(0, 4096).await.expect("read cached snapshot");
             assert_eq!(
-                String::from_utf8(materialized).expect("utf8"),
-                "{\"id\":\"m-1\",\"text\":\"hello\"}\n"
+                String::from_utf8(bytes).expect("utf8"),
+                "{\"id\":\"cached\",\"text\":\"hot\"}\n"
+            );
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                0,
+                "hot backing cache should not trigger another upstream read"
+            );
+        });
+    }
+
+    #[test]
+    fn private_mount_path_snapshot_readthrough_uses_instance_context() {
+        let temp = TempDir::new().expect("tempdir");
+        let snapshot_rel = "private/default/tinode/inbox/recent.res.jsonl";
+        let snapshot_path = temp.path().join(snapshot_rel);
+        fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("create snapshot parent");
+        fs::write(&snapshot_path, b"").expect("seed snapshot placeholder");
+
+        let wrapper = build_wrapper(&temp, None);
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let contexts = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        crate::get_runtime().block_on(async move {
+            install_snapshot_runtime_at(
+                &wrapper,
+                "tinode--default",
+                "tinode",
+                "private/default/tinode",
+                Some("default"),
+                Some("tinode:default"),
+                "inbox/recent.res.jsonl",
+                Box::new(FakeSnapshotConnector::with_contexts(
+                    fetch_count.clone(),
+                    contexts.clone(),
+                    vec![json!({"message_id":"m-1","text":"hello default"})],
+                )),
+            )
+            .await;
+
+            let snapshot = wrapper
+                .ctx
+                .lookup_path(snapshot_rel)
+                .await
+                .expect("lookup snapshot")
+                .expect("snapshot stats");
+            wrapper
+                .ctx
+                .cache_path(snapshot.ino, snapshot_rel.to_string())
+                .await;
+            let file = wrapper
+                .open(snapshot.ino, OPEN_READ_ONLY)
+                .await
+                .expect("open snapshot");
+            let bytes = file.pread(0, 4096).await.expect("read snapshot");
+            assert_eq!(
+                String::from_utf8(bytes).expect("utf8"),
+                "{\"message_id\":\"m-1\",\"text\":\"hello default\"}\n"
+            );
+            assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
+
+            let contexts = contexts.lock().expect("contexts");
+            assert_eq!(contexts.len(), 1);
+            assert_eq!(contexts[0].app_id, "tinode");
+            assert_eq!(contexts[0].principal_id.as_deref(), Some("default"));
+            assert_eq!(contexts[0].profile_id.as_deref(), Some("tinode:default"));
+
+            let placeholder = fs::read(&snapshot_path).expect("read snapshot placeholder");
+            assert!(
+                placeholder.is_empty(),
+                "private app pread read-through must not mutate the placeholder file"
+            );
+        });
+    }
+
+    #[test]
+    fn existing_snapshot_publish_keeps_target_path_present() {
+        let temp = TempDir::new().expect("tempdir");
+        let snapshot_rel = "private/default/tinode/inbox/recent.res.jsonl";
+        let snapshot_path = temp.path().join(snapshot_rel);
+        fs::create_dir_all(snapshot_path.parent().expect("snapshot parent"))
+            .expect("create snapshot parent");
+        fs::write(&snapshot_path, b"").expect("seed snapshot placeholder");
+
+        let wrapper = build_wrapper(&temp, None);
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+
+        crate::get_runtime().block_on(async move {
+            install_snapshot_runtime_at(
+                &wrapper,
+                "tinode--default",
+                "tinode",
+                "private/default/tinode",
+                Some("default"),
+                Some("tinode:default"),
+                "inbox/recent.res.jsonl",
+                Box::new(FakeSnapshotConnector::new(
+                    fetch_count.clone(),
+                    vec![json!({"new":true})],
+                )),
+            )
+            .await;
+
+            wrapper
+                .ctx
+                .ensure_snapshot_materialized("tinode--default", "inbox/recent.res.jsonl", "read")
+                .await
+                .expect("materialize snapshot");
+
+            assert!(snapshot_path.exists(), "target path should remain present");
+            assert_eq!(
+                fs::read_to_string(&snapshot_path).expect("read snapshot"),
+                "{\"new\":true}\n"
+            );
+            assert_eq!(
+                fetch_count.load(Ordering::SeqCst),
+                1,
+                "existing target should still refresh from connector"
             );
         });
     }
@@ -1939,6 +2407,9 @@ mod tests {
     #[test]
     fn only_safe_action_paths_trigger_wake() {
         assert!(action_wake_is_relevant_path("_appfs/register_app.act"));
+        assert!(action_wake_is_relevant_path(
+            "_appfs/principals/create_principal.act"
+        ));
         assert!(action_wake_is_relevant_path(
             "contacts/zhangsan/send_message.act"
         ));

@@ -52,6 +52,8 @@ impl AppfsAdapter {
                 request_id,
                 client_token: None,
                 trace_id: None,
+                principal_id: self.principal_id.clone(),
+                profile_id: self.profile_id.clone(),
             };
             match self
                 .connector
@@ -694,6 +696,8 @@ impl AppfsAdapter {
                 request_id: request_id.to_string(),
                 client_token: None,
                 trace_id: None,
+                principal_id: self.principal_id.clone(),
+                profile_id: self.profile_id.clone(),
             };
             let response = self
                 .connector

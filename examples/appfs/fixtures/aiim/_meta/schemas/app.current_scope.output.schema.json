@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://appfs.dev/schemas/app.current_scope.output.schema.json",
+  "title": "AIIM App Current Scope Output",
+  "type": "object",
+  "required": [
+    "app_id",
+    "active_scope",
+    "primary_resource"
+  ],
+  "properties": {
+    "app_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "active_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "display_name": {
+      "type": "string"
+    },
+    "primary_resource": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entered_via": {
+      "type": "string"
+    },
+    "structure_revision_hint": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

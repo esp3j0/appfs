@@ -1,0 +1,54 @@
+{
+  "app_id": "aiim",
+  "recommended_actions": [
+    {
+      "name": "send_message",
+      "path": "contacts/zhangsan/send_message.act",
+      "summary": "Send a direct message to 张三 / zhangsan.",
+      "input_schema": "_meta/schemas/send_message.input.schema.json",
+      "use_when": [
+        "Notify 张三 about a meeting, incident update, or follow-up.",
+        "User asks to tell 张三 / zhangsan / 老张 something."
+      ],
+      "example_payload": {
+        "text": "明天上午十点开会",
+        "priority": "normal"
+      }
+    },
+    {
+      "name": "enter_scope",
+      "path": "_app/enter_scope.act",
+      "summary": "Switch the mounted app tree to another scope before reading or acting.",
+      "input_schema": "_meta/schemas/enter_scope.input.schema.json",
+      "use_when": [
+        "Need chat-long instead of the default chat-001 view."
+      ],
+      "example_payload": {
+        "target_scope": "chat-long"
+      }
+    },
+    {
+      "name": "refresh_structure",
+      "path": "_app/refresh_structure.act",
+      "summary": "Refresh the app tree after scope-sensitive changes or connector updates.",
+      "input_schema": "_meta/schemas/refresh_structure.input.schema.json",
+      "use_when": [
+        "App layout may have changed and paths should be reloaded."
+      ],
+      "example_payload": {}
+    }
+  ],
+  "contact_routes": [
+    {
+      "contact_id": "zhangsan",
+      "profile_path": "contacts/zhangsan/profile.res.json",
+      "send_message_path": "contacts/zhangsan/send_message.act",
+      "mention_tokens": [
+        "张三",
+        "老张",
+        "zhangsan",
+        "Zhang San"
+      ]
+    }
+  ]
+}

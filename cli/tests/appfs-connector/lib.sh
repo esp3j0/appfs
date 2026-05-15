@@ -224,7 +224,7 @@ start_appfs_connector_adapter() {
     bin_path="$2"
     root_dir="$3"
     app_id="$4"
-    poll_ms="${5:-50}"
+    fallback_poll_ms="${5:-50}"
     strict_actionline="${6:-0}"
     snapshot_expand_delay_ms="${7:-}"
     snapshot_publish_delay_ms="${8:-}"
@@ -279,7 +279,7 @@ start_appfs_connector_adapter() {
             if [ -n "$snapshot_refresh_force_expand" ]; then
                 cmd_prefix="${cmd_prefix}set APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand&& "
             fi
-            cmd.exe /C "${cmd_prefix}$win_bin serve appfs --root $runtime_root --app-id $app_id --poll-ms $poll_ms$bridge_args" >"$adapter_log" 2>&1 &
+            cmd.exe /C "${cmd_prefix}$win_bin serve appfs --root $runtime_root --app-id $app_id --fallback-poll-ms $fallback_poll_ms$bridge_args" >"$adapter_log" 2>&1 &
             ;;
         *)
             env_args=""
@@ -296,7 +296,7 @@ start_appfs_connector_adapter() {
                 env_args="$env_args APPFS_SNAPSHOT_REFRESH_FORCE_EXPAND=$snapshot_refresh_force_expand"
             fi
             # shellcheck disable=SC2086
-            env $env_args "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --poll-ms "$poll_ms" $bridge_args >"$adapter_log" 2>&1 &
+            env $env_args "$bin_path" serve appfs --root "$runtime_root" --app-id "$app_id" --fallback-poll-ms "$fallback_poll_ms" $bridge_args >"$adapter_log" 2>&1 &
             ;;
     esac
 

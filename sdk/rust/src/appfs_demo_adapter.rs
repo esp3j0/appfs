@@ -1,14 +1,14 @@
 use crate::{
-    ActionExecutionMode, ActionStreamingPlan, AdapterControlActionV1, AdapterControlOutcomeV1,
-    AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1, AdapterSnapshotMetaV1,
-    AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1, AppConnector, AppStructureNode,
-    AppStructureNodeKind, AppStructureSnapshot, AppStructureSyncReason, AppStructureSyncResult,
-    AuthStatus, ConnectorContext, ConnectorError, ConnectorInfo, ConnectorTransport,
-    FetchLivePageRequest, FetchLivePageResponse, FetchSnapshotChunkRequest,
-    FetchSnapshotChunkResponse, GetAppStructureRequest, GetAppStructureResponse, HealthStatus,
-    LiveMode, LivePageInfo, RefreshAppStructureRequest, RefreshAppStructureResponse,
-    RequestContextV1, SnapshotMeta, SnapshotRecord, SnapshotResume, SubmitActionOutcome,
-    SubmitActionRequest, SubmitActionResponse,
+    connector_error_codes, ActionExecutionMode, ActionStreamingPlan, AdapterControlActionV1,
+    AdapterControlOutcomeV1, AdapterErrorV1, AdapterExecutionModeV1, AdapterInputModeV1,
+    AdapterSnapshotMetaV1, AdapterStreamingPlanV1, AdapterSubmitOutcomeV1, AppAdapterV1,
+    AppConnector, AppStructureNode, AppStructureNodeKind, AppStructureSnapshot,
+    AppStructureSyncReason, AppStructureSyncResult, AuthStatus, ConnectorContext, ConnectorError,
+    ConnectorInfo, ConnectorTransport, FetchLivePageRequest, FetchLivePageResponse,
+    FetchSnapshotChunkRequest, FetchSnapshotChunkResponse, GetAppStructureRequest,
+    GetAppStructureResponse, HealthStatus, LiveMode, LivePageInfo, RefreshAppStructureRequest,
+    RefreshAppStructureResponse, RequestContextV1, SnapshotMeta, SnapshotRecord, SnapshotResume,
+    SubmitActionOutcome, SubmitActionRequest, SubmitActionResponse,
 };
 use serde_json::{json, Value as JsonValue};
 use std::time::Duration;
@@ -229,7 +229,10 @@ impl DemoAppConnector {
         })
     }
 
-    fn base_structure_nodes(scope: Option<&str>) -> Vec<AppStructureNode> {
+    fn base_structure_nodes(
+        scope: Option<&str>,
+        include_credentials: bool,
+    ) -> Vec<AppStructureNode> {
         let mut nodes = vec![
             AppStructureNode {
                 path: "_meta".to_string(),
@@ -337,6 +340,20 @@ impl DemoAppConnector {
             },
         ];
 
+        if include_credentials {
+            nodes.push(AppStructureNode {
+                path: "_app/ensure_credentials.act".to_string(),
+                kind: AppStructureNodeKind::ActionFile,
+                manifest_entry: Some(Self::action_manifest(
+                    "_app/ensure_credentials.act",
+                    "inline",
+                )),
+                seed_content: None,
+                mutable: true,
+                scope: None,
+            });
+        }
+
         match scope {
             Some("chat-long") => {
                 nodes.push(AppStructureNode {
@@ -404,6 +421,7 @@ impl DemoAppConnector {
     fn structure_snapshot(
         &self,
         scope: Option<&str>,
+        include_credentials: bool,
     ) -> std::result::Result<AppStructureSnapshot, ConnectorError> {
         let active_scope = match scope {
             None | Some("chat-001") => "chat-001".to_string(),
@@ -428,7 +446,7 @@ impl DemoAppConnector {
                 "_paging".to_string(),
                 "_app".to_string(),
             ],
-            nodes: Self::base_structure_nodes(Some(&active_scope)),
+            nodes: Self::base_structure_nodes(Some(&active_scope), include_credentials),
         })
     }
 }
@@ -767,15 +785,45 @@ impl AppConnector for DemoAppConnector {
         if request.path.contains("rate_limited") {
             return Err(Self::err("RATE_LIMITED", "upstream rate limited", true));
         }
+        if request.path == "/_app/ensure_credentials.act" {
+            let Some(profile_id) = ctx.profile_id.as_deref() else {
+                return Err(Self::err(
+                    connector_error_codes::PROFILE_NOT_READY,
+                    "demo credentials require profile_id",
+                    false,
+                ));
+            };
+            return Ok(SubmitActionResponse {
+                request_id: ctx.request_id.clone(),
+                estimated_duration_ms: Some(50),
+                outcome: SubmitActionOutcome::Completed {
+                    content: json!({
+                        "credential_status": "ready",
+                        "profile_id": profile_id,
+                        "upstream_user_id": format!("demo-user-{profile_id}"),
+                        "login": format!("demo-{profile_id}"),
+                        "last_ready_at": "2026-05-06T00:00:00Z",
+                        "token": "demo-secret-token",
+                    }),
+                },
+            });
+        }
 
         let outcome = match request.execution_mode {
-            ActionExecutionMode::Inline => SubmitActionOutcome::Completed {
-                content: json!({
+            ActionExecutionMode::Inline => {
+                let mut content = json!({
                     "ok": true,
                     "path": request.path,
                     "echo": request.payload,
-                }),
-            },
+                });
+                if let Some(principal_id) = ctx.principal_id.as_deref() {
+                    content["principal_id"] = json!(principal_id);
+                }
+                if let Some(profile_id) = ctx.profile_id.as_deref() {
+                    content["profile_id"] = json!(profile_id);
+                }
+                SubmitActionOutcome::Completed { content }
+            }
             ActionExecutionMode::Streaming => SubmitActionOutcome::Streaming {
                 plan: ActionStreamingPlan {
                     accepted_content: Some(json!({"state":"accepted"})),
@@ -794,9 +842,9 @@ impl AppConnector for DemoAppConnector {
     fn get_app_structure(
         &mut self,
         request: GetAppStructureRequest,
-        _ctx: &ConnectorContext,
+        ctx: &ConnectorContext,
     ) -> std::result::Result<GetAppStructureResponse, ConnectorError> {
-        let snapshot = self.structure_snapshot(None)?;
+        let snapshot = self.structure_snapshot(None, ctx.profile_id.is_some())?;
         if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
             return Ok(GetAppStructureResponse {
                 result: AppStructureSyncResult::Unchanged {
@@ -815,7 +863,7 @@ impl AppConnector for DemoAppConnector {
     fn refresh_app_structure(
         &mut self,
         request: RefreshAppStructureRequest,
-        _ctx: &ConnectorContext,
+        ctx: &ConnectorContext,
     ) -> std::result::Result<RefreshAppStructureResponse, ConnectorError> {
         if matches!(request.reason, AppStructureSyncReason::EnterScope)
             && request.target_scope.is_none()
@@ -826,7 +874,8 @@ impl AppConnector for DemoAppConnector {
                 false,
             ));
         }
-        let snapshot = self.structure_snapshot(request.target_scope.as_deref())?;
+        let snapshot =
+            self.structure_snapshot(request.target_scope.as_deref(), ctx.profile_id.is_some())?;
         if request.known_revision.as_deref() == Some(snapshot.revision.as_str()) {
             return Ok(RefreshAppStructureResponse {
                 result: AppStructureSyncResult::Unchanged {
@@ -872,6 +921,8 @@ mod tests {
             request_id: "req-connector-1".to_string(),
             client_token: Some("tok-connector-1".to_string()),
             trace_id: trace_id.map(|v| v.to_string()),
+            principal_id: None,
+            profile_id: None,
         }
     }
 
@@ -1268,6 +1319,35 @@ mod tests {
             .expect_err("invalid payload should return mapped error");
         assert_eq!(err.code, "INVALID_PAYLOAD");
         assert!(!err.retryable);
+    }
+
+    #[test]
+    fn demo_connector_echoes_effective_principal_context() {
+        let mut connector = DemoAppConnector::new("tinode".to_string());
+        let mut ctx = connector_ctx(None);
+        ctx.app_id = "tinode".to_string();
+        ctx.principal_id = Some("default".to_string());
+        ctx.profile_id = Some("tinode:default".to_string());
+
+        let response = connector
+            .submit_action(
+                SubmitActionRequest {
+                    path: "/contacts/zhangsan/send_message.act".to_string(),
+                    payload: serde_json::json!({"profile_id":"attacker"}),
+                    execution_mode: ActionExecutionMode::Inline,
+                },
+                &ctx,
+            )
+            .expect("inline submit should succeed");
+
+        match response.outcome {
+            SubmitActionOutcome::Completed { content } => {
+                assert_eq!(content["principal_id"], "default");
+                assert_eq!(content["profile_id"], "tinode:default");
+                assert_eq!(content["echo"]["profile_id"], "attacker");
+            }
+            _ => panic!("expected completed outcome"),
+        }
     }
 
     #[test]

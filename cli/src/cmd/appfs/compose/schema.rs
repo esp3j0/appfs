@@ -40,7 +40,7 @@ pub(crate) struct AppfsComposeRuntime {
     pub(crate) allow_other: bool,
     pub(crate) uid: Option<u32>,
     pub(crate) gid: Option<u32>,
-    pub(crate) poll_ms: u64,
+    pub(crate) fallback_poll_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,12 +64,14 @@ pub(crate) enum AppfsComposeConnectorMode {
     External,
     Command,
     ExternalOrCommand,
+    InProcess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppfsComposeTransportKind {
     Http,
     Grpc,
+    InProcess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +100,18 @@ pub(crate) struct AppfsComposeApp {
     pub(crate) connector: String,
     pub(crate) session_id: Option<String>,
     pub(crate) transport: AppfsComposeAppTransport,
+    pub(crate) visibility: AppfsComposeAppVisibility,
+    pub(crate) path: Option<String>,
+    pub(crate) path_template: Option<String>,
+    pub(crate) profile_template: Option<String>,
+    pub(crate) credential_policy: Option<String>,
+    pub(crate) inbound_poll_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppfsComposeAppVisibility {
+    Public,
+    Private,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,7 +190,7 @@ fn normalize_runtime(raw: RawAppfsComposeRuntime, base_dir: &Path) -> Result<App
         allow_other: raw.system,
         uid: raw.uid,
         gid: raw.gid,
-        poll_ms: raw.poll_ms,
+        fallback_poll_ms: normalize_fallback_poll_ms(raw.poll_ms, raw.fallback_poll_ms)?,
     })
 }
 
@@ -203,10 +217,19 @@ fn normalize_connector(
 ) -> Result<AppfsComposeConnector> {
     let mode = normalize_connector_mode(raw.mode)?;
     let transport = normalize_transport_kind(raw.transport)?;
-    let endpoint = normalize_required_string(
-        raw.endpoint,
-        &format!("connectors.{connector_name}.endpoint"),
-    )?;
+    let endpoint = match transport {
+        AppfsComposeTransportKind::Http | AppfsComposeTransportKind::Grpc => {
+            normalize_required_string(
+                raw.endpoint,
+                &format!("connectors.{connector_name}.endpoint"),
+            )?
+        }
+        AppfsComposeTransportKind::InProcess => normalize_optional_string(
+            raw.endpoint,
+            format!("connectors.{connector_name}.endpoint"),
+        )?
+        .unwrap_or_default(),
+    };
 
     let command = raw
         .command
@@ -214,6 +237,12 @@ fn normalize_connector(
         .transpose()?;
     match mode {
         AppfsComposeConnectorMode::External => {
+            if transport == AppfsComposeTransportKind::InProcess {
+                anyhow::bail!(
+                    "compose connector {} with transport=in_process must use mode=in_process",
+                    connector_name
+                );
+            }
             if command.is_some() {
                 anyhow::bail!(
                     "compose connector {} in external mode cannot define command",
@@ -222,11 +251,37 @@ fn normalize_connector(
             }
         }
         AppfsComposeConnectorMode::Command | AppfsComposeConnectorMode::ExternalOrCommand => {
+            if transport == AppfsComposeTransportKind::InProcess {
+                anyhow::bail!(
+                    "compose connector {} with transport=in_process must use mode=in_process",
+                    connector_name
+                );
+            }
             if command.is_none() {
                 anyhow::bail!(
                     "compose connector {} in {} mode requires command",
                     connector_name,
                     connector_mode_label(mode)
+                );
+            }
+        }
+        AppfsComposeConnectorMode::InProcess => {
+            if transport != AppfsComposeTransportKind::InProcess {
+                anyhow::bail!(
+                    "compose connector {} in in_process mode must use transport=in_process",
+                    connector_name
+                );
+            }
+            if command.is_some() {
+                anyhow::bail!(
+                    "compose connector {} in in_process mode cannot define command",
+                    connector_name
+                );
+            }
+            if !endpoint.trim().is_empty() {
+                anyhow::bail!(
+                    "compose connector {} in in_process mode cannot define endpoint",
+                    connector_name
                 );
             }
         }
@@ -238,6 +293,14 @@ fn normalize_connector(
 
     match transport {
         AppfsComposeTransportKind::Http | AppfsComposeTransportKind::Grpc => {}
+        AppfsComposeTransportKind::InProcess => {
+            if healthcheck.is_some() {
+                anyhow::bail!(
+                    "compose connector {} with transport=in_process cannot define healthcheck",
+                    connector_name
+                );
+            }
+        }
     }
 
     Ok(AppfsComposeConnector {
@@ -368,14 +431,28 @@ fn normalize_apps(
             .entry(connector.clone())
             .or_default()
             .push(app_id.clone());
-        apps.insert(
-            app_id,
-            AppfsComposeApp {
-                connector,
-                session_id,
-                transport: normalize_app_transport(raw_app.transport),
-            },
-        );
+        let app = AppfsComposeApp {
+            connector,
+            session_id,
+            transport: normalize_app_transport(raw_app.transport),
+            visibility: normalize_app_visibility(raw_app.visibility)?,
+            path: normalize_app_path_field(raw_app.path, &format!("apps.{app_id}.path"))?,
+            path_template: normalize_app_path_field(
+                raw_app.path_template,
+                &format!("apps.{app_id}.path_template"),
+            )?,
+            profile_template: normalize_optional_string(
+                raw_app.profile_template,
+                format!("apps.{app_id}.profile_template"),
+            )?,
+            credential_policy: normalize_optional_string(
+                raw_app.credential_policy,
+                format!("apps.{app_id}.credential_policy"),
+            )?,
+            inbound_poll_ms: raw_app.inbound_poll_ms.unwrap_or(0),
+        };
+        validate_app_visibility_fields(&app, &format!("apps.{app_id}"))?;
+        apps.insert(app_id, app);
     }
     for (connector, app_ids) in connector_usage {
         if app_ids.len() > 1 {
@@ -387,6 +464,37 @@ fn normalize_apps(
         }
     }
     Ok(apps)
+}
+
+fn validate_app_visibility_fields(app: &AppfsComposeApp, field_prefix: &str) -> Result<()> {
+    match app.visibility {
+        AppfsComposeAppVisibility::Public => {
+            if app.path_template.is_some() {
+                anyhow::bail!("{field_prefix}.path_template is only valid for private apps");
+            }
+        }
+        AppfsComposeAppVisibility::Private => {
+            if app.path.is_some() {
+                anyhow::bail!("{field_prefix}.path is only valid for public apps");
+            }
+            let path_template = app.path_template.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("{field_prefix}.path_template is required for private apps")
+            })?;
+            if !path_template.contains("{principal_id}") {
+                anyhow::bail!(
+                    "{field_prefix}.path_template must contain {{principal_id}} for private apps"
+                );
+            }
+            if let Some(profile_template) = app.profile_template.as_deref() {
+                if !profile_template.contains("{principal_id}") {
+                    anyhow::bail!(
+                        "{field_prefix}.profile_template must contain {{principal_id}} for private apps"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalize_app_transport(raw: RawAppfsComposeAppTransport) -> AppfsComposeAppTransport {
@@ -406,6 +514,21 @@ fn normalize_app_transport(raw: RawAppfsComposeAppTransport) -> AppfsComposeAppT
         bridge_circuit_breaker_cooldown_ms: raw
             .bridge_circuit_breaker_cooldown_ms
             .unwrap_or(DEFAULT_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS),
+    }
+}
+
+fn normalize_fallback_poll_ms(
+    legacy_poll_ms: Option<u64>,
+    fallback_poll_ms: Option<u64>,
+) -> Result<u64> {
+    match (legacy_poll_ms, fallback_poll_ms) {
+        (Some(legacy), Some(fallback)) if legacy != fallback => {
+            anyhow::bail!(
+                "runtime.poll_ms is deprecated; use runtime.fallback_poll_ms, but do not set both to different values"
+            );
+        }
+        (Some(value), _) | (_, Some(value)) => Ok(value),
+        (None, None) => Ok(0),
     }
 }
 
@@ -444,6 +567,23 @@ fn normalize_optional_string(
         )?)),
         None => Ok(None),
     }
+}
+
+fn normalize_app_path_field(raw: Option<String>, field_name: &str) -> Result<Option<String>> {
+    let Some(value) = normalize_optional_string(raw, field_name)? else {
+        return Ok(None);
+    };
+    let rendered = value.replace('\\', "/");
+    if rendered.starts_with('/') {
+        anyhow::bail!("{field_name} must be relative to the AppFS mount root");
+    }
+    if rendered
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        anyhow::bail!("{field_name} must not contain empty, . or .. path segments");
+    }
+    Ok(Some(rendered))
 }
 
 fn normalize_map_key(raw: &str, entity_name: &str) -> Result<String> {
@@ -524,6 +664,7 @@ fn normalize_connector_mode(
         RawAppfsComposeConnectorMode::ExternalOrCommand => {
             AppfsComposeConnectorMode::ExternalOrCommand
         }
+        RawAppfsComposeConnectorMode::InProcess => AppfsComposeConnectorMode::InProcess,
     })
 }
 
@@ -532,6 +673,7 @@ fn connector_mode_label(mode: AppfsComposeConnectorMode) -> &'static str {
         AppfsComposeConnectorMode::External => "external",
         AppfsComposeConnectorMode::Command => "command",
         AppfsComposeConnectorMode::ExternalOrCommand => "external_or_command",
+        AppfsComposeConnectorMode::InProcess => "in_process",
     }
 }
 
@@ -541,6 +683,16 @@ fn normalize_transport_kind(
     Ok(match raw {
         RawAppfsComposeTransportKind::Http => AppfsComposeTransportKind::Http,
         RawAppfsComposeTransportKind::Grpc => AppfsComposeTransportKind::Grpc,
+        RawAppfsComposeTransportKind::InProcess => AppfsComposeTransportKind::InProcess,
+    })
+}
+
+fn normalize_app_visibility(
+    raw: Option<RawAppfsComposeAppVisibility>,
+) -> Result<AppfsComposeAppVisibility> {
+    Ok(match raw.unwrap_or(RawAppfsComposeAppVisibility::Public) {
+        RawAppfsComposeAppVisibility::Public => AppfsComposeAppVisibility::Public,
+        RawAppfsComposeAppVisibility::Private => AppfsComposeAppVisibility::Private,
     })
 }
 
@@ -588,7 +740,9 @@ struct RawAppfsComposeRuntime {
     #[serde(default)]
     gid: Option<u32>,
     #[serde(default)]
-    poll_ms: u64,
+    poll_ms: Option<u64>,
+    #[serde(default)]
+    fallback_poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -626,6 +780,7 @@ enum RawAppfsComposeConnectorMode {
     External,
     Command,
     ExternalOrCommand,
+    InProcess,
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,6 +788,7 @@ enum RawAppfsComposeConnectorMode {
 enum RawAppfsComposeTransportKind {
     Http,
     Grpc,
+    InProcess,
 }
 
 #[derive(Debug, Deserialize)]
@@ -674,6 +830,25 @@ struct RawAppfsComposeApp {
     session_id: Option<String>,
     #[serde(default)]
     transport: RawAppfsComposeAppTransport,
+    #[serde(default)]
+    visibility: Option<RawAppfsComposeAppVisibility>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    path_template: Option<String>,
+    #[serde(default)]
+    profile_template: Option<String>,
+    #[serde(default)]
+    credential_policy: Option<String>,
+    #[serde(default)]
+    inbound_poll_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RawAppfsComposeAppVisibility {
+    Public,
+    Private,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -702,8 +877,8 @@ const fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_compose_doc, AppfsComposeConnectorMode, AppfsComposeInitMode,
-        AppfsComposeTransportKind,
+        parse_compose_doc, AppfsComposeAppVisibility, AppfsComposeConnectorMode,
+        AppfsComposeInitMode, AppfsComposeTransportKind,
     };
     use std::path::PathBuf;
 
@@ -722,6 +897,7 @@ runtime:
   db: .agentfs/demo.db
   mountpoint: ./mnt/appfs
   backend: winfsp
+  fallback_poll_ms: 75
 connectors:
   demo-http:
     mode: external_or_command
@@ -772,6 +948,7 @@ apps:
             );
         }
         assert_eq!(doc.runtime.init, AppfsComposeInitMode::IfMissing);
+        assert_eq!(doc.runtime.fallback_poll_ms, 75);
         assert!(doc.runtime.auto_unmount);
         assert_eq!(connector.mode, AppfsComposeConnectorMode::ExternalOrCommand);
         assert_eq!(connector.transport, AppfsComposeTransportKind::Http);
@@ -780,6 +957,97 @@ apps:
             doc.apps.get("aiim").expect("app").transport.http_timeout_ms,
             5000
         );
+        assert_eq!(
+            doc.apps.get("aiim").expect("app").visibility,
+            AppfsComposeAppVisibility::Public
+        );
+    }
+
+    #[test]
+    fn parses_public_and_private_app_visibility_fields() {
+        let doc = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+connectors:
+  aiim-http:
+    mode: external
+    transport: http
+    endpoint: http://127.0.0.1:8080
+  tinode-http:
+    mode: in_process
+    transport: in_process
+apps:
+  aiim:
+    connector: aiim-http
+    visibility: public
+    path: public/aiim
+  tinode:
+    connector: tinode-http
+    visibility: private
+    path_template: private/{principal_id}/tinode
+    profile_template: tinode:{principal_id}
+    credential_policy: auto-create
+    inbound_poll_ms: 1000
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect("compose should parse");
+
+        let aiim = doc.apps.get("aiim").expect("aiim app");
+        assert_eq!(aiim.visibility, AppfsComposeAppVisibility::Public);
+        assert_eq!(aiim.path.as_deref(), Some("public/aiim"));
+        assert_eq!(aiim.path_template, None);
+
+        let tinode = doc.apps.get("tinode").expect("tinode app");
+        assert_eq!(tinode.visibility, AppfsComposeAppVisibility::Private);
+        assert_eq!(
+            tinode.path_template.as_deref(),
+            Some("private/{principal_id}/tinode")
+        );
+        assert_eq!(
+            tinode.profile_template.as_deref(),
+            Some("tinode:{principal_id}")
+        );
+        assert_eq!(tinode.credential_policy.as_deref(), Some("auto-create"));
+        assert_eq!(tinode.inbound_poll_ms, 1000);
+        let tinode_connector = doc.connectors.get("tinode-http").expect("tinode connector");
+        assert_eq!(tinode_connector.mode, AppfsComposeConnectorMode::InProcess);
+        assert_eq!(
+            tinode_connector.transport,
+            AppfsComposeTransportKind::InProcess
+        );
+        assert_eq!(tinode_connector.endpoint, "");
+    }
+
+    #[test]
+    fn rejects_private_apps_without_principal_path_template() {
+        let err = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+connectors:
+  tinode-http:
+    mode: external
+    transport: http
+    endpoint: http://127.0.0.1:6061
+apps:
+  tinode:
+    connector: tinode-http
+    visibility: private
+    path_template: private/tinode
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect_err("compose should fail");
+
+        assert!(err.to_string().contains("must contain {principal_id}"));
     }
 
     #[test]
@@ -924,5 +1192,42 @@ runtime:
         } else {
             assert_eq!(doc.runtime.mountpoint, PathBuf::from("/tmp/appfs"));
         }
+    }
+
+    #[test]
+    fn accepts_legacy_runtime_poll_ms_as_fallback_alias() {
+        let doc = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+  poll_ms: 150
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect("legacy poll_ms should parse");
+
+        assert_eq!(doc.runtime.fallback_poll_ms, 150);
+    }
+
+    #[test]
+    fn rejects_conflicting_legacy_and_fallback_poll_fields() {
+        let err = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+  poll_ms: 150
+  fallback_poll_ms: 200
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect_err("conflicting poll aliases should fail");
+
+        assert!(err.to_string().contains("runtime.poll_ms is deprecated"));
     }
 }

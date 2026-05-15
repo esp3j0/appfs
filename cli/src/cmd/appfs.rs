@@ -162,7 +162,7 @@ pub struct AppfsServeArgs {
     pub app_id: Option<String>,
     pub app_ids: Vec<String>,
     pub session_id: Option<String>,
-    pub poll_ms: u64,
+    pub fallback_poll_ms: u64,
     pub action_wake: Option<ActionWakeHandle>,
     pub adapter_http_endpoint: Option<String>,
     pub adapter_http_timeout_ms: u64,
@@ -185,7 +185,7 @@ pub struct AppfsUpArgs {
     pub allow_other: bool,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
-    pub poll_ms: u64,
+    pub fallback_poll_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +197,7 @@ pub struct AppfsLaunchArgs {
     pub allow_other: bool,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
-    pub poll_ms: u64,
+    pub fallback_poll_ms: u64,
     pub agent_bin: PathBuf,
     pub workspace: PathBuf,
     pub attach_id: Option<String>,
@@ -270,8 +270,8 @@ fn build_appfs_up_launcher_command(args: &AppfsLaunchArgs) -> Result<ProcessComm
         .arg(&args.mountpoint)
         .arg("--backend")
         .arg(args.backend.to_string())
-        .arg("--poll-ms")
-        .arg(args.poll_ms.to_string())
+        .arg("--fallback-poll-ms")
+        .arg(args.fallback_poll_ms.to_string())
         .arg("--auto-unmount");
 
     if args.allow_root {
@@ -451,11 +451,11 @@ fn terminate_launcher_child(child: &mut Child) {
     }
 }
 
-fn fallback_poll_interval(poll_ms: u64) -> Option<Duration> {
-    if poll_ms == 0 {
+fn fallback_poll_interval(fallback_poll_ms: u64) -> Option<Duration> {
+    if fallback_poll_ms == 0 {
         None
     } else {
-        Some(Duration::from_millis(poll_ms.max(MIN_POLL_MS)))
+        Some(Duration::from_millis(fallback_poll_ms.max(MIN_POLL_MS)))
     }
 }
 
@@ -649,7 +649,7 @@ where
             app_id: None,
             app_ids: Vec::new(),
             session_id: None,
-            poll_ms: args.poll_ms,
+            fallback_poll_ms: args.fallback_poll_ms,
             action_wake: Some(action_wake),
             adapter_http_endpoint: None,
             adapter_http_timeout_ms: 5_000,
@@ -692,7 +692,7 @@ async fn handle_appfs_adapter_command_with_startup_context(
         app_id,
         app_ids,
         session_id,
-        poll_ms,
+        fallback_poll_ms,
         action_wake,
         adapter_http_endpoint,
         adapter_http_timeout_ms,
@@ -754,12 +754,19 @@ async fn handle_appfs_adapter_command_with_startup_context(
     };
     wait_for_managed_runtime_paths_ready(&root, &resolved_runtime_args, startup_context.as_ref())?;
     let startup_bootstrap = startup_context.map(|context| context.app_bootstrap);
-    let mut supervisor =
-        AppfsRuntimeSupervisor::new(root, resolved_runtime_args, managed, startup_bootstrap)?;
+    let mut supervisor = AppfsRuntimeSupervisor::new(
+        root,
+        resolved_runtime_args,
+        managed,
+        startup_bootstrap,
+        existing_registry.as_ref(),
+    )?;
     supervisor.prepare_action_sinks()?;
     supervisor.sync_registry_to_disk(existing_registry.as_ref())?;
     supervisor.log_started();
-    match (action_wake.as_ref(), fallback_poll_interval(poll_ms)) {
+    let fallback_interval_duration = fallback_poll_interval(fallback_poll_ms);
+    let mut inbound_interval_duration = supervisor.inbound_poll_interval();
+    match (action_wake.as_ref(), fallback_interval_duration) {
         (Some(_), Some(interval)) => {
             eprintln!(
                 "AppFS adapter fallback polling enabled at {} ms alongside write wake events.",
@@ -777,66 +784,79 @@ async fn handle_appfs_adapter_command_with_startup_context(
         }
         (None, None) => {
             eprintln!(
-                "AppFS adapter fallback polling disabled and no write wake source is attached; action sinks will remain idle until --poll-ms is set."
+                "AppFS adapter fallback polling disabled and no write wake source is attached; action sinks will remain idle until --fallback-poll-ms is set."
             );
         }
     }
+    if let Some(interval) = inbound_interval_duration {
+        eprintln!(
+            "AppFS adapter inbound event polling enabled at {} ms for configured apps.",
+            interval.as_millis()
+        );
+    }
     eprintln!("Press Ctrl+C to stop.");
 
-    let mut interval = fallback_poll_interval(poll_ms).map(tokio::time::interval);
-    if let Some(interval) = interval.as_mut() {
+    let mut fallback_interval = fallback_interval_duration.map(tokio::time::interval);
+    if let Some(interval) = fallback_interval.as_mut() {
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    }
+    let mut inbound_interval = inbound_interval_duration.map(tokio::time::interval);
+    if let Some(interval) = inbound_interval.as_mut() {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     }
     loop {
-        match (action_wake.as_ref(), interval.as_mut()) {
-            (Some(wake), Some(interval)) => {
-                tokio::select! {
-                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
-                        eprintln!("AppFS adapter stopping...");
-                        return Ok(());
-                    }
-                    _ = wake.wait() => {
-                        if let Err(err) = supervisor.poll_once() {
-                            eprintln!("AppFS adapter poll error: {err:#}");
-                        }
-                    }
-                    _ = interval.tick() => {
-                        if let Err(err) = supervisor.poll_once() {
-                            eprintln!("AppFS adapter poll error: {err:#}");
-                        }
-                    }
-                }
-            }
-            (Some(wake), None) => {
-                tokio::select! {
-                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
-                        eprintln!("AppFS adapter stopping...");
-                        return Ok(());
-                    }
-                    _ = wake.wait() => {
-                        if let Err(err) = supervisor.poll_once() {
-                            eprintln!("AppFS adapter poll error: {err:#}");
-                        }
-                    }
-                }
-            }
-            (None, Some(interval)) => {
-                tokio::select! {
-                    _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
-                        eprintln!("AppFS adapter stopping...");
-                        return Ok(());
-                    }
-                    _ = interval.tick() => {
-                        if let Err(err) = supervisor.poll_once() {
-                            eprintln!("AppFS adapter poll error: {err:#}");
-                        }
-                    }
-                }
-            }
-            (None, None) => {
-                crate::shutdown_signal::wait_for_shutdown_signal().await?;
+        tokio::select! {
+            _ = crate::shutdown_signal::wait_for_shutdown_signal() => {
                 eprintln!("AppFS adapter stopping...");
                 return Ok(());
+            }
+            _ = async {
+                if let Some(wake) = action_wake.as_ref() {
+                    wake.wait().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                if let Err(err) = supervisor.poll_action_work_once() {
+                    eprintln!("AppFS adapter action wake error: {err:#}");
+                }
+            }
+            _ = async {
+                if let Some(interval) = fallback_interval.as_mut() {
+                    interval.tick().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                if let Err(err) = supervisor.poll_once() {
+                    eprintln!("AppFS adapter fallback poll error: {err:#}");
+                }
+            }
+            _ = async {
+                if let Some(interval) = inbound_interval.as_mut() {
+                    interval.tick().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                if let Err(err) = supervisor.poll_inbound_events_once() {
+                    eprintln!("AppFS adapter inbound poll error: {err:#}");
+                }
+            }
+        }
+        let next_inbound_interval_duration = supervisor.inbound_poll_interval();
+        if next_inbound_interval_duration != inbound_interval_duration {
+            match next_inbound_interval_duration {
+                Some(interval) => eprintln!(
+                    "AppFS adapter inbound event polling enabled at {} ms for configured apps.",
+                    interval.as_millis()
+                ),
+                None => eprintln!("AppFS adapter inbound event polling disabled."),
+            }
+            inbound_interval_duration = next_inbound_interval_duration;
+            inbound_interval = inbound_interval_duration.map(tokio::time::interval);
+            if let Some(interval) = inbound_interval.as_mut() {
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             }
         }
     }
@@ -1211,7 +1231,10 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
         &resolved_apps,
     )
     .await?;
-    for resolved_app in resolved_apps.values() {
+    for resolved_app in resolved_apps
+        .values()
+        .filter(|app| app.visibility == compose::schema::AppfsComposeAppVisibility::Public)
+    {
         let session_id = normalize_appfs_session_id(resolved_app.session_id.clone());
         let bridge_config =
             build_appfs_bridge_config(bridge_args_from_resolved_compose_app(resolved_app));
@@ -1219,12 +1242,15 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
             &agent,
             &resolved_app.app_id,
             &session_id,
+            None,
+            None,
             &bridge_config,
         )
         .await?;
     }
-    let startup_app_ids = resolved_apps
-        .values()
+    let startup_app_ids = registry_doc
+        .apps
+        .iter()
         .map(|app| app.app_id.clone())
         .collect::<Vec<_>>();
     let startup_plan = build_managed_runtime_bootstrap_plan(&agent, &startup_app_ids).await?;
@@ -1249,7 +1275,7 @@ pub async fn handle_appfs_compose_up_command(compose_path: Option<PathBuf>) -> R
             allow_other: compose_doc.runtime.allow_other,
             uid: compose_doc.runtime.uid,
             gid: compose_doc.runtime.gid,
-            poll_ms: compose_doc.runtime.poll_ms,
+            fallback_poll_ms: compose_doc.runtime.fallback_poll_ms,
         },
         move |mount_root| apply_managed_runtime_bootstrap_plan(mount_root, &startup_plan),
         Some(startup_context),
@@ -1266,11 +1292,13 @@ fn bridge_args_from_resolved_compose_app(
     AppfsBridgeCliArgs {
         adapter_http_endpoint: match app.transport_kind {
             compose::schema::AppfsComposeTransportKind::Http => Some(app.endpoint.clone()),
-            compose::schema::AppfsComposeTransportKind::Grpc => None,
+            compose::schema::AppfsComposeTransportKind::Grpc
+            | compose::schema::AppfsComposeTransportKind::InProcess => None,
         },
         adapter_http_timeout_ms: app.transport.http_timeout_ms,
         adapter_grpc_endpoint: match app.transport_kind {
-            compose::schema::AppfsComposeTransportKind::Http => None,
+            compose::schema::AppfsComposeTransportKind::Http
+            | compose::schema::AppfsComposeTransportKind::InProcess => None,
             compose::schema::AppfsComposeTransportKind::Grpc => Some(app.endpoint.clone()),
         },
         adapter_grpc_timeout_ms: app.transport.grpc_timeout_ms,
@@ -1514,6 +1542,8 @@ struct ActionCursorDoc {
 struct AppfsAdapter {
     app_id: String,
     session_id: String,
+    principal_id: Option<String>,
+    profile_id: Option<String>,
     app_dir: PathBuf,
     direct_db_path: Option<String>,
     action_specs: Vec<ActionSpec>,
@@ -1563,6 +1593,43 @@ mod supervisor_tests {
         }
     }
 
+    fn configure_tinode_env_for_tests() {
+        std::env::set_var("APPFS_TINODE_ENDPOINT", "http://127.0.0.1:6060");
+        std::env::set_var("APPFS_TINODE_LOGIN_PREFIX", "appfs_test");
+        std::env::set_var("APPFS_TINODE_CREDENTIAL_POLICY", "auto-create");
+    }
+
+    fn write_tinode_private_policy(root: &std::path::Path) {
+        registry::write_app_policy_registry(
+            root,
+            &registry::AppfsAppPolicyRegistryDoc {
+                version: registry::APPFS_REGISTRY_VERSION,
+                apps: vec![registry::AppfsAppPolicyRecord {
+                    app_id: "tinode".to_string(),
+                    visibility: registry::AppfsAppPolicyVisibility::Private,
+                    connector: "tinode-in-process".to_string(),
+                    transport: registry::AppfsRegistryTransportDoc {
+                        kind: registry::AppfsRegistryTransportKind::InProcess,
+                        endpoint: None,
+                        http_timeout_ms: 5000,
+                        grpc_timeout_ms: 5000,
+                        bridge_max_retries: 2,
+                        bridge_initial_backoff_ms: 100,
+                        bridge_max_backoff_ms: 1000,
+                        bridge_circuit_breaker_failures: 5,
+                        bridge_circuit_breaker_cooldown_ms: 3000,
+                    },
+                    path: None,
+                    path_template: Some("private/{principal_id}/tinode".to_string()),
+                    profile_template: Some("tinode:{principal_id}".to_string()),
+                    credential_policy: Some("auto-create".to_string()),
+                    inbound_poll_ms: Some(1_000),
+                }],
+            },
+        )
+        .expect("write tinode private policy");
+    }
+
     #[test]
     fn appfs_up_builds_managed_mount_args() {
         let args = super::AppfsUpArgs {
@@ -1574,7 +1641,7 @@ mod supervisor_tests {
             allow_other: true,
             uid: Some(1000),
             gid: Some(1000),
-            poll_ms: 150,
+            fallback_poll_ms: 150,
         };
 
         let mount_args = super::build_managed_mount_args(&args);
@@ -1627,7 +1694,7 @@ mod supervisor_tests {
             allow_other: true,
             uid: Some(1000),
             gid: Some(1000),
-            poll_ms: 150,
+            fallback_poll_ms: 150,
             agent_bin: std::path::PathBuf::from("C:\\tools\\claw.exe"),
             workspace: std::path::PathBuf::from("workspace"),
             attach_id: Some("agent-a".to_string()),
@@ -1647,7 +1714,7 @@ mod supervisor_tests {
         assert!(rendered.contains("--system"));
         assert!(rendered.contains("--uid"));
         assert!(rendered.contains("--gid"));
-        assert!(rendered.contains("--poll-ms"));
+        assert!(rendered.contains("--fallback-poll-ms"));
     }
 
     #[test]
@@ -1721,7 +1788,7 @@ mod supervisor_tests {
             allow_other: false,
             uid: None,
             gid: None,
-            poll_ms: 0,
+            fallback_poll_ms: 0,
         };
 
         let db_path = crate::get_runtime()
@@ -1750,7 +1817,7 @@ mod supervisor_tests {
             allow_other: false,
             uid: None,
             gid: None,
-            poll_ms: 0,
+            fallback_poll_ms: 0,
         };
 
         let db_path = crate::get_runtime()
@@ -1780,7 +1847,7 @@ mod supervisor_tests {
             allow_other: false,
             uid: None,
             gid: None,
-            poll_ms: 0,
+            fallback_poll_ms: 0,
         };
 
         crate::get_runtime()
@@ -1810,7 +1877,7 @@ mod supervisor_tests {
             allow_other: false,
             uid: None,
             gid: None,
-            poll_ms: 0,
+            fallback_poll_ms: 0,
         };
 
         crate::get_runtime()
@@ -1835,7 +1902,7 @@ mod supervisor_tests {
             allow_other: false,
             uid: None,
             gid: None,
-            poll_ms: 0,
+            fallback_poll_ms: 0,
         };
 
         let err = crate::get_runtime()
@@ -1911,6 +1978,7 @@ mod supervisor_tests {
             resolve_runtime_cli_args(runtime_args),
             false,
             None,
+            None,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -1961,6 +2029,7 @@ mod supervisor_tests {
             resolve_runtime_cli_args(runtime_args),
             false,
             None,
+            None,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -2006,6 +2075,7 @@ mod supervisor_tests {
             resolve_runtime_cli_args(runtime_args),
             false,
             None,
+            None,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -2041,6 +2111,7 @@ mod supervisor_tests {
             resolve_runtime_cli_args(runtime_args),
             false,
             None,
+            None,
         )
         .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
@@ -2048,7 +2119,13 @@ mod supervisor_tests {
         let existing = registry::AppfsAppsRegistryDoc {
             version: registry::APPFS_REGISTRY_VERSION,
             apps: vec![registry::AppfsRegisteredAppDoc {
+                instance_id: "aiim".to_string(),
                 app_id: "aiim".to_string(),
+                visibility: registry::AppfsRegisteredAppVisibility::Public,
+                parent_app_id: None,
+                principal_id: None,
+                profile_id: None,
+                path: "aiim".to_string(),
                 transport: registry::AppfsRegistryTransportDoc {
                     kind: registry::AppfsRegistryTransportKind::InProcess,
                     endpoint: None,
@@ -2063,6 +2140,7 @@ mod supervisor_tests {
                 session_id: "sess-old".to_string(),
                 registered_at: "2026-03-25T00:00:00Z".to_string(),
                 active_scope: Some("chat-001".to_string()),
+                inbound_poll_ms: None,
             }],
         };
         registry::write_app_registry(temp.path(), &existing).expect("seed registry");
@@ -2096,7 +2174,7 @@ mod supervisor_tests {
     fn supervisor_can_register_app_dynamically_from_empty_runtime() {
         let temp = TempDir::new().expect("tempdir");
         let mut supervisor =
-            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None)
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None, None)
                 .expect("supervisor");
         supervisor.prepare_action_sinks().expect("prepare sinks");
 
@@ -2124,6 +2202,390 @@ mod supervisor_tests {
     }
 
     #[test]
+    fn runtime_supervisor_can_create_update_and_delete_principal() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        let create_action = temp.path().join("_appfs/principals/create_principal.act");
+        assert!(create_action.exists());
+        append_text(
+            &create_action,
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"description\":\"The default project agent.\",\"kind\":\"agent\",\"client_token\":\"principal-create-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll create principal");
+
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.default_principal_id, "default");
+        assert_eq!(registry.principals.len(), 1);
+        assert_eq!(registry.principals[0].principal_id, "default");
+        assert_eq!(registry.principals[0].display_name, "Default agent");
+        let view_path = temp.path().join("_appfs/principals/default.res.json");
+        assert!(view_path.exists());
+        let view: registry::PrincipalRecord =
+            serde_json::from_slice(&fs::read(&view_path).expect("read principal view"))
+                .expect("parse principal view");
+        assert_eq!(view, registry.principals[0]);
+
+        let events = control_events(&temp, "principal-create-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.created")
+        );
+
+        append_text(
+            &create_action,
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"client_token\":\"principal-create-002\"}\n",
+        );
+        supervisor
+            .poll_once()
+            .expect("poll duplicate create principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.principals.len(), 1);
+        let events = control_events(&temp, "principal-create-002");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.exists")
+        );
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/update_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default project agent\",\"client_token\":\"principal-update-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll update principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert_eq!(registry.principals[0].display_name, "Default project agent");
+
+        append_text(
+            &temp.path().join("_appfs/principals/delete_principal.act"),
+            "{\"principal_id\":\"default\",\"client_token\":\"principal-delete-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll delete principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        assert!(registry.principals.is_empty());
+        assert!(!view_path.exists());
+        let events = control_events(&temp, "principal-delete-001");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.deleted")
+        );
+    }
+
+    #[test]
+    fn runtime_supervisor_materializes_private_tinode_skeleton_for_created_principal() {
+        let temp = TempDir::new().expect("tempdir");
+        configure_tinode_env_for_tests();
+        write_tinode_private_policy(temp.path());
+
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        assert!(
+            !supervisor.runtimes.contains_key("tinode--default"),
+            "private apps should not materialize until a principal is explicitly created"
+        );
+        assert!(
+            registry::read_principal_registry(temp.path())
+                .expect("read principal registry")
+                .is_none(),
+            "AppFS startup must not auto-create the default principal"
+        );
+        assert_eq!(
+            supervisor.inbound_poll_interval(),
+            None,
+            "inbound polling should remain disabled until a private app instance exists"
+        );
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/create_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"kind\":\"agent\",\"client_token\":\"principal-private-001\"}\n",
+        );
+
+        supervisor.poll_once().expect("poll create principal");
+
+        assert!(supervisor.runtimes.contains_key("tinode--default"));
+        assert_eq!(
+            supervisor.inbound_poll_interval(),
+            Some(Duration::from_millis(1_000))
+        );
+        let tinode_root = temp.path().join("private/default/tinode");
+        assert!(tinode_root.exists());
+        assert!(tinode_root.join("_meta/manifest.res.json").exists());
+        assert!(tinode_root.join("_stream/events.evt.jsonl").exists());
+        for expected in [
+            "_app/actions.res.json",
+            "_app/control.res.json",
+            "_app/self.res.json",
+            "_app/skill.res.json",
+            "_app/ensure_credentials.act",
+            "_app/refresh_structure.act",
+            "_app/refresh_inbox.act",
+            "contacts/index.res.jsonl",
+            "contacts/send_message.act",
+            "contacts/resolve.act",
+            "contacts/search_results.res.jsonl",
+            "groups/index.res.jsonl",
+            "groups/create_group.act",
+            "inbox/recent.res.jsonl",
+            "inbox/unread.res.jsonl",
+            "inbox/mark_read.act",
+            "topics/index.res.jsonl",
+        ] {
+            assert!(tinode_root.join(expected).exists(), "missing {expected}");
+        }
+        let self_doc: JsonValue =
+            serde_json::from_slice(&fs::read(tinode_root.join("_app/self.res.json")).unwrap())
+                .expect("parse tinode self");
+        assert_eq!(self_doc["credential_status"], "missing");
+        assert_eq!(self_doc["principal_id"], "default");
+        assert_eq!(self_doc["profile_id"], "tinode:default");
+        let self_rendered = self_doc.to_string();
+        for forbidden in ["token", "refresh_token", "password", "secret", "cookie"] {
+            assert!(!self_rendered.contains(forbidden));
+        }
+
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read app registry")
+            .expect("app registry exists");
+        assert_eq!(stored.apps.len(), 1);
+        assert_eq!(stored.apps[0].instance_id, "tinode--default");
+        assert_eq!(stored.apps[0].app_id, "tinode");
+        assert_eq!(
+            stored.apps[0].visibility,
+            registry::AppfsRegisteredAppVisibility::PrivateInstance
+        );
+        assert_eq!(stored.apps[0].principal_id.as_deref(), Some("default"));
+        assert_eq!(stored.apps[0].profile_id.as_deref(), Some("tinode:default"));
+        assert_eq!(stored.apps[0].path, "private/default/tinode");
+        assert_eq!(stored.apps[0].inbound_poll_ms, Some(1_000));
+
+        let events = control_events(&temp, "principal-private-001");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.created")
+        );
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("app_instances"))
+                .and_then(|value| value.as_array())
+                .map(|instances| instances.len()),
+            Some(1)
+        );
+
+        append_text(
+            &temp.path().join("_appfs/principals/delete_principal.act"),
+            "{\"principal_id\":\"default\",\"client_token\":\"principal-private-delete-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll delete principal");
+        let events = control_events(&temp, "principal-private-delete-001");
+        assert_eq!(events.len(), 1);
+        let content = events[0].get("content").expect("delete content");
+        assert_eq!(
+            content
+                .get("credentials_cleanup")
+                .and_then(|value| value.as_str()),
+            Some("requested")
+        );
+        let cleanup = content
+            .get("credential_cleanup_requests")
+            .and_then(|value| value.as_array())
+            .expect("cleanup requests");
+        assert_eq!(cleanup.len(), 1);
+        assert_eq!(
+            cleanup[0]
+                .get("instance_id")
+                .and_then(|value| value.as_str()),
+            Some("tinode--default")
+        );
+        assert_eq!(
+            cleanup[0]
+                .get("profile_id")
+                .and_then(|value| value.as_str()),
+            Some("tinode:default")
+        );
+        assert_eq!(
+            cleanup[0]
+                .get("cleanup_action")
+                .and_then(|value| value.as_str()),
+            Some("/_app/forget_credentials.act")
+        );
+        assert_eq!(
+            cleanup[0].get("status").and_then(|value| value.as_str()),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn runtime_supervisor_materializes_existing_principal_private_apps_on_attach() {
+        let temp = TempDir::new().expect("tempdir");
+        configure_tinode_env_for_tests();
+
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/create_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"kind\":\"agent\",\"client_token\":\"principal-before-policy-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll create principal");
+        assert!(!supervisor.runtimes.contains_key("tinode--default"));
+
+        write_tinode_private_policy(temp.path());
+        supervisor.poll_once().expect("poll without attach");
+        assert!(
+            !supervisor.runtimes.contains_key("tinode--default"),
+            "private app policy changes should not materialize a principal until attach/create"
+        );
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/attach_principal.act"),
+            "{\"principal_id\":\"default\",\"attach_id\":\"attach-default\",\"client_token\":\"principal-attach-materialize-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll attach principal");
+
+        assert!(supervisor.runtimes.contains_key("tinode--default"));
+        let tinode_root = temp.path().join("private/default/tinode");
+        assert!(tinode_root.join("_app/skill.res.json").exists());
+        let stored = registry::read_app_registry(temp.path())
+            .expect("read app registry")
+            .expect("app registry exists");
+        assert!(stored.apps.iter().any(|app| {
+            app.instance_id == "tinode--default"
+                && app.profile_id.as_deref() == Some("tinode:default")
+        }));
+    }
+
+    #[test]
+    fn runtime_supervisor_tracks_principal_attach_leases() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut supervisor =
+            AppfsRuntimeSupervisor::new(temp.path().to_path_buf(), Vec::new(), false, None, None)
+                .expect("supervisor");
+        supervisor.prepare_action_sinks().expect("prepare sinks");
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/create_principal.act"),
+            "{\"principal_id\":\"default\",\"display_name\":\"Default agent\",\"kind\":\"agent\",\"client_token\":\"principal-lease-create\"}\n",
+        );
+        supervisor.poll_once().expect("poll create principal");
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/attach_principal.act"),
+            "{\"principal_id\":\"default\",\"attach_id\":\"attach-test.1\",\"role\":\"coordinator\",\"session_id\":\"session-1\",\"client_token\":\"principal-attach-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll attach principal");
+
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        let principal = registry
+            .principals
+            .iter()
+            .find(|principal| principal.principal_id == "default")
+            .expect("default principal");
+        assert_eq!(principal.active_attach_count, 1);
+        assert_eq!(principal.active_attaches.len(), 1);
+        assert_eq!(principal.active_attaches[0].attach_id, "attach-test.1");
+        assert_eq!(
+            principal.active_attaches[0].role.as_deref(),
+            Some("coordinator")
+        );
+        let events = control_events(&temp, "principal-attach-001");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.attached")
+        );
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/attach_principal.act"),
+            "{\"principal_id\":\"default\",\"attach_id\":\"attach-test.1\",\"role\":\"coordinator\",\"session_id\":\"session-2\",\"client_token\":\"principal-attach-002\"}\n",
+        );
+        supervisor.poll_once().expect("poll refresh attach");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        let principal = registry
+            .principals
+            .iter()
+            .find(|principal| principal.principal_id == "default")
+            .expect("default principal");
+        assert_eq!(principal.active_attach_count, 1);
+        assert_eq!(
+            principal.active_attaches[0].session_id.as_deref(),
+            Some("session-2")
+        );
+
+        append_text(
+            &temp
+                .path()
+                .join("_appfs/principals/detach_principal.act"),
+            "{\"principal_id\":\"default\",\"attach_id\":\"attach-test.1\",\"reason\":\"process_exit\",\"client_token\":\"principal-detach-001\"}\n",
+        );
+        supervisor.poll_once().expect("poll detach principal");
+        let registry = registry::read_principal_registry(temp.path())
+            .expect("read principal registry")
+            .expect("principal registry exists");
+        let principal = registry
+            .principals
+            .iter()
+            .find(|principal| principal.principal_id == "default")
+            .expect("default principal");
+        assert_eq!(principal.active_attach_count, 0);
+        assert!(principal.active_attaches.is_empty());
+        let events = control_events(&temp, "principal-detach-001");
+        assert_eq!(
+            events[0]
+                .get("content")
+                .and_then(|value| value.get("principal_event"))
+                .and_then(|value| value.as_str()),
+            Some("principal.detached")
+        );
+    }
+
+    #[test]
     fn supervisor_can_list_and_unregister_apps_without_deleting_tree() {
         let temp = TempDir::new().expect("tempdir");
         let runtime_args = build_runtime_cli_args(
@@ -2138,6 +2600,7 @@ mod supervisor_tests {
             temp.path().to_path_buf(),
             resolve_runtime_cli_args(runtime_args),
             false,
+            None,
             None,
         )
         .expect("supervisor");

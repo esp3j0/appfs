@@ -38,6 +38,11 @@ pub(super) struct StructureRefreshRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct EnsureCredentialsRequest {
+    pub(super) expected_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct RegisterAppRequest {
     pub(super) app_id: String,
     pub(super) session_id: Option<String>,
@@ -50,12 +55,49 @@ pub(super) struct UnregisterAppRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct CreatePrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) display_name: String,
+    pub(super) description: Option<String>,
+    pub(super) kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct UpdatePrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) display_name: Option<String>,
+    pub(super) description: Option<String>,
+    pub(super) kind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DeletePrincipalRequest {
+    pub(super) principal_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AttachPrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) attach_id: String,
+    pub(super) role: Option<String>,
+    pub(super) session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DetachPrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) attach_id: String,
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) enum DispatchRoute {
     PagingFetchNext(PagingRequest),
     PagingClose(PagingRequest),
     SnapshotRefresh(SnapshotRefreshRequest),
     EnterScope(EnterScopeRequest),
     StructureRefresh(StructureRefreshRequest),
+    EnsureCredentials(EnsureCredentialsRequest),
     BusinessSubmit,
 }
 
@@ -66,6 +108,7 @@ pub(super) enum DispatchRouteParseError {
     SnapshotRefresh,
     EnterScope,
     StructureRefresh,
+    EnsureCredentials,
 }
 
 pub(super) fn normalize_actionline_payload(
@@ -106,6 +149,11 @@ pub(super) fn route_action(
         return parse_structure_refresh_request(payload)
             .map(DispatchRoute::StructureRefresh)
             .map_err(|_| DispatchRouteParseError::StructureRefresh);
+    }
+    if normalized_path == "/_app/ensure_credentials.act" {
+        return parse_ensure_credentials_request(payload)
+            .map(DispatchRoute::EnsureCredentials)
+            .map_err(|_| DispatchRouteParseError::EnsureCredentials);
     }
 
     Ok(DispatchRoute::BusinessSubmit)
@@ -259,6 +307,15 @@ pub(super) fn parse_structure_refresh_request(
     Ok(StructureRefreshRequest { target_scope })
 }
 
+pub(super) fn parse_ensure_credentials_request(
+    payload: &str,
+) -> std::result::Result<EnsureCredentialsRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    Ok(EnsureCredentialsRequest {
+        expected_profile_id: optional_string(&object, "expected_profile_id")?,
+    })
+}
+
 pub(super) fn parse_register_app_request(
     payload: &str,
 ) -> std::result::Result<RegisterAppRequest, &'static str> {
@@ -313,4 +370,151 @@ pub(super) fn parse_list_apps_request(payload: &str) -> std::result::Result<(), 
     } else {
         Err(ERR_INVALID_ARGUMENT)
     }
+}
+
+pub(super) fn parse_create_principal_request(
+    payload: &str,
+) -> std::result::Result<CreatePrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    let principal_id = required_principal_id(&object, "principal_id")?;
+    let display_name = required_string(&object, "display_name")?;
+    let description = optional_string(&object, "description")?;
+    let kind = optional_string(&object, "kind")?.unwrap_or_else(|| "agent".to_string());
+    Ok(CreatePrincipalRequest {
+        principal_id,
+        display_name,
+        description,
+        kind,
+    })
+}
+
+pub(super) fn parse_update_principal_request(
+    payload: &str,
+) -> std::result::Result<UpdatePrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    let principal_id = required_principal_id(&object, "principal_id")?;
+    Ok(UpdatePrincipalRequest {
+        principal_id,
+        display_name: optional_string(&object, "display_name")?,
+        description: optional_string(&object, "description")?,
+        kind: optional_string(&object, "kind")?,
+    })
+}
+
+pub(super) fn parse_delete_principal_request(
+    payload: &str,
+) -> std::result::Result<DeletePrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    let principal_id = required_principal_id(&object, "principal_id")?;
+    Ok(DeletePrincipalRequest { principal_id })
+}
+
+pub(super) fn parse_attach_principal_request(
+    payload: &str,
+) -> std::result::Result<AttachPrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    Ok(AttachPrincipalRequest {
+        principal_id: required_principal_id(&object, "principal_id")?,
+        attach_id: required_attach_id(&object, "attach_id")?,
+        role: optional_string(&object, "role")?,
+        session_id: optional_string(&object, "session_id")?,
+    })
+}
+
+pub(super) fn parse_detach_principal_request(
+    payload: &str,
+) -> std::result::Result<DetachPrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    Ok(DetachPrincipalRequest {
+        principal_id: required_principal_id(&object, "principal_id")?,
+        attach_id: required_attach_id(&object, "attach_id")?,
+        reason: optional_string(&object, "reason")?,
+    })
+}
+
+fn parse_json_object(
+    payload: &str,
+) -> std::result::Result<serde_json::Map<String, JsonValue>, &'static str> {
+    let json = serde_json::from_str::<JsonValue>(payload).map_err(|_| ERR_INVALID_ARGUMENT)?;
+    json.as_object().cloned().ok_or(ERR_INVALID_ARGUMENT)
+}
+
+fn required_string(
+    object: &serde_json::Map<String, JsonValue>,
+    field_name: &str,
+) -> std::result::Result<String, &'static str> {
+    object
+        .get(field_name)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or(ERR_INVALID_ARGUMENT)
+}
+
+fn optional_string(
+    object: &serde_json::Map<String, JsonValue>,
+    field_name: &str,
+) -> std::result::Result<Option<String>, &'static str> {
+    let Some(value) = object.get(field_name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or(ERR_INVALID_ARGUMENT)
+        .map(Some)
+}
+
+fn required_principal_id(
+    object: &serde_json::Map<String, JsonValue>,
+    field_name: &str,
+) -> std::result::Result<String, &'static str> {
+    let principal_id = required_string(object, field_name)?;
+    if is_safe_principal_id(&principal_id) {
+        Ok(principal_id)
+    } else {
+        Err(ERR_INVALID_ARGUMENT)
+    }
+}
+
+fn required_attach_id(
+    object: &serde_json::Map<String, JsonValue>,
+    field_name: &str,
+) -> std::result::Result<String, &'static str> {
+    let attach_id = required_string(object, field_name)?;
+    if is_safe_attach_id(&attach_id) {
+        Ok(attach_id)
+    } else {
+        Err(ERR_INVALID_ARGUMENT)
+    }
+}
+
+fn is_safe_principal_id(value: &str) -> bool {
+    if value == "." || value == ".." || value.len() > 120 {
+        return false;
+    }
+    if value.contains(['/', '\\', '\0', ':']) {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn is_safe_attach_id(value: &str) -> bool {
+    if value == "." || value == ".." || value.len() > 160 {
+        return false;
+    }
+    if value.contains(['/', '\\', '\0', ':']) {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }

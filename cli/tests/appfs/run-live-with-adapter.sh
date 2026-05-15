@@ -117,7 +117,7 @@ PY
 }
 
 start_adapter() {
-    poll_ms="${1:-$APPFS_ADAPTER_POLL_MS}"
+    fallback_poll_ms="${1:-$APPFS_ADAPTER_POLL_MS}"
     if [ -n "$APPFS_ADAPTER_HTTP_ENDPOINT" ]; then
         set -- $(endpoint_host_port "$APPFS_ADAPTER_HTTP_ENDPOINT")
         if ! wait_tcp_ready "$1" "$2" "$APPFS_TIMEOUT_SEC"; then
@@ -131,7 +131,7 @@ start_adapter() {
         fi
     fi
     say "Starting AppFS adapter runtime..."
-    set -- "$AGENTFS_BIN" serve appfs --root "$APPFS_LIVE_MOUNTPOINT" --app-id "$APPFS_APP_ID" --poll-ms "$poll_ms" \
+    set -- "$AGENTFS_BIN" serve appfs --root "$APPFS_LIVE_MOUNTPOINT" --app-id "$APPFS_APP_ID" --fallback-poll-ms "$fallback_poll_ms" \
         --adapter-bridge-max-retries "$APPFS_ADAPTER_BRIDGE_MAX_RETRIES" \
         --adapter-bridge-initial-backoff-ms "$APPFS_ADAPTER_BRIDGE_INITIAL_BACKOFF_MS" \
         --adapter-bridge-max-backoff-ms "$APPFS_ADAPTER_BRIDGE_MAX_BACKOFF_MS" \

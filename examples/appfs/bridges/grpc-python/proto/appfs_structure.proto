@@ -8,6 +8,8 @@ message ConnectorContext {
   string request_id = 3;
   optional string client_token = 4;
   optional string trace_id = 5;
+  optional string principal_id = 6;
+  optional string profile_id = 7;
 }
 
 message ConnectorError {
@@ -23,6 +25,8 @@ enum AppStructureSyncReason {
   APP_STRUCTURE_SYNC_REASON_ENTER_SCOPE = 2;
   APP_STRUCTURE_SYNC_REASON_REFRESH = 3;
   APP_STRUCTURE_SYNC_REASON_RECOVER = 4;
+  APP_STRUCTURE_SYNC_REASON_INBOUND_CHANGED = 5;
+  APP_STRUCTURE_SYNC_REASON_ACTION_CHANGED = 6;
 }
 
 enum AppStructureNodeKind {

@@ -86,6 +86,7 @@ runtime:
   backend: winfsp
   init: if_missing
   reset: false
+  fallback_poll_ms: 0
 
 connectors:
   aiim-http:
@@ -106,6 +107,27 @@ apps:
   aiim:
     connector: aiim-http
 ```
+
+runtime 里的轮询现在按职责拆开：
+
+- `.act` 写入通常由挂载 runtime 的 write-wake 路径触发处理，所以动作执行本身不需要依赖轮询。
+- `apps.<app-id>.inbound_poll_ms` 用于 connector inbound event polling，适合聊天 inbox 这类需要把后端新事件拉进挂载树的 app。
+- `runtime.fallback_poll_ms` 是 legacy 的完整 runtime fallback tick，默认关闭，通常保持 `0` 即可。旧 compose 字段 `runtime.poll_ms` 和 CLI 参数 `--poll-ms` 仍作为兼容别名保留，但新配置建议使用 `fallback_poll_ms`。
+
+需要区分 principal 身份的 private app 可以通过 app policy 字段声明。Compose 只写入 policy/template，真正的 private instance 会在某个 principal 被 attach 或创建时再物化。比如 Tinode app 可以为每个 AppFS principal materialize 一棵 private tree，并把后端事件轮询进对应树里：
+
+```yaml
+apps:
+  tinode:
+    connector: tinode-http
+    visibility: private
+    path_template: private/{principal_id}/tinode
+    profile_template: tinode:{principal_id}
+    credential_policy: auto-create
+    inbound_poll_ms: 1000
+```
+
+这个 inbound poll 只负责让挂载树里的 AppFS 数据保持更新。它不等价于更上层的 agent 唤醒或订阅机制；在显式 wake 层补齐前，agent 仍然需要主动观察或读取相关文件。当前的身份和 private app 集合由 appfs-agent attach 流程建立，而不是 AppFS 启动时自动建立。
 
 有了这个文件之后，直接运行：
 
@@ -364,7 +386,7 @@ uv run ruff format .
 AppFS 现在按三层组织：
 
 - AgentFS Core：AppFS 之下的引擎层，包括 SQLite 文件系统、通用 overlay 语义、sync 与平台挂载后端
-- AppFS Engine：registry、structure sync、runtime lifecycle、snapshot read-through、connector adapter
+- AppFS Engine：registry、structure sync、runtime lifecycle、snapshot read-through、connector adapter 与 inbound event polling
 - AppFS UX：`agentfs appfs up` 和挂载树上的 `/_appfs/*` 控制面
 
 ```mermaid
@@ -387,6 +409,7 @@ flowchart TD
 - `AppConnector` 是运行时 canonical connector surface
 - `_meta/manifest.res.json` 是派生视图，不是运行态主真相
 - snapshot cold miss 会在普通文件读取时自动扩展
+- action wake、snapshot read-through 和 connector inbound polling 是三条独立的 runtime 路径
 - 当前 CLI 分层是有意为之：AppFS 以 `agentfs` 子命令形式暴露，因为它仍依赖 AgentFS 的存储与挂载基础设施
 - `agentfs init --base` 仍保留为 AgentFS 功能，但不属于推荐的 AppFS 主路径
 

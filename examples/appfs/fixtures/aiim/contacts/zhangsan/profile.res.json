@@ -1,5 +1,20 @@
 {
+  "id": "contact-zhangsan",
+  "display_name": "张三",
   "contact_id": "zhangsan",
-  "name": "Zhang San",
-  "status": "online"
+  "name_en": "Zhang San",
+  "aliases": [
+    "张三",
+    "老张",
+    "zhangsan",
+    "Zhang San"
+  ],
+  "tags": [
+    "incident",
+    "oncall"
+  ],
+  "last_active_at": "2026-04-26T09:00:00Z",
+  "status": "online",
+  "role": "incident commander",
+  "send_message_action": "contacts/zhangsan/send_message.act"
 }

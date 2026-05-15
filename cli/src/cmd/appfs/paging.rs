@@ -96,6 +96,8 @@ impl AppfsAdapter {
             request_id: request_id.to_string(),
             client_token: client_token.clone(),
             trace_id: None,
+            principal_id: self.principal_id.clone(),
+            profile_id: self.profile_id.clone(),
         };
         match self.connector.fetch_live_page(
             FetchLivePageRequest {
