@@ -626,7 +626,6 @@ impl TinodeConnector {
         self.inbox_recent
             .iter()
             .filter(|record| !unread_only || self.unread_message_ids.contains(&record.message_id))
-            .cloned()
             .map(|record| SnapshotRecord {
                 record_key: record.message_id.clone(),
                 ordering_key: record.created_at_ms.to_string(),
@@ -3500,13 +3499,7 @@ fn sanitize_path_key(value: &str) -> String {
     let mut out = value
         .to_ascii_lowercase()
         .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
-                Some(ch)
-            } else {
-                None
-            }
-        })
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-' || *ch == '.')
         .collect::<String>();
     if out.is_empty() {
         out = "contact".to_string();
