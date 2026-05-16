@@ -12,6 +12,8 @@ use rand::prelude::*;
 use std::sync::Arc;
 use tempfile::tempdir;
 
+const ROOT_INO: i64 = 1;
+
 /// Operation types that can be performed on the filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -304,25 +306,34 @@ impl WorkloadGenerator {
 
 /// Execute a single operation on the overlay filesystem.
 async fn execute_operation(overlay: &OverlayFS, op: Operation, path: &str) {
+    let leaf = path
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("entry");
+
     match op {
         Operation::CreateFile => {
             // Ignore errors - path may not exist, which is expected
-            let _ = overlay.create_file(path, 0o100644, 0, 0).await;
+            let _ = overlay.create_file(ROOT_INO, leaf, 0o100644, 0, 0).await;
         }
         Operation::Lstat => {
-            let _ = overlay.lstat(path).await;
+            let _ = overlay.lookup(ROOT_INO, leaf).await;
         }
         Operation::Mkdir => {
-            let _ = overlay.mkdir(path, 0, 0).await;
+            let _ = overlay.mkdir(ROOT_INO, leaf, 0o755, 0, 0).await;
         }
         Operation::Open => {
-            let _ = overlay.open(path).await;
+            if let Ok(Some(stats)) = overlay.lookup(ROOT_INO, leaf).await {
+                let _ = overlay.open(stats.ino, 0).await;
+            }
         }
         Operation::ReaddirPlus => {
-            let _ = overlay.readdir_plus(path).await;
+            let _ = overlay.readdir_plus(ROOT_INO).await;
         }
         Operation::Stat => {
-            let _ = overlay.stat(path).await;
+            if let Ok(Some(stats)) = overlay.lookup(ROOT_INO, leaf).await {
+                let _ = overlay.getattr(stats.ino).await;
+            }
         }
     }
 }
