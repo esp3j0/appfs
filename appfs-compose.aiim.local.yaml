@@ -1,9 +1,9 @@
 version: 1
-name: aiim-tinode-compose-smoke
+name: aiim-compose-smoke
 
 runtime:
-  db: C:/Users/esp3j/rep/appfs-platform/appfs/cli/.agentfs/compose-aiim-tinode.db
-  mountpoint: C:/mnt/appfs-compose-aiim-tinode
+  db: C:/Users/esp3j/rep/appfs-platform/appfs/cli/.agentfs/compose-aiim.db
+  mountpoint: C:/mnt/appfs-compose-aiim
   backend: winfsp
   init: if_missing
   reset: true
@@ -25,29 +25,10 @@ connectors:
       args: ["-u", "bridge_server.py"]
       env:
         APPFS_HTTP_BRIDGE_BACKEND: aiim
-  tinode-in-process:
-    mode: in_process
-    transport: in_process
 
 apps:
   aiim:
     connector: aiim-http
-    visibility: public
-    transport:
-      http_timeout_ms: 5000
-      grpc_timeout_ms: 5000
-      bridge_max_retries: 2
-      bridge_initial_backoff_ms: 100
-      bridge_max_backoff_ms: 1000
-      bridge_circuit_breaker_failures: 5
-      bridge_circuit_breaker_cooldown_ms: 3000
-  tinode:
-    connector: tinode-in-process
-    visibility: private
-    path_template: private/{principal_id}/tinode
-    profile_template: tinode:{principal_id}
-    credential_policy: auto-create
-    inbound_poll_ms: 1000
     transport:
       http_timeout_ms: 5000
       grpc_timeout_ms: 5000

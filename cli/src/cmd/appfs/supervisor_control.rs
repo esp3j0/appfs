@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use super::action_dispatcher::{
-    normalize_actionline_payload, parse_create_principal_request, parse_delete_principal_request,
-    parse_list_apps_request, parse_register_app_request, parse_unregister_app_request,
-    parse_update_principal_request, CreatePrincipalRequest, DeletePrincipalRequest,
+    normalize_actionline_payload, parse_attach_principal_request, parse_create_principal_request,
+    parse_delete_principal_request, parse_detach_principal_request, parse_list_apps_request,
+    parse_register_app_request, parse_unregister_app_request, parse_update_principal_request,
+    AttachPrincipalRequest, CreatePrincipalRequest, DeletePrincipalRequest, DetachPrincipalRequest,
     RegisterAppRequest, UnregisterAppRequest, UpdatePrincipalRequest,
 };
 use super::errors::{ERR_INVALID_ARGUMENT, ERR_INVALID_PAYLOAD};
@@ -25,6 +26,8 @@ const CONTROL_LIST_ACTION: &str = "list_apps.act";
 const CONTROL_CREATE_PRINCIPAL_ACTION: &str = "principals/create_principal.act";
 const CONTROL_UPDATE_PRINCIPAL_ACTION: &str = "principals/update_principal.act";
 const CONTROL_DELETE_PRINCIPAL_ACTION: &str = "principals/delete_principal.act";
+const CONTROL_ATTACH_PRINCIPAL_ACTION: &str = "principals/attach_principal.act";
+const CONTROL_DETACH_PRINCIPAL_ACTION: &str = "principals/detach_principal.act";
 
 type NormalizedPayload = (String, Option<String>);
 type NormalizePayloadError = (&'static str, &'static str, Option<String>);
@@ -59,6 +62,16 @@ pub(super) enum SupervisorControlInvocation {
         request_id: String,
         client_token: Option<String>,
         request: DeletePrincipalRequest,
+    },
+    AttachPrincipal {
+        request_id: String,
+        client_token: Option<String>,
+        request: AttachPrincipalRequest,
+    },
+    DetachPrincipal {
+        request_id: String,
+        client_token: Option<String>,
+        request: DetachPrincipalRequest,
     },
 }
 
@@ -135,6 +148,8 @@ impl SupervisorControlPlane {
             CONTROL_CREATE_PRINCIPAL_ACTION,
             CONTROL_UPDATE_PRINCIPAL_ACTION,
             CONTROL_DELETE_PRINCIPAL_ACTION,
+            CONTROL_ATTACH_PRINCIPAL_ACTION,
+            CONTROL_DETACH_PRINCIPAL_ACTION,
         ] {
             let action_path = control_dir.join(action_name);
             if !action_path.exists() {
@@ -158,6 +173,8 @@ impl SupervisorControlPlane {
             CONTROL_CREATE_PRINCIPAL_ACTION,
             CONTROL_UPDATE_PRINCIPAL_ACTION,
             CONTROL_DELETE_PRINCIPAL_ACTION,
+            CONTROL_ATTACH_PRINCIPAL_ACTION,
+            CONTROL_DETACH_PRINCIPAL_ACTION,
         ] {
             out.extend(self.drain_action_file(action_name)?);
         }
@@ -432,6 +449,16 @@ fn parse_invocation(
             client_token,
             request: parse_delete_principal_request(payload_json)?,
         }),
+        CONTROL_ATTACH_PRINCIPAL_ACTION => Ok(SupervisorControlInvocation::AttachPrincipal {
+            request_id: request_id.to_string(),
+            client_token,
+            request: parse_attach_principal_request(payload_json)?,
+        }),
+        CONTROL_DETACH_PRINCIPAL_ACTION => Ok(SupervisorControlInvocation::DetachPrincipal {
+            request_id: request_id.to_string(),
+            client_token,
+            request: parse_detach_principal_request(payload_json)?,
+        }),
         _ => Err(ERR_INVALID_ARGUMENT),
     }
 }
@@ -444,6 +471,8 @@ fn control_action_path(action_name: &str) -> &'static str {
         CONTROL_CREATE_PRINCIPAL_ACTION => "/_appfs/principals/create_principal.act",
         CONTROL_UPDATE_PRINCIPAL_ACTION => "/_appfs/principals/update_principal.act",
         CONTROL_DELETE_PRINCIPAL_ACTION => "/_appfs/principals/delete_principal.act",
+        CONTROL_ATTACH_PRINCIPAL_ACTION => "/_appfs/principals/attach_principal.act",
+        CONTROL_DETACH_PRINCIPAL_ACTION => "/_appfs/principals/detach_principal.act",
         _ => "/_appfs/unknown.act",
     }
 }
@@ -533,6 +562,8 @@ mod tests {
             "_appfs/principals/create_principal.act",
             "_appfs/principals/update_principal.act",
             "_appfs/principals/delete_principal.act",
+            "_appfs/principals/attach_principal.act",
+            "_appfs/principals/detach_principal.act",
         ] {
             assert!(
                 temp.path().join(rel_path).exists(),

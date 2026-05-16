@@ -397,7 +397,7 @@ fn main() {
                 app_id,
                 app_ids,
                 session_id,
-                poll_ms,
+                fallback_poll_ms,
                 adapter_http_endpoint,
                 adapter_http_timeout_ms,
                 adapter_grpc_endpoint,
@@ -416,7 +416,7 @@ fn main() {
                         app_id,
                         app_ids,
                         session_id,
-                        poll_ms,
+                        fallback_poll_ms,
                         action_wake: None,
                         adapter_http_endpoint,
                         adapter_http_timeout_ms,
@@ -444,7 +444,7 @@ fn main() {
                 system,
                 uid,
                 gid,
-                poll_ms,
+                fallback_poll_ms,
             } => {
                 let rt = get_runtime();
                 if let Err(e) = rt.block_on(cmd::appfs::handle_appfs_up_command(
@@ -457,7 +457,7 @@ fn main() {
                         allow_other: system,
                         uid,
                         gid,
-                        poll_ms,
+                        fallback_poll_ms,
                     },
                 )) {
                     eprintln!("Error: {}", e);
@@ -473,7 +473,7 @@ fn main() {
                 system,
                 uid,
                 gid,
-                poll_ms,
+                fallback_poll_ms,
                 workspace,
                 attach_id,
                 attach_role,
@@ -490,7 +490,7 @@ fn main() {
                         allow_other: system,
                         uid,
                         gid,
-                        poll_ms,
+                        fallback_poll_ms,
                         agent_bin,
                         workspace,
                         attach_id,

@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use super::action_dispatcher::{
-    parse_action_line, parse_create_principal_request, parse_delete_principal_request,
+    parse_action_line, parse_attach_principal_request, parse_create_principal_request,
+    parse_delete_principal_request, parse_detach_principal_request,
     parse_ensure_credentials_request, parse_enter_scope_request, parse_list_apps_request,
     parse_paging_request, parse_register_app_request, parse_snapshot_refresh_request,
     parse_structure_refresh_request, parse_unregister_app_request, parse_update_principal_request,
@@ -373,6 +374,42 @@ fn parse_update_and_delete_principal_requests_require_principal_id() {
 
     assert!(parse_update_principal_request(r#"{}"#).is_err());
     assert!(parse_delete_principal_request(r#"{"principal_id":".."}"#).is_err());
+}
+
+#[test]
+fn parse_attach_and_detach_principal_requests_require_safe_ids() {
+    let req = parse_attach_principal_request(
+        r#"{"principal_id":"code-implementer","attach_id":"attach-abc.123","role":"worker","session_id":"session-1"}"#,
+    )
+    .expect("valid attach request");
+    assert_eq!(req.principal_id, "code-implementer");
+    assert_eq!(req.attach_id, "attach-abc.123");
+    assert_eq!(req.role.as_deref(), Some("worker"));
+    assert_eq!(req.session_id.as_deref(), Some("session-1"));
+
+    let req = parse_detach_principal_request(
+        r#"{"principal_id":"code-implementer","attach_id":"attach-abc.123","reason":"process_exit"}"#,
+    )
+    .expect("valid detach request");
+    assert_eq!(req.principal_id, "code-implementer");
+    assert_eq!(req.attach_id, "attach-abc.123");
+    assert_eq!(req.reason.as_deref(), Some("process_exit"));
+
+    let req = parse_attach_principal_request(
+        r#"{"principal_id":"default","attach_id":"attach-default","role":null,"session_id":null}"#,
+    )
+    .expect("null optional fields should be treated as missing");
+    assert_eq!(req.role, None);
+    assert_eq!(req.session_id, None);
+
+    assert!(parse_attach_principal_request(
+        r#"{"principal_id":"code-implementer","attach_id":"bad/path"}"#
+    )
+    .is_err());
+    assert!(
+        parse_detach_principal_request(r#"{"principal_id":"..","attach_id":"attach-abc"}"#)
+            .is_err()
+    );
 }
 
 #[test]

@@ -226,6 +226,8 @@ pub enum AppStructureSyncReason {
     EnterScope,
     Refresh,
     Recover,
+    InboundChanged,
+    ActionChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

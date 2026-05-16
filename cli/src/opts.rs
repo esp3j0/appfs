@@ -511,10 +511,10 @@ pub enum ServeCommand {
         #[arg(long)]
         session_id: Option<String>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Legacy fallback full-tick interval in milliseconds when no write wake arrives.
         /// Set to 0 to disable fallback polling (default).
-        #[arg(long, default_value_t = 0)]
-        poll_ms: u64,
+        #[arg(long = "fallback-poll-ms", alias = "poll-ms", default_value_t = 0)]
+        fallback_poll_ms: u64,
 
         /// Optional HTTP bridge endpoint for out-of-process adapters.
         /// When provided, runtime dispatches adapter calls to:
@@ -618,10 +618,10 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Legacy fallback full-tick interval in milliseconds when no write wake arrives.
         /// Set to 0 to disable fallback polling (default).
-        #[arg(long, default_value_t = 0)]
-        poll_ms: u64,
+        #[arg(long = "fallback-poll-ms", alias = "poll-ms", default_value_t = 0)]
+        fallback_poll_ms: u64,
     },
     /// Launch one appfs-agent process inside an AppFS-backed workspace
     Launch {
@@ -657,10 +657,10 @@ pub enum AppfsCommand {
         #[arg(long)]
         gid: Option<u32>,
 
-        /// Fallback poll interval in milliseconds for action sink scanning when no write wake arrives.
+        /// Legacy fallback full-tick interval in milliseconds when no write wake arrives.
         /// Set to 0 to disable fallback polling (default).
-        #[arg(long, default_value_t = 0)]
-        poll_ms: u64,
+        #[arg(long = "fallback-poll-ms", alias = "poll-ms", default_value_t = 0)]
+        fallback_poll_ms: u64,
 
         /// Relative workspace path inside the mounted AppFS view
         #[arg(long, default_value = "workspace")]
@@ -910,7 +910,7 @@ mod tests {
                         system,
                         uid,
                         gid,
-                        poll_ms,
+                        fallback_poll_ms,
                     },
             } => {
                 assert_eq!(id_or_path, ".agentfs/demo.db");
@@ -921,7 +921,7 @@ mod tests {
                 assert!(system);
                 assert_eq!(uid, None);
                 assert_eq!(gid, None);
-                assert_eq!(poll_ms, 150);
+                assert_eq!(fallback_poll_ms, 150);
             }
             other => panic!("unexpected command shape: {other:?}"),
         }
@@ -989,7 +989,7 @@ mod tests {
                         system,
                         uid,
                         gid,
-                        poll_ms,
+                        fallback_poll_ms,
                         workspace,
                         attach_id,
                         attach_role,
@@ -1005,7 +1005,7 @@ mod tests {
                 assert!(!system);
                 assert_eq!(uid, None);
                 assert_eq!(gid, None);
-                assert_eq!(poll_ms, 0);
+                assert_eq!(fallback_poll_ms, 0);
                 assert_eq!(workspace, PathBuf::from("workspace"));
                 assert_eq!(attach_id.as_deref(), Some("agent-planner"));
                 assert_eq!(attach_role.as_deref(), Some("planner"));

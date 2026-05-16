@@ -40,7 +40,7 @@ pub(crate) struct AppfsComposeRuntime {
     pub(crate) allow_other: bool,
     pub(crate) uid: Option<u32>,
     pub(crate) gid: Option<u32>,
-    pub(crate) poll_ms: u64,
+    pub(crate) fallback_poll_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,7 @@ pub(crate) struct AppfsComposeApp {
     pub(crate) path_template: Option<String>,
     pub(crate) profile_template: Option<String>,
     pub(crate) credential_policy: Option<String>,
+    pub(crate) inbound_poll_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +190,7 @@ fn normalize_runtime(raw: RawAppfsComposeRuntime, base_dir: &Path) -> Result<App
         allow_other: raw.system,
         uid: raw.uid,
         gid: raw.gid,
-        poll_ms: raw.poll_ms,
+        fallback_poll_ms: normalize_fallback_poll_ms(raw.poll_ms, raw.fallback_poll_ms)?,
     })
 }
 
@@ -448,6 +449,7 @@ fn normalize_apps(
                 raw_app.credential_policy,
                 format!("apps.{app_id}.credential_policy"),
             )?,
+            inbound_poll_ms: raw_app.inbound_poll_ms.unwrap_or(0),
         };
         validate_app_visibility_fields(&app, &format!("apps.{app_id}"))?;
         apps.insert(app_id, app);
@@ -512,6 +514,21 @@ fn normalize_app_transport(raw: RawAppfsComposeAppTransport) -> AppfsComposeAppT
         bridge_circuit_breaker_cooldown_ms: raw
             .bridge_circuit_breaker_cooldown_ms
             .unwrap_or(DEFAULT_BRIDGE_CIRCUIT_BREAKER_COOLDOWN_MS),
+    }
+}
+
+fn normalize_fallback_poll_ms(
+    legacy_poll_ms: Option<u64>,
+    fallback_poll_ms: Option<u64>,
+) -> Result<u64> {
+    match (legacy_poll_ms, fallback_poll_ms) {
+        (Some(legacy), Some(fallback)) if legacy != fallback => {
+            anyhow::bail!(
+                "runtime.poll_ms is deprecated; use runtime.fallback_poll_ms, but do not set both to different values"
+            );
+        }
+        (Some(value), _) | (_, Some(value)) => Ok(value),
+        (None, None) => Ok(0),
     }
 }
 
@@ -723,7 +740,9 @@ struct RawAppfsComposeRuntime {
     #[serde(default)]
     gid: Option<u32>,
     #[serde(default)]
-    poll_ms: u64,
+    poll_ms: Option<u64>,
+    #[serde(default)]
+    fallback_poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -821,6 +840,8 @@ struct RawAppfsComposeApp {
     profile_template: Option<String>,
     #[serde(default)]
     credential_policy: Option<String>,
+    #[serde(default)]
+    inbound_poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -876,6 +897,7 @@ runtime:
   db: .agentfs/demo.db
   mountpoint: ./mnt/appfs
   backend: winfsp
+  fallback_poll_ms: 75
 connectors:
   demo-http:
     mode: external_or_command
@@ -926,6 +948,7 @@ apps:
             );
         }
         assert_eq!(doc.runtime.init, AppfsComposeInitMode::IfMissing);
+        assert_eq!(doc.runtime.fallback_poll_ms, 75);
         assert!(doc.runtime.auto_unmount);
         assert_eq!(connector.mode, AppfsComposeConnectorMode::ExternalOrCommand);
         assert_eq!(connector.transport, AppfsComposeTransportKind::Http);
@@ -968,6 +991,7 @@ apps:
     path_template: private/{principal_id}/tinode
     profile_template: tinode:{principal_id}
     credential_policy: auto-create
+    inbound_poll_ms: 1000
 "#,
             PathBuf::from("/tmp/appfs-compose.yaml"),
         )
@@ -989,6 +1013,7 @@ apps:
             Some("tinode:{principal_id}")
         );
         assert_eq!(tinode.credential_policy.as_deref(), Some("auto-create"));
+        assert_eq!(tinode.inbound_poll_ms, 1000);
         let tinode_connector = doc.connectors.get("tinode-http").expect("tinode connector");
         assert_eq!(tinode_connector.mode, AppfsComposeConnectorMode::InProcess);
         assert_eq!(
@@ -1167,5 +1192,42 @@ runtime:
         } else {
             assert_eq!(doc.runtime.mountpoint, PathBuf::from("/tmp/appfs"));
         }
+    }
+
+    #[test]
+    fn accepts_legacy_runtime_poll_ms_as_fallback_alias() {
+        let doc = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+  poll_ms: 150
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect("legacy poll_ms should parse");
+
+        assert_eq!(doc.runtime.fallback_poll_ms, 150);
+    }
+
+    #[test]
+    fn rejects_conflicting_legacy_and_fallback_poll_fields() {
+        let err = parse_compose_doc(
+            r#"
+version: 1
+runtime:
+  db: .agentfs/demo.db
+  mountpoint: ./mnt/appfs
+  backend: fuse
+  poll_ms: 150
+  fallback_poll_ms: 200
+"#,
+            PathBuf::from("/tmp/appfs-compose.yaml"),
+        )
+        .expect_err("conflicting poll aliases should fail");
+
+        assert!(err.to_string().contains("runtime.poll_ms is deprecated"));
     }
 }

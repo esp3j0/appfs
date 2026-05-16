@@ -76,6 +76,21 @@ pub(super) struct DeletePrincipalRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct AttachPrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) attach_id: String,
+    pub(super) role: Option<String>,
+    pub(super) session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DetachPrincipalRequest {
+    pub(super) principal_id: String,
+    pub(super) attach_id: String,
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) enum DispatchRoute {
     PagingFetchNext(PagingRequest),
     PagingClose(PagingRequest),
@@ -394,6 +409,29 @@ pub(super) fn parse_delete_principal_request(
     Ok(DeletePrincipalRequest { principal_id })
 }
 
+pub(super) fn parse_attach_principal_request(
+    payload: &str,
+) -> std::result::Result<AttachPrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    Ok(AttachPrincipalRequest {
+        principal_id: required_principal_id(&object, "principal_id")?,
+        attach_id: required_attach_id(&object, "attach_id")?,
+        role: optional_string(&object, "role")?,
+        session_id: optional_string(&object, "session_id")?,
+    })
+}
+
+pub(super) fn parse_detach_principal_request(
+    payload: &str,
+) -> std::result::Result<DetachPrincipalRequest, &'static str> {
+    let object = parse_json_object(payload)?;
+    Ok(DetachPrincipalRequest {
+        principal_id: required_principal_id(&object, "principal_id")?,
+        attach_id: required_attach_id(&object, "attach_id")?,
+        reason: optional_string(&object, "reason")?,
+    })
+}
+
 fn parse_json_object(
     payload: &str,
 ) -> std::result::Result<serde_json::Map<String, JsonValue>, &'static str> {
@@ -418,17 +456,19 @@ fn optional_string(
     object: &serde_json::Map<String, JsonValue>,
     field_name: &str,
 ) -> std::result::Result<Option<String>, &'static str> {
-    object
-        .get(field_name)
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .ok_or(ERR_INVALID_ARGUMENT)
-        })
-        .transpose()
+    let Some(value) = object.get(field_name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or(ERR_INVALID_ARGUMENT)
+        .map(Some)
 }
 
 fn required_principal_id(
@@ -438,6 +478,18 @@ fn required_principal_id(
     let principal_id = required_string(object, field_name)?;
     if is_safe_principal_id(&principal_id) {
         Ok(principal_id)
+    } else {
+        Err(ERR_INVALID_ARGUMENT)
+    }
+}
+
+fn required_attach_id(
+    object: &serde_json::Map<String, JsonValue>,
+    field_name: &str,
+) -> std::result::Result<String, &'static str> {
+    let attach_id = required_string(object, field_name)?;
+    if is_safe_attach_id(&attach_id) {
+        Ok(attach_id)
     } else {
         Err(ERR_INVALID_ARGUMENT)
     }
@@ -453,4 +505,16 @@ fn is_safe_principal_id(value: &str) -> bool {
     value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn is_safe_attach_id(value: &str) -> bool {
+    if value == "." || value == ".." || value.len() > 160 {
+        return false;
+    }
+    if value.contains(['/', '\\', '\0', ':']) {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }

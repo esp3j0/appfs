@@ -86,6 +86,7 @@ runtime:
   backend: winfsp
   init: if_missing
   reset: false
+  fallback_poll_ms: 0
 
 connectors:
   aiim-http:
@@ -106,6 +107,27 @@ apps:
   aiim:
     connector: aiim-http
 ```
+
+Runtime polling is split by responsibility:
+
+- `.act` writes are normally processed through the mount runtime's write-wake path, so action execution does not require polling.
+- `apps.<app-id>.inbound_poll_ms` enables connector inbound event polling for apps that must pull backend-side events into the mounted tree, such as a chat inbox.
+- `runtime.fallback_poll_ms` is a legacy full-runtime fallback tick. It is disabled by default and should usually stay `0`. The old compose field `runtime.poll_ms` and CLI flag `--poll-ms` are still accepted as compatibility aliases, but new configs should use `fallback_poll_ms`.
+
+Private, principal-aware apps can be declared through app policy fields. Compose writes the policy/template, but the actual private instances are materialized when a principal is attached or created. For example, a Tinode app can materialize one private tree per AppFS principal and poll backend events into each tree:
+
+```yaml
+apps:
+  tinode:
+    connector: tinode-http
+    visibility: private
+    path_template: private/{principal_id}/tinode
+    profile_template: tinode:{principal_id}
+    credential_policy: auto-create
+    inbound_poll_ms: 1000
+```
+
+That inbound poll keeps the mounted AppFS tree current. It does not replace a higher-level agent wake/subscription mechanism; agents still need to observe or read the relevant files until an explicit wake layer is added. In practice, the current identity and private app set are established by the appfs-agent attach flow, not by AppFS startup alone.
 
 With that file in place:
 
@@ -364,7 +386,7 @@ Key entry points:
 AppFS is organized into three layers:
 
 - AgentFS Core: the engine beneath AppFS, including SQLite filesystem, generic overlay behavior, sync, and platform mount backends
-- AppFS Engine: registry, structure sync, runtime lifecycle, snapshot read-through, and connector adapters
+- AppFS Engine: registry, structure sync, runtime lifecycle, snapshot read-through, connector adapters, and inbound event polling
 - AppFS UX: `agentfs appfs up` plus the mounted control plane under `/_appfs/*`
 
 ```mermaid
@@ -387,6 +409,7 @@ Notes:
 - `AppConnector` is the canonical runtime-facing connector surface
 - `_meta/manifest.res.json` is a derived view, not the runtime source of truth
 - snapshot cold misses auto-expand on ordinary file reads through the mount path
+- action wake, snapshot read-through, and connector inbound polling are separate runtime paths
 - the current CLI layering is intentional: AppFS is exposed as an `agentfs` subcommand because it still depends on AgentFS storage and mount infrastructure
 - `agentfs init --base` remains an AgentFS feature, but it is not part of the recommended AppFS path
 

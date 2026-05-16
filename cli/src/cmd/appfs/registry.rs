@@ -35,6 +35,8 @@ pub(crate) struct AppfsRegisteredAppDoc {
     pub(crate) registered_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) active_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inbound_poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +67,8 @@ pub(crate) struct AppfsAppPolicyRecord {
     pub(crate) profile_template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) credential_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inbound_poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +97,22 @@ pub(crate) struct PrincipalRecord {
     pub(crate) kind: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    #[serde(default)]
+    pub(crate) active_attach_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) active_attaches: Vec<PrincipalAttachLease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct PrincipalAttachLease {
+    pub(crate) attach_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_id: Option<String>,
+    pub(crate) attached_at: String,
+    pub(crate) last_seen_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +295,7 @@ pub(crate) fn build_app_registry_doc(
                     .cloned()
                     .unwrap_or_else(|| now.clone()),
                 active_scope: active_scopes.get(&runtime.app_id).cloned().flatten(),
+                inbound_poll_ms: None,
             })
             .collect(),
     }
@@ -520,6 +541,30 @@ fn validate_principal_registry(doc: &PrincipalRegistryDoc) -> Result<()> {
                 principal.principal_id
             );
         }
+        if principal.active_attach_count as usize != principal.active_attaches.len() {
+            anyhow::bail!(
+                "principal {} active_attach_count does not match active_attaches length",
+                principal.principal_id
+            );
+        }
+        let mut seen_attaches = HashMap::new();
+        for lease in &principal.active_attaches {
+            validate_attach_id(&lease.attach_id)?;
+            if lease.attached_at.trim().is_empty() || lease.last_seen_at.trim().is_empty() {
+                anyhow::bail!(
+                    "principal {} attach {} timestamps cannot be empty",
+                    principal.principal_id,
+                    lease.attach_id
+                );
+            }
+            if seen_attaches.insert(lease.attach_id.clone(), ()).is_some() {
+                anyhow::bail!(
+                    "duplicate attach_id {} for principal {}",
+                    lease.attach_id,
+                    principal.principal_id
+                );
+            }
+        }
         if seen.insert(principal.principal_id.clone(), ()).is_some() {
             anyhow::bail!("duplicate principal_id {}", principal.principal_id);
         }
@@ -545,6 +590,28 @@ pub(crate) fn validate_principal_id(principal_id: &str) -> Result<()> {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
     {
         anyhow::bail!("principal_id can only contain ASCII letters, digits, _ and -");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_attach_id(attach_id: &str) -> Result<()> {
+    if attach_id.trim() != attach_id || attach_id.is_empty() {
+        anyhow::bail!("attach_id cannot be empty or contain leading/trailing whitespace");
+    }
+    if attach_id == "." || attach_id == ".." {
+        anyhow::bail!("attach_id cannot be . or ..");
+    }
+    if attach_id.len() > 160 {
+        anyhow::bail!("attach_id cannot exceed 160 bytes");
+    }
+    if attach_id.contains(['/', '\\', '\0', ':']) {
+        anyhow::bail!("attach_id cannot contain path separators, NUL, or drive separators");
+    }
+    if !attach_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        anyhow::bail!("attach_id can only contain ASCII letters, digits, _, - and .");
     }
     Ok(())
 }

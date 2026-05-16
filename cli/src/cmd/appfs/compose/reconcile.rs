@@ -43,6 +43,7 @@ pub(crate) fn build_registry_doc_from_resolved_apps(
                         .cloned()
                         .unwrap_or_else(|| now.clone()),
                     active_scope: None,
+                    inbound_poll_ms: nonzero_u64(app.inbound_poll_ms),
                 }
             })
             .collect(),
@@ -79,9 +80,18 @@ pub(crate) fn build_app_policy_registry_doc_from_resolved_apps(
                     path_template: app.path_template.clone(),
                     profile_template: app.profile_template.clone(),
                     credential_policy: app.credential_policy.clone(),
+                    inbound_poll_ms: nonzero_u64(app.inbound_poll_ms),
                 }
             })
             .collect(),
+    }
+}
+
+fn nonzero_u64(value: u64) -> Option<u64> {
+    if value == 0 {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -185,6 +195,7 @@ mod tests {
         path_template: Option<&str>,
         profile_template: Option<&str>,
         credential_policy: Option<&str>,
+        inbound_poll_ms: u64,
     ) -> ResolvedComposeApp {
         ResolvedComposeApp {
             app_id: app_id.to_string(),
@@ -198,6 +209,7 @@ mod tests {
             path_template: path_template.map(str::to_string),
             profile_template: profile_template.map(str::to_string),
             credential_policy: credential_policy.map(str::to_string),
+            inbound_poll_ms,
         }
     }
 
@@ -217,6 +229,7 @@ mod tests {
                 None,
                 None,
                 None,
+                0,
             ),
         );
 
@@ -245,6 +258,7 @@ mod tests {
                     session_id: "sess-old".to_string(),
                     registered_at: "2026-04-01T00:00:00Z".to_string(),
                     active_scope: Some("chat-001".to_string()),
+                    inbound_poll_ms: None,
                 },
                 registry::AppfsRegisteredAppDoc {
                     instance_id: "stale".to_string(),
@@ -268,6 +282,7 @@ mod tests {
                     session_id: "sess-stale".to_string(),
                     registered_at: "2026-04-02T00:00:00Z".to_string(),
                     active_scope: Some("stale-scope".to_string()),
+                    inbound_poll_ms: None,
                 },
             ],
         };
@@ -300,6 +315,7 @@ mod tests {
                 None,
                 None,
                 None,
+                0,
             ),
         );
         resolved_apps.insert(
@@ -315,6 +331,7 @@ mod tests {
                 None,
                 None,
                 None,
+                0,
             ),
         );
 
@@ -368,6 +385,7 @@ mod tests {
                 None,
                 None,
                 None,
+                0,
             ),
         );
         resolved_apps.insert(
@@ -383,6 +401,7 @@ mod tests {
                 Some("private/{principal_id}/tinode"),
                 Some("tinode:{principal_id}"),
                 Some("auto-create"),
+                1_000,
             ),
         );
 
@@ -415,5 +434,6 @@ mod tests {
             Some("tinode:{principal_id}")
         );
         assert_eq!(tinode.credential_policy.as_deref(), Some("auto-create"));
+        assert_eq!(tinode.inbound_poll_ms, Some(1_000));
     }
 }

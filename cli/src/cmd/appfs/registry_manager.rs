@@ -51,6 +51,7 @@ pub(super) fn persist_runtime_registry(
                     .cloned()
                     .unwrap_or_else(|| now.clone()),
                 active_scope: read_active_scope(&snapshot.app_dir),
+                inbound_poll_ms: nonzero_u64(snapshot.metadata.inbound_poll_ms),
             })
             .collect(),
     };
@@ -78,6 +79,7 @@ pub(super) fn register_request_to_runtime(
             session_id: session_id.clone(),
             registered_at: chrono::Utc::now().to_rfc3339(),
             active_scope: None,
+            inbound_poll_ms: None,
         }],
     };
     let mut runtimes = resolve_runtime_cli_args(registry::runtime_args_from_registry(&doc)?);
@@ -88,4 +90,12 @@ pub(super) fn register_request_to_runtime(
         session_id,
         ..runtime
     })
+}
+
+fn nonzero_u64(value: u64) -> Option<u64> {
+    if value == 0 {
+        None
+    } else {
+        Some(value)
+    }
 }

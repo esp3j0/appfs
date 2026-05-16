@@ -21,6 +21,7 @@ pub(super) struct AppRuntimeRegistryMetadata {
     pub(super) principal_id: Option<String>,
     pub(super) profile_id: Option<String>,
     pub(super) path: String,
+    pub(super) inbound_poll_ms: u64,
 }
 
 pub(super) fn build_runtime_entry(
@@ -68,6 +69,21 @@ impl AppRuntimeRegistryMetadata {
             principal_id: None,
             profile_id: None,
             path: app_id,
+            inbound_poll_ms: 0,
+        }
+    }
+
+    pub(super) fn from_registered_app(
+        app: &crate::cmd::appfs::registry::AppfsRegisteredAppDoc,
+    ) -> Self {
+        Self {
+            instance_id: app.instance_id.clone(),
+            visibility: app.visibility,
+            parent_app_id: app.parent_app_id.clone(),
+            principal_id: app.principal_id.clone(),
+            profile_id: app.profile_id.clone(),
+            path: app.path.clone(),
+            inbound_poll_ms: app.inbound_poll_ms.unwrap_or(0),
         }
     }
 }

@@ -41,6 +41,7 @@ pub(crate) struct ResolvedComposeApp {
     pub(crate) path_template: Option<String>,
     pub(crate) profile_template: Option<String>,
     pub(crate) credential_policy: Option<String>,
+    pub(crate) inbound_poll_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -149,6 +150,7 @@ impl ComposeConnectorSupervisor {
             path_template: app.path_template.clone(),
             profile_template: app.profile_template.clone(),
             credential_policy: app.credential_policy.clone(),
+            inbound_poll_ms: app.inbound_poll_ms,
         })
     }
 }
@@ -390,6 +392,7 @@ apps:
                 path_template: None,
                 profile_template: None,
                 credential_policy: None,
+                inbound_poll_ms: 0,
             }
         );
     }

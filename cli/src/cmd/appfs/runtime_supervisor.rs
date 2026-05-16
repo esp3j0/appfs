@@ -7,10 +7,11 @@ use super::runtime_entry::{
 };
 use super::runtime_manifest;
 use super::supervisor_control;
-use super::{AppRuntimeStartupBootstrap, ResolvedAppfsRuntimeCliArgs};
+use super::{AppRuntimeStartupBootstrap, ProcessOutcome, ResolvedAppfsRuntimeCliArgs};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub(super) struct AppfsRuntimeSupervisor {
     root: PathBuf,
@@ -26,17 +27,34 @@ impl AppfsRuntimeSupervisor {
         runtime_args: Vec<ResolvedAppfsRuntimeCliArgs>,
         managed: bool,
         startup_bootstrap: Option<HashMap<String, AppRuntimeStartupBootstrap>>,
+        existing_registry: Option<&registry::AppfsAppsRegistryDoc>,
     ) -> Result<Self> {
         let mut runtimes = BTreeMap::new();
         let mut startup_bootstrap = startup_bootstrap.unwrap_or_default();
+        let mut metadata_by_runtime = HashMap::new();
+        if let Some(registry) = existing_registry {
+            for app in &registry.apps {
+                metadata_by_runtime.insert(
+                    runtime_metadata_key(&app.app_id, &app.session_id),
+                    AppRuntimeRegistryMetadata::from_registered_app(app),
+                );
+            }
+        }
         for runtime in runtime_args {
             let app_id = runtime.app_id.clone();
-            let entry = build_runtime_entry(&root, runtime, startup_bootstrap.remove(&app_id))?;
-            if runtimes
-                .insert(entry.runtime.app_id.clone(), entry)
-                .is_some()
-            {
-                anyhow::bail!("duplicate runtime app_id during supervisor bootstrap");
+            let session_id = runtime.session_id.clone();
+            let metadata = metadata_by_runtime
+                .remove(&runtime_metadata_key(&app_id, &session_id))
+                .unwrap_or_else(|| AppRuntimeRegistryMetadata::public(app_id.clone()));
+            let entry = build_runtime_entry_with_metadata(
+                &root,
+                runtime,
+                metadata,
+                startup_bootstrap.remove(&app_id),
+            )?;
+            let instance_id = entry.registry_metadata.instance_id.clone();
+            if runtimes.insert(instance_id, entry).is_some() {
+                anyhow::bail!("duplicate runtime instance_id during supervisor bootstrap");
             }
         }
         Ok(Self {
@@ -55,8 +73,6 @@ impl AppfsRuntimeSupervisor {
 
     pub(super) fn prepare_action_sinks(&mut self) -> Result<()> {
         self.control_plane.prepare_action_sinks()?;
-        self.ensure_default_principal_for_private_policies()?;
-        self.materialize_private_apps_for_existing_principals()?;
         for entry in self.runtimes.values_mut() {
             entry.adapter.prepare_action_sinks()?;
         }
@@ -64,16 +80,43 @@ impl AppfsRuntimeSupervisor {
     }
 
     pub(super) fn poll_once(&mut self) -> Result<()> {
-        let invocations = self.control_plane.drain_invocations()?;
-        for invocation in invocations {
-            self.handle_control_invocation(invocation)?;
-        }
-        self.materialize_private_apps_for_existing_principals()?;
+        self.drain_control_plane_and_materialize_private_apps()?;
         for entry in self.runtimes.values_mut() {
             entry.adapter.poll_once()?;
         }
         self.sync_runtime_registry_to_disk(None)?;
         Ok(())
+    }
+
+    pub(super) fn poll_action_work_once(&mut self) -> Result<()> {
+        self.drain_control_plane_and_materialize_private_apps()?;
+        for entry in self.runtimes.values_mut() {
+            entry.adapter.poll_action_work_once()?;
+        }
+        self.sync_runtime_registry_to_disk(None)?;
+        Ok(())
+    }
+
+    pub(super) fn poll_inbound_events_once(&mut self) -> Result<()> {
+        for entry in self
+            .runtimes
+            .values_mut()
+            .filter(|entry| entry.registry_metadata.inbound_poll_ms > 0)
+        {
+            entry.adapter.poll_inbound_events_once()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn inbound_poll_interval(&self) -> Option<Duration> {
+        self.runtimes
+            .values()
+            .filter_map(|entry| {
+                let inbound_poll_ms = entry.registry_metadata.inbound_poll_ms;
+                (inbound_poll_ms > 0)
+                    .then(|| Duration::from_millis(inbound_poll_ms.max(super::MIN_POLL_MS)))
+            })
+            .min()
     }
 
     pub(super) fn log_started(&self) {
@@ -118,6 +161,14 @@ impl AppfsRuntimeSupervisor {
         registry_manager::persist_runtime_registry(&self.root, &snapshots, existing)
     }
 
+    fn drain_control_plane_and_materialize_private_apps(&mut self) -> Result<()> {
+        let invocations = self.control_plane.drain_invocations()?;
+        for invocation in invocations {
+            self.handle_control_invocation(invocation)?;
+        }
+        Ok(())
+    }
+
     fn handle_control_invocation(
         &mut self,
         invocation: supervisor_control::SupervisorControlInvocation,
@@ -152,6 +203,16 @@ impl AppfsRuntimeSupervisor {
                 client_token,
                 request,
             } => self.handle_delete_principal(&request_id, client_token, request),
+            supervisor_control::SupervisorControlInvocation::AttachPrincipal {
+                request_id,
+                client_token,
+                request,
+            } => self.handle_attach_principal(&request_id, client_token, request),
+            supervisor_control::SupervisorControlInvocation::DetachPrincipal {
+                request_id,
+                client_token,
+                request,
+            } => self.handle_detach_principal(&request_id, client_token, request),
         }
     }
 
@@ -309,6 +370,8 @@ impl AppfsRuntimeSupervisor {
             kind: request.kind,
             created_at: now.clone(),
             updated_at: now,
+            active_attach_count: 0,
+            active_attaches: Vec::new(),
         };
         doc.principals.push(record.clone());
         registry::write_principal_registry(&self.root, &doc)?;
@@ -396,24 +459,55 @@ impl AppfsRuntimeSupervisor {
             )?;
             return Ok(());
         }
-        let credential_cleanup_requests = self
+        let cleanup_keys = self
             .runtimes
-            .values()
-            .filter(|entry| {
+            .iter()
+            .filter(|(_, entry)| {
                 entry.registry_metadata.principal_id.as_deref()
                     == Some(request.principal_id.as_str())
             })
-            .filter_map(|entry| {
-                let profile_id = entry.registry_metadata.profile_id.as_ref()?;
-                Some(serde_json::json!({
-                    "instance_id": entry.registry_metadata.instance_id.as_str(),
-                    "app_id": entry.runtime.app_id.as_str(),
-                    "principal_id": request.principal_id.as_str(),
-                    "profile_id": profile_id,
-                    "status": "requested",
-                }))
-            })
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
+        let mut credential_cleanup_requests = Vec::new();
+        for runtime_key in cleanup_keys {
+            let Some(entry) = self.runtimes.get_mut(&runtime_key) else {
+                continue;
+            };
+            let profile_id = entry.registry_metadata.profile_id.clone();
+            let instance_id = entry.registry_metadata.instance_id.clone();
+            let app_id = entry.runtime.app_id.clone();
+            let mut cleanup_request = serde_json::json!({
+                "instance_id": instance_id,
+                "app_id": app_id,
+                "principal_id": request.principal_id.as_str(),
+                "status": "skipped",
+                "cleanup_action": "/_app/forget_credentials.act",
+            });
+
+            if let Some(profile_id) = profile_id.as_deref() {
+                cleanup_request["profile_id"] = serde_json::json!(profile_id);
+                match entry.adapter.submit_internal_action(
+                    "/_app/forget_credentials.act",
+                    serde_json::json!({
+                        "reason": "principal_deleted",
+                    }),
+                    Some(format!("principal-delete-{}", request.principal_id)),
+                ) {
+                    Ok(ProcessOutcome::Consumed) => {
+                        cleanup_request["status"] = serde_json::json!("completed");
+                    }
+                    Ok(ProcessOutcome::RetryPending) => {
+                        cleanup_request["status"] = serde_json::json!("retry_pending");
+                    }
+                    Err(err) => {
+                        cleanup_request["status"] = serde_json::json!("failed");
+                        cleanup_request["error"] = serde_json::json!(err.to_string());
+                    }
+                }
+            }
+
+            credential_cleanup_requests.push(cleanup_request);
+        }
         registry::write_principal_registry(&self.root, &doc)?;
         registry::delete_principal_record_view(&self.root, &request.principal_id)?;
         self.control_plane.emit_completed(
@@ -431,6 +525,119 @@ impl AppfsRuntimeSupervisor {
         Ok(())
     }
 
+    fn handle_attach_principal(
+        &mut self,
+        request_id: &str,
+        client_token: Option<String>,
+        request: action_dispatcher::AttachPrincipalRequest,
+    ) -> Result<()> {
+        let mut doc = self.load_principal_registry()?;
+        let Some(record) = doc
+            .principals
+            .iter_mut()
+            .find(|principal| principal.principal_id == request.principal_id)
+        else {
+            self.control_plane.emit_failed(
+                "/_appfs/principals/attach_principal.act",
+                request_id,
+                "PRINCIPAL_NOT_FOUND",
+                &format!("principal {} is not registered", request.principal_id),
+                client_token,
+            )?;
+            return Ok(());
+        };
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut lease_created = false;
+        if let Some(existing) = record
+            .active_attaches
+            .iter_mut()
+            .find(|lease| lease.attach_id == request.attach_id)
+        {
+            existing.role = request.role.clone();
+            existing.session_id = request.session_id.clone();
+            existing.last_seen_at = now.clone();
+        } else {
+            record.active_attaches.push(registry::PrincipalAttachLease {
+                attach_id: request.attach_id.clone(),
+                role: request.role.clone(),
+                session_id: request.session_id.clone(),
+                attached_at: now.clone(),
+                last_seen_at: now.clone(),
+            });
+            lease_created = true;
+        }
+        record.active_attach_count = record.active_attaches.len() as u32;
+        record.updated_at = now;
+        let updated = record.clone();
+        registry::write_principal_registry(&self.root, &doc)?;
+        registry::write_principal_record_view(&self.root, &updated)?;
+        let materialized = self.materialize_private_apps_for_principal(&updated)?;
+        self.control_plane.emit_completed(
+            "/_appfs/principals/attach_principal.act",
+            request_id,
+            serde_json::json!({
+                "principal_event": if lease_created { "principal.attached" } else { "principal.attach_refreshed" },
+                "principal_id": updated.principal_id,
+                "attach_id": request.attach_id,
+                "attached": true,
+                "lease_created": lease_created,
+                "active_attach_count": updated.active_attach_count,
+                "app_instances": materialized,
+            }),
+            client_token,
+        )?;
+        Ok(())
+    }
+
+    fn handle_detach_principal(
+        &mut self,
+        request_id: &str,
+        client_token: Option<String>,
+        request: action_dispatcher::DetachPrincipalRequest,
+    ) -> Result<()> {
+        let mut doc = self.load_principal_registry()?;
+        let Some(record) = doc
+            .principals
+            .iter_mut()
+            .find(|principal| principal.principal_id == request.principal_id)
+        else {
+            self.control_plane.emit_failed(
+                "/_appfs/principals/detach_principal.act",
+                request_id,
+                "PRINCIPAL_NOT_FOUND",
+                &format!("principal {} is not registered", request.principal_id),
+                client_token,
+            )?;
+            return Ok(());
+        };
+
+        let before = record.active_attaches.len();
+        record
+            .active_attaches
+            .retain(|lease| lease.attach_id != request.attach_id);
+        let detached = record.active_attaches.len() != before;
+        record.active_attach_count = record.active_attaches.len() as u32;
+        record.updated_at = chrono::Utc::now().to_rfc3339();
+        let updated = record.clone();
+        registry::write_principal_registry(&self.root, &doc)?;
+        registry::write_principal_record_view(&self.root, &updated)?;
+        self.control_plane.emit_completed(
+            "/_appfs/principals/detach_principal.act",
+            request_id,
+            serde_json::json!({
+                "principal_event": if detached { "principal.detached" } else { "principal.detach_ignored" },
+                "principal_id": updated.principal_id,
+                "attach_id": request.attach_id,
+                "detached": detached,
+                "reason": request.reason,
+                "active_attach_count": updated.active_attach_count,
+            }),
+            client_token,
+        )?;
+        Ok(())
+    }
+
     fn load_principal_registry(&self) -> Result<registry::PrincipalRegistryDoc> {
         Ok(registry::read_principal_registry(&self.root)?.unwrap_or(
             registry::PrincipalRegistryDoc {
@@ -439,49 +646,6 @@ impl AppfsRuntimeSupervisor {
                 principals: Vec::new(),
             },
         ))
-    }
-
-    fn ensure_default_principal_for_private_policies(&mut self) -> Result<()> {
-        let Some(policy_doc) = registry::read_app_policy_registry(&self.root)? else {
-            return Ok(());
-        };
-        if !policy_doc
-            .apps
-            .iter()
-            .any(|policy| policy.visibility == registry::AppfsAppPolicyVisibility::Private)
-        {
-            return Ok(());
-        }
-
-        let mut doc = self.load_principal_registry()?;
-        if doc
-            .principals
-            .iter()
-            .any(|principal| principal.principal_id == registry::APPFS_DEFAULT_PRINCIPAL_ID)
-        {
-            return Ok(());
-        }
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let record = registry::PrincipalRecord {
-            principal_id: registry::APPFS_DEFAULT_PRINCIPAL_ID.to_string(),
-            display_name: "Default agent".to_string(),
-            description: Some("The default AppFS agent principal.".to_string()),
-            kind: "agent".to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        doc.principals.push(record.clone());
-        registry::write_principal_registry(&self.root, &doc)?;
-        registry::write_principal_record_view(&self.root, &record)
-    }
-
-    fn materialize_private_apps_for_existing_principals(&mut self) -> Result<()> {
-        let doc = self.load_principal_registry()?;
-        for principal in doc.principals {
-            self.materialize_private_apps_for_principal(&principal)?;
-        }
-        Ok(())
     }
 
     fn materialize_private_apps_for_principal(
@@ -522,6 +686,7 @@ impl AppfsRuntimeSupervisor {
                 principal_id: Some(principal.principal_id.clone()),
                 profile_id: Some(profile_id.clone()),
                 path: path.clone(),
+                inbound_poll_ms: policy.inbound_poll_ms.unwrap_or(0),
             };
             let mut entry = build_runtime_entry_with_metadata(&self.root, runtime, metadata, None)?;
             entry.adapter.prepare_action_sinks()?;
@@ -539,6 +704,10 @@ impl AppfsRuntimeSupervisor {
         }
         Ok(materialized)
     }
+}
+
+fn runtime_metadata_key(app_id: &str, session_id: &str) -> String {
+    format!("{app_id}\u{0}{session_id}")
 }
 
 fn render_principal_template(template: &str, principal_id: &str) -> String {

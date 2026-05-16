@@ -15,6 +15,8 @@ const CONTROL_LIST_ACTION_PATH: &str = "/_appfs/list_apps.act";
 const CONTROL_CREATE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/create_principal.act";
 const CONTROL_UPDATE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/update_principal.act";
 const CONTROL_DELETE_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/delete_principal.act";
+const CONTROL_ATTACH_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/attach_principal.act";
+const CONTROL_DETACH_PRINCIPAL_ACTION_PATH: &str = "/_appfs/principals/detach_principal.act";
 const CONTROL_REGISTRY_PATH: &str = "/_appfs/apps.registry.json";
 const CONTROL_PRINCIPALS_REGISTRY_PATH: &str = "/_appfs/principals.registry.json";
 const CONTROL_EVENTS_PATH: &str = "/_appfs/_stream/events.evt.jsonl";
@@ -27,6 +29,8 @@ pub(crate) struct AppfsRuntimeManifestControlPlaneDoc {
     pub(crate) create_principal_action: String,
     pub(crate) update_principal_action: String,
     pub(crate) delete_principal_action: String,
+    pub(crate) attach_principal_action: String,
+    pub(crate) detach_principal_action: String,
     pub(crate) registry: String,
     pub(crate) principals_registry: String,
     pub(crate) events: String,
@@ -82,6 +86,8 @@ pub(crate) fn build_runtime_manifest(
             create_principal_action: CONTROL_CREATE_PRINCIPAL_ACTION_PATH.to_string(),
             update_principal_action: CONTROL_UPDATE_PRINCIPAL_ACTION_PATH.to_string(),
             delete_principal_action: CONTROL_DELETE_PRINCIPAL_ACTION_PATH.to_string(),
+            attach_principal_action: CONTROL_ATTACH_PRINCIPAL_ACTION_PATH.to_string(),
+            detach_principal_action: CONTROL_DETACH_PRINCIPAL_ACTION_PATH.to_string(),
             registry: CONTROL_REGISTRY_PATH.to_string(),
             principals_registry: CONTROL_PRINCIPALS_REGISTRY_PATH.to_string(),
             events: CONTROL_EVENTS_PATH.to_string(),

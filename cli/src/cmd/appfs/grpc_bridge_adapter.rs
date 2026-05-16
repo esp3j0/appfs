@@ -946,6 +946,12 @@ fn to_structure_refresh_app_structure_request(
         }
         AppStructureSyncReason::Refresh => structure_proto::AppStructureSyncReason::Refresh as i32,
         AppStructureSyncReason::Recover => structure_proto::AppStructureSyncReason::Recover as i32,
+        AppStructureSyncReason::InboundChanged => {
+            structure_proto::AppStructureSyncReason::InboundChanged as i32
+        }
+        AppStructureSyncReason::ActionChanged => {
+            structure_proto::AppStructureSyncReason::ActionChanged as i32
+        }
     };
     structure_proto::RefreshAppStructureInput {
         app_id: request.app_id,
